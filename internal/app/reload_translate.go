@@ -37,6 +37,8 @@ func unpackConfigFromPP(pp config.PostProcConfig, probe binaryProbe, cmdCfg cmdu
 		},
 		Permissions:     pp.Permissions,
 		PasswordFile:    pp.PasswordFile,
+		EnableUnrar:     pp.EnableUnrar,
+		Enable7zip:      pp.Enable7zip,
 		EnableFileJoin:  pp.EnableFileJoin,
 		EnableTar:       pp.EnableTar,
 		EnableRecursive: pp.EnableRecursive,

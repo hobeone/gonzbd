@@ -18,6 +18,9 @@ func appliedUnpackStage(c UnpackConfig) *UnpackStage {
 	return s
 }
 
+// allArchiveTypes allows every archive type, as the config defaults do.
+var allArchiveTypes = archiveTypes{rar: true, sevenZip: true, fileJoin: true, tar: true}
+
 // editUnpackConfig re-applies s's settings with edit made to them.
 func editUnpackConfig(s *UnpackStage, edit func(*UnpackConfig)) {
 	c := s.Config()
@@ -43,6 +46,8 @@ func TestStageConfig_ReturnsWhatApplyInstalled(t *testing.T) {
 		Base:            unpack.Options{UseGoRAR: true, Sandbox: cmdutil.SandboxConfig{Enabled: true, Strict: true}},
 		Permissions:     "755",
 		PasswordFile:    "/pw.txt",
+		EnableUnrar:     true,
+		Enable7zip:      true,
 		EnableFileJoin:  true,
 		EnableTar:       true,
 		EnableRecursive: true,

@@ -28,8 +28,9 @@ import (
 // from config when a file completes (completeFinalizedFile, maybeStart), and
 // the API has already written them to config before this runs, so no
 // propagation is needed. EnableUnrar is read there too, and is also applied
-// here, with Enable7zip, EnableFileJoin and EnableTar, to the unpack stage's
-// enabled flag.
+// here, with Enable7zip, EnableFileJoin and EnableTar, to the unpack stage:
+// each through unpackConfigFromPP as the archive type it lets the stage
+// extract, and together as the stage's enabled flag.
 func (app *Application) ReloadPostProcOptions(pp config.PostProcConfig, scriptDir string) {
 	cmdCfg := cmdutil.CmdConfig{Nice: pp.Nice, Ionice: pp.Ionice}
 

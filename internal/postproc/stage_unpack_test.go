@@ -46,7 +46,7 @@ func copyToDir(t *testing.T, src, dstDir string) string {
 // enabledUnpackStage builds an UnpackStage that is enabled and uses
 // pure-Go RAR extraction so tests run without an external unrar binary.
 func enabledUnpackStage() *UnpackStage {
-	s := appliedUnpackStage(UnpackConfig{Base: unpack.Options{UseGoRAR: true}, Cleanup: false})
+	s := appliedUnpackStage(UnpackConfig{Base: unpack.Options{UseGoRAR: true}, EnableUnrar: true, Enable7zip: true, Cleanup: false})
 	s.SetEnabled(true)
 	return s
 }
@@ -122,7 +122,7 @@ func TestUnpackStage_CleanupDeletesArchiveParts(t *testing.T) {
 		output = append(output, fmt.Sprintf("[%s] %s", tool, line))
 	}
 
-	s := appliedUnpackStage(UnpackConfig{Base: unpack.Options{UseGoRAR: true}, Cleanup: true})
+	s := appliedUnpackStage(UnpackConfig{Base: unpack.Options{UseGoRAR: true}, EnableUnrar: true, Enable7zip: true, Cleanup: true})
 	s.SetEnabled(true)
 
 	if err := s.Run(t.Context(), job); err != nil {
@@ -199,7 +199,7 @@ func TestUnpackStage_DirectUnpackPrePopulated(t *testing.T) {
 		},
 	}
 
-	s := appliedUnpackStage(UnpackConfig{Base: unpack.Options{UseGoRAR: true}, Cleanup: true})
+	s := appliedUnpackStage(UnpackConfig{Base: unpack.Options{UseGoRAR: true}, EnableUnrar: true, Enable7zip: true, Cleanup: true})
 	s.SetEnabled(true)
 
 	if err := s.Run(t.Context(), job); err != nil {
@@ -226,7 +226,7 @@ func TestUnpackStage_DisabledSkips(t *testing.T) {
 	job, dir := stageJob(t)
 	copyToDir(t, unpackFixture("single_rar5.rar"), dir)
 
-	s := appliedUnpackStage(UnpackConfig{Base: unpack.Options{UseGoRAR: true}, Cleanup: false})
+	s := appliedUnpackStage(UnpackConfig{Base: unpack.Options{UseGoRAR: true}, EnableUnrar: true, Enable7zip: true, Cleanup: false})
 	// deliberately NOT calling s.SetEnabled(true)
 
 	if err := s.Run(t.Context(), job); err != nil {
@@ -287,7 +287,7 @@ func TestUnpackStage_ExtractTarArchive(t *testing.T) {
 	var outputs []string
 	job.OnOutput = func(_, line string) { outputs = append(outputs, line) }
 
-	s := appliedUnpackStage(UnpackConfig{Base: unpack.Options{}, Cleanup: false})
+	s := appliedUnpackStage(UnpackConfig{Base: unpack.Options{}, EnableUnrar: true, Enable7zip: true, Cleanup: false})
 	s.SetEnabled(true)
 	editUnpackConfig(s, func(c *UnpackConfig) { c.EnableTar = true })
 
@@ -333,7 +333,7 @@ func TestUnpackStage_TarDisabledSkips(t *testing.T) {
 	job, dir := stageJob(t)
 	buildTestTar(t, dir, "archive.tar")
 
-	s := appliedUnpackStage(UnpackConfig{Base: unpack.Options{}, Cleanup: false})
+	s := appliedUnpackStage(UnpackConfig{Base: unpack.Options{}, EnableUnrar: true, Enable7zip: true, Cleanup: false})
 	s.SetEnabled(true)
 	editUnpackConfig(s, func(c *UnpackConfig) { c.EnableTar = false })
 
@@ -481,7 +481,7 @@ func TestUnpackStage_TarTraversalDoesNotTripContainmentCleanup(t *testing.T) {
 	job, dir := stageJob(t)
 	buildTraversalTar(t, dir, "traversal.tar")
 
-	s := appliedUnpackStage(UnpackConfig{Base: unpack.Options{}, Cleanup: false})
+	s := appliedUnpackStage(UnpackConfig{Base: unpack.Options{}, EnableUnrar: true, Enable7zip: true, Cleanup: false})
 	s.SetEnabled(true)
 	editUnpackConfig(s, func(c *UnpackConfig) { c.EnableTar = true })
 
@@ -701,7 +701,7 @@ func TestUnpackHelpers(t *testing.T) {
 		a := unpack.Archive{Type: unpack.RarArchive, Name: "nonexistent.rar"}
 
 		// Scenario A: Native Go, no fallback
-		resA, attemptedA, errA := u.extractArchive(t.Context(), slog.Default(), job, a, unpack.Options{UseGoRAR: true, GoRarFallback: false}, true, true)
+		resA, attemptedA, errA := u.extractArchive(t.Context(), slog.Default(), job, a, unpack.Options{UseGoRAR: true, GoRarFallback: false}, allArchiveTypes)
 		assertExtractEngine(t, "scenario A", resA, attemptedA, errA, "go_unrar")
 
 		// Scenarios B and C exercise the external unrar path. Use a stub
@@ -712,13 +712,13 @@ func TestUnpackHelpers(t *testing.T) {
 		stub := writeStubBinary(t)
 
 		// Scenario B: External only
-		resB, attemptedB, errB := u.extractArchive(t.Context(), slog.Default(), job, a, unpack.Options{UseGoRAR: false, GoRarFallback: false, UnrarCommand: stub}, true, true)
+		resB, attemptedB, errB := u.extractArchive(t.Context(), slog.Default(), job, a, unpack.Options{UseGoRAR: false, GoRarFallback: false, UnrarCommand: stub}, allArchiveTypes)
 		assertExtractEngine(t, "scenario B", resB, attemptedB, errB, "unrar")
 
 		// Scenario C: Native Go with external fallback -- should behave like
 		// B (fallback ran and switched engines away from go_unrar), proving
 		// the fallback path actually executed rather than silently no-oping.
-		resC, attemptedC, errC := u.extractArchive(t.Context(), slog.Default(), job, a, unpack.Options{UseGoRAR: true, GoRarFallback: true, UnrarCommand: stub}, true, true)
+		resC, attemptedC, errC := u.extractArchive(t.Context(), slog.Default(), job, a, unpack.Options{UseGoRAR: true, GoRarFallback: true, UnrarCommand: stub}, allArchiveTypes)
 		assertExtractEngine(t, "scenario C", resC, attemptedC, errC, "unrar")
 	})
 
@@ -732,7 +732,7 @@ func TestUnpackHelpers(t *testing.T) {
 		a := unpack.Archive{Type: unpack.SevenZipArchive, Name: "nonexistent.7z"}
 
 		// Scenario A: Native Go, no fallback
-		resA, attemptedA, errA := u.extractArchive(t.Context(), slog.Default(), job, a, unpack.Options{UseGo7z: true, Go7zFallback: false}, true, true)
+		resA, attemptedA, errA := u.extractArchive(t.Context(), slog.Default(), job, a, unpack.Options{UseGo7z: true, Go7zFallback: false}, allArchiveTypes)
 		assertExtractEngine(t, "scenario A", resA, attemptedA, errA, "go_7z")
 
 		// Scenarios B and C exercise the external 7z path. Use a stub binary
@@ -740,29 +740,36 @@ func TestUnpackHelpers(t *testing.T) {
 		stub := writeStubBinary(t)
 
 		// Scenario B: External only
-		resB, attemptedB, errB := u.extractArchive(t.Context(), slog.Default(), job, a, unpack.Options{UseGo7z: false, Go7zFallback: false, SevenZipCommand: stub}, true, true)
+		resB, attemptedB, errB := u.extractArchive(t.Context(), slog.Default(), job, a, unpack.Options{UseGo7z: false, Go7zFallback: false, SevenZipCommand: stub}, allArchiveTypes)
 		assertExtractEngine(t, "scenario B", resB, attemptedB, errB, "7z")
 
 		// Scenario C: Native Go with external fallback -- should behave like
 		// B (fallback ran and switched engines away from go_7z).
-		resC, attemptedC, errC := u.extractArchive(t.Context(), slog.Default(), job, a, unpack.Options{UseGo7z: true, Go7zFallback: true, SevenZipCommand: stub}, true, true)
+		resC, attemptedC, errC := u.extractArchive(t.Context(), slog.Default(), job, a, unpack.Options{UseGo7z: true, Go7zFallback: true, SevenZipCommand: stub}, allArchiveTypes)
 		assertExtractEngine(t, "scenario C", resC, attemptedC, errC, "7z")
 	})
 
-	// 5. Test extractArchive skips (SplitArchive and TarArchive disabled,
-	// an unrecognised type) without attempting an extraction.
+	// 5. Test extractArchive skips (every known type disabled, an
+	// unrecognised type even with all enabled) without attempting an
+	// extraction.
 	t.Run("extractArchive skipped types", func(t *testing.T) {
 		u := NewUnpackStage()
 		job := &Job{
 			Job:         newQueueJob(t, "testjob", 0),
 			DownloadDir: t.TempDir(),
 		}
-		for _, a := range []unpack.Archive{
-			{Type: unpack.SplitArchive, MainFile: "test.001"},
-			{Type: unpack.TarArchive, MainFile: "test.tar"},
-			{Type: unpack.UnknownArchive, MainFile: "test.bin"},
+		for _, tc := range []struct {
+			a     unpack.Archive
+			types archiveTypes
+		}{
+			{unpack.Archive{Type: unpack.RarArchive, MainFile: "test.rar"}, archiveTypes{sevenZip: true, fileJoin: true, tar: true}},
+			{unpack.Archive{Type: unpack.SevenZipArchive, MainFile: "test.7z"}, archiveTypes{rar: true, fileJoin: true, tar: true}},
+			{unpack.Archive{Type: unpack.SplitArchive, MainFile: "test.001"}, archiveTypes{rar: true, sevenZip: true, tar: true}},
+			{unpack.Archive{Type: unpack.TarArchive, MainFile: "test.tar"}, archiveTypes{rar: true, sevenZip: true, fileJoin: true}},
+			{unpack.Archive{Type: unpack.UnknownArchive, MainFile: "test.bin"}, allArchiveTypes},
 		} {
-			res, attempted, err := u.extractArchive(t.Context(), slog.Default(), job, a, unpack.Options{}, false, false)
+			a := tc.a
+			res, attempted, err := u.extractArchive(t.Context(), slog.Default(), job, a, unpack.Options{}, tc.types)
 			if err != nil {
 				t.Fatalf("%s: unexpected err: %v", a.MainFile, err)
 			}
@@ -800,7 +807,7 @@ func TestUnpackHelpers(t *testing.T) {
 			UseGoRAR: false,
 		}
 
-		ok := u.extractPendingArchives(t.Context(), slog.Default(), job, pending, processed, opts, true, true, &firstErr, &allSuccessful)
+		ok := u.extractPendingArchives(t.Context(), slog.Default(), job, pending, processed, opts, allArchiveTypes, &firstErr, &allSuccessful)
 		if !ok {
 			t.Error("expected extractPendingArchives to return true")
 		}
@@ -840,7 +847,7 @@ func TestUnpackHelpers(t *testing.T) {
 			UseGoRAR: true, // Go-native is fast and sufficient
 		}
 
-		ok := u.extractPendingArchives(t.Context(), slog.Default(), job, pending, processed, opts, true, true, &firstErr, &allSuccessful)
+		ok := u.extractPendingArchives(t.Context(), slog.Default(), job, pending, processed, opts, allArchiveTypes, &firstErr, &allSuccessful)
 		// Since containment check fails, firstErr should be non-nil
 		if firstErr == nil {
 			t.Error("expected containment violation error, got nil")
@@ -901,7 +908,7 @@ func TestUnpackStage_RealtimeLogTransitions_SevenZip(t *testing.T) {
 	collector := newLogCollector(false)
 	job.OnOutput = collector.Callback()
 
-	s := appliedUnpackStage(UnpackConfig{Base: unpack.Options{UseGo7z: true}, Cleanup: false})
+	s := appliedUnpackStage(UnpackConfig{Base: unpack.Options{UseGo7z: true}, EnableUnrar: true, Enable7zip: true, Cleanup: false})
 	s.SetEnabled(true)
 
 	if err := s.Run(t.Context(), job); err != nil {
@@ -948,7 +955,7 @@ func TestUnpackStage_RealtimeLogTransitions_SevenZip_Fallback(t *testing.T) {
 		UseGo7z:         true,
 		Go7zFallback:    true,
 		SevenZipCommand: "7z",
-	}, Cleanup: false})
+	}, EnableUnrar: true, Enable7zip: true, Cleanup: false})
 	s.SetEnabled(true)
 
 	// We expect this to fail eventually because it's not a real 7z archive.
@@ -999,7 +1006,7 @@ func TestUnpackStage_RealtimeLogTransitions_Rar_Fallback(t *testing.T) {
 		UseGoRAR:      true,
 		GoRarFallback: true,
 		UnrarCommand:  "unrar",
-	}, Cleanup: false})
+	}, EnableUnrar: true, Enable7zip: true, Cleanup: false})
 	s.SetEnabled(true)
 
 	_ = s.Run(t.Context(), job)
@@ -1101,7 +1108,7 @@ exit 0
 		UseGoRAR:      true,
 		GoRarFallback: true,
 		UnrarCommand:  unrarPath,
-	}, Cleanup: false})
+	}, EnableUnrar: true, Enable7zip: true, Cleanup: false})
 	s.SetEnabled(true)
 
 	if err := s.Run(t.Context(), job); err != nil {
@@ -1187,7 +1194,7 @@ exit 0
 		UseGo7z:         true,
 		Go7zFallback:    true,
 		SevenZipCommand: szPath,
-	}, Cleanup: false})
+	}, EnableUnrar: true, Enable7zip: true, Cleanup: false})
 	s.SetEnabled(true)
 
 	if err := s.Run(t.Context(), job); err != nil {
@@ -1255,7 +1262,7 @@ exit 0
 	s := appliedUnpackStage(UnpackConfig{Base: unpack.Options{
 		UseGo7z:         false,
 		SevenZipCommand: szPath,
-	}, Cleanup: false})
+	}, EnableUnrar: true, Enable7zip: true, Cleanup: false})
 	s.SetEnabled(true)
 
 	if err := s.Run(t.Context(), job); err != nil {
@@ -1297,7 +1304,7 @@ exit 0
 	s := appliedUnpackStage(UnpackConfig{Base: unpack.Options{
 		UseGo7z:         false,
 		SevenZipCommand: "", // empty initially, should be discovered from GONZBD_SEVENZIP_BIN and assigned in onExternal
-	}, Cleanup: false})
+	}, EnableUnrar: true, Enable7zip: true, Cleanup: false})
 	s.SetEnabled(true)
 
 	if err := s.Run(t.Context(), job); err != nil {
@@ -1324,7 +1331,7 @@ exit 0
 	s := appliedUnpackStage(UnpackConfig{Base: unpack.Options{
 		UseGoRAR:     false,
 		UnrarCommand: unrarPath,
-	}, Cleanup: false})
+	}, EnableUnrar: true, Enable7zip: true, Cleanup: false})
 	s.SetEnabled(true)
 
 	if err := s.Run(t.Context(), job); err != nil {
@@ -1382,7 +1389,7 @@ exit 0
 	s := appliedUnpackStage(UnpackConfig{Base: unpack.Options{
 		UseGoRAR:     false,
 		UnrarCommand: scriptPath,
-	}, Cleanup: true})
+	}, EnableUnrar: true, Enable7zip: true, Cleanup: true})
 	s.SetEnabled(true)
 
 	_ = s.Run(t.Context(), job)
@@ -1470,7 +1477,7 @@ func TestUnpackStage_ApplyStrictSandbox(t *testing.T) {
 			Enabled: true,
 			Strict:  true,
 		},
-	}, Cleanup: false})
+	}, EnableUnrar: true, Enable7zip: true, Cleanup: false})
 
 	s.Apply(UnpackConfig{Base: unpack.Options{Sandbox: cmdutil.SandboxConfig{Enabled: true, Strict: false}}})
 	strict := s.Config().Base.Sandbox.Strict
@@ -1576,7 +1583,7 @@ func TestUnpackStage_CleanupArchives(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	u := appliedUnpackStage(UnpackConfig{Base: unpack.Options{}, Cleanup: true})
+	u := appliedUnpackStage(UnpackConfig{Base: unpack.Options{}, EnableUnrar: true, Enable7zip: true, Cleanup: true})
 
 	job := &Job{
 		DownloadDir: dir,

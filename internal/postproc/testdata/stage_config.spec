@@ -20,7 +20,7 @@ file internal/postproc/stage_unpack.go
 [unpack Config drops the tar toggle]
 file internal/postproc/stage_unpack.go
 --- anchor
-		EnableTar:       u.enableTar,
+		EnableTar:       u.types.tar,
 --- replace
 		EnableTar:       false,
 --- end

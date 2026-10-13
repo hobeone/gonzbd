@@ -275,10 +275,12 @@ downloads:
   action_on_unwanted_extensions: pause
 
 postproc:
-  # Enable RAR archive extraction. Requires unrar or 7z on PATH.
+  # Enable RAR archive extraction. When false, RAR sets are left as-is and
+  # delivered, and direct_unpack does not run. Default true.
   enable_unrar: true
 
-  # Enable 7z archive extraction. Requires 7z on PATH.
+  # Enable 7z archive extraction. When false, 7z archives are left as-is
+  # and delivered. Default true.
   enable_7zip: true
 
   # Enable plain .tar archive extraction (not compressed variants like

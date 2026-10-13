@@ -3,26 +3,73 @@ run ^(TestUnpackStage_DisabledArchiveType_IsDelivered|TestUnpackHelpers)$
 
 # extractArchive owns the "skipped" verdict: an archive no extractor ran on
 # is neither extracted nor failed, so its parts are not queued for deletion
-# and finalize delivers them (#943).
+# and finalize delivers them (#943). archiveTypes.allows is the one reading
+# of the four enable_* toggles it consults (#947).
 
-[disabled file join reported as attempted]
+[the disabled-type gate is dropped]
 file internal/postproc/stage_unpack.go
 --- anchor
-			logf(ctx, log, job, slog.LevelInfo, "Skipping file join (disabled): %s", filepath.Base(a.MainFile))
-			return unpack.Result{}, false, nil
+	if !types.allows(a.Type) {
 --- replace
-			logf(ctx, log, job, slog.LevelInfo, "Skipping file join (disabled): %s", filepath.Base(a.MainFile))
-			return unpack.Result{}, true, nil
+	if false {
 --- end
 
-[disabled tar reported as attempted]
+[enable_unrar is ignored]
 file internal/postproc/stage_unpack.go
 --- anchor
-			logf(ctx, log, job, slog.LevelInfo, "Skipping tar archive (disabled): %s", filepath.Base(a.MainFile))
-			return unpack.Result{}, false, nil
+		return at.rar
 --- replace
-			logf(ctx, log, job, slog.LevelInfo, "Skipping tar archive (disabled): %s", filepath.Base(a.MainFile))
-			return unpack.Result{}, true, nil
+		return true
+--- end
+
+[enable_7zip is ignored]
+file internal/postproc/stage_unpack.go
+--- anchor
+		return at.sevenZip
+--- replace
+		return true
+--- end
+
+[enable_filejoin is ignored]
+file internal/postproc/stage_unpack.go
+--- anchor
+		return at.fileJoin
+--- replace
+		return true
+--- end
+
+[enable_tar is ignored]
+file internal/postproc/stage_unpack.go
+--- anchor
+		return at.tar
+--- replace
+		return true
+--- end
+
+[Apply drops enable_unrar]
+file internal/postproc/stage_unpack.go
+--- anchor
+archiveTypes{rar: c.EnableUnrar,
+--- replace
+archiveTypes{rar: true,
+--- end
+
+[Apply drops enable_7zip]
+file internal/postproc/stage_unpack.go
+--- anchor
+sevenZip: c.Enable7zip,
+--- replace
+sevenZip: true,
+--- end
+
+[a disabled type reported as attempted]
+file internal/postproc/stage_unpack.go
+--- anchor
+		logf(ctx, log, job, slog.LevelInfo, "Skipping %s archive (disabled): %s", archiveTypeName(a.Type), filepath.Base(a.MainFile))
+		return unpack.Result{}, false, nil
+--- replace
+		logf(ctx, log, job, slog.LevelInfo, "Skipping %s archive (disabled): %s", archiveTypeName(a.Type), filepath.Base(a.MainFile))
+		return unpack.Result{}, true, nil
 --- end
 
 [unrecognised type reported as attempted]

@@ -305,7 +305,7 @@ func TestExtractedRepairStage_NativeEngineSkipsPendingDeletions(t *testing.T) {
 		{name: "release.rar", data: fixtureBytes(t, "layout_b", "release.rar")},
 	})
 	qc, repair, _ := layoutStages()
-	up := appliedUnpackStage(UnpackConfig{Base: unpack.Options{UseGoRAR: true, UseGo7z: true}, Cleanup: true})
+	up := appliedUnpackStage(UnpackConfig{Base: unpack.Options{UseGoRAR: true, UseGo7z: true}, EnableUnrar: true, Enable7zip: true, Cleanup: true})
 	up.SetEnabled(true)
 	qc.Unpack = up
 	if errs := runStages(t, job, qc, repair, up); len(errs) > 0 {
