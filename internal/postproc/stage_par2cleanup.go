@@ -15,7 +15,7 @@ import (
 // FinalDir (#768). It runs after unpack and only proceeds when both repair and
 // unpack succeeded (no ParError, no UnpackError) and every par2 set quickcheck
 // deferred until after unpack has been verified against the extracted files
-// (Job.DeferredPar2Verified). Keeping the files on disk until finalize ensures
+// (Job.deferredPar2Verified). Keeping the files on disk until finalize ensures
 // a crash before finalize can safely rerun post-processing.
 type Par2CleanupStage struct {
 	// cleanup is set atomically so SetCleanup can be called from any goroutine
@@ -64,7 +64,7 @@ func (s *Par2CleanupStage) Run(ctx context.Context, job *Job) error {
 		logf(ctx, log, job, slog.LevelInfo, "Keeping par2 files (unpack failed)")
 		return nil
 	}
-	if len(job.DeferredPar2Sets) > 0 && !job.DeferredPar2Verified {
+	if len(job.deferredPar2Sets) > 0 && !job.deferredPar2Verified {
 		// A deferred set protects extracted files that extracted_repair has
 		// not verified against it, and the archive's own checksums have gaps
 		// (see ExtractedRepairStage). It is the one thing that still can.

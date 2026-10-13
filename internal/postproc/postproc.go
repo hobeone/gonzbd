@@ -2,7 +2,6 @@ package postproc
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io/fs"
@@ -407,7 +406,7 @@ func buildSummaryEntry(job *Job) StageLogEntry {
 	}
 	totalDuration := pipelineEnd.Sub(pipelineStart)
 	finalStatus := "Completed"
-	if job.FailMsg != "" || job.ParError || job.UnpackError {
+	if job.Failed() {
 		finalStatus = "Failed"
 	}
 	header := fmt.Sprintf("Pipeline %s in %.1fs", finalStatus, totalDuration.Seconds())
@@ -460,6 +459,14 @@ func (p *PostProcessor) runStage(ctx context.Context, stage Stage, job *Job) (St
 		}, false
 	}
 
+	if _, deletes := stage.(payloadDeleter); deletes && job.Failed() {
+		return StageLogEntry{
+			Stage:   stage.Name(),
+			Started: time.Now(),
+			Lines:   []string{"Skipped: the job has failed; its files are kept for a retry"},
+		}, false
+	}
+
 	entry := StageLogEntry{
 		Stage:   stage.Name(),
 		Started: time.Now(),
@@ -478,7 +485,8 @@ func (p *PostProcessor) runStage(ctx context.Context, stage Stage, job *Job) (St
 	if err != nil {
 		// Stage errors are recorded but do NOT abort the pipeline.
 		// Each stage self-gates based on job flags (ParError, UnpackError,
-		// FailMsg) to decide whether to skip when a prior stage has failed.
+		// FailMsg) to decide whether to skip when a prior stage has failed;
+		// a payloadDeleter is skipped above instead.
 		// This matches Python's behavior where ALL stages run (including
 		// the user script) even when repair/unpack fails — the script
 		// receives the failure status code so automation tools (Sonarr,
@@ -688,7 +696,7 @@ func (p *PostProcessor) recoverUnpackFinalDir(ctx context.Context, job *Job) err
 		return nil //nolint:nilerr // no _UNPACK_ directory to recover
 	}
 	if data, err := os.ReadFile(filepath.Join(unpackDir, pendingDeletionsFile)); err == nil { //nolint:gosec // sidecar is pendingDeletionsFile inside unpackDir
-		if err := json.Unmarshal(data, &job.PendingDeletions); err == nil {
+		if err := job.loadPendingDeletions(data); err == nil {
 			prevDir := job.DownloadDir
 			job.DownloadDir = unpackDir
 			(&FinalizeStage{Log: p.log}).deletePending(ctx, p.log, job)

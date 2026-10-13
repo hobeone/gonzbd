@@ -7,6 +7,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -79,7 +80,7 @@ const (
 	// observation of Layout B. Its basis is the conditions in deferredSets.
 	// A job where only some sets are deferred records the verdict on the
 	// others instead, and repair skips the deferred ones
-	// (Job.DeferredPar2Sets).
+	// (Job.deferredPar2Sets).
 	QuickCheckUnidentified
 )
 
@@ -125,7 +126,8 @@ func (o QuickCheckOutcome) String() string {
 // Stage is the interface every post-processing stage must implement.
 // Stages are registered once at construction time and run in that order
 // for every job. Stage errors are recorded but the pipeline continues; each
-// stage self-gates based on job flags (ParError, UnpackError).
+// stage self-gates based on job flags (ParError, UnpackError), except that
+// runStage itself skips a payloadDeleter on a failed job.
 type Stage interface {
 	// Name returns a short, stable identifier used in log output and the
 	// StageLog.  It should be lowercase with no spaces (e.g. "repair",
@@ -180,6 +182,14 @@ type Job struct {
 	outputFilesSet bool
 	outputFilesErr error
 
+	// scriptLog and scriptLine are the user script's captured output and its
+	// one-line summary, both empty when no script ran. recordScriptOutput is
+	// their only writer (`git grep -nE 'j[.]script(Log|Line) = ' -- '*.go' ':!*_test.go'`
+	// finds 2 lines, both in it); history files them as script_log and
+	// script_line.
+	scriptLog  string
+	scriptLine string
+
 	// Sanitize defines the naming replacement options for this job.
 	Sanitize fsutil.SanitizeOptions
 
@@ -201,28 +211,30 @@ type Job struct {
 
 	// ParError is set by the repair and extracted_repair stages, UnpackError
 	// by the unpack stage. unpack reads ParError; extracted_repair,
-	// par2_cleanup, unwanted_cleanup, finalize and script read both, and
-	// scripts surface them via the pp_status argv and SAB_PP_STATUS env var.
+	// par2_cleanup and script read both, and Failed reads both with FailMsg.
+	// Scripts surface them via the pp_status argv and SAB_PP_STATUS env var.
 	ParError    bool
 	UnpackError bool
 
-	// QuickCheck is what the quickcheck stage was able to determine about
-	// this job's file CRCs. See QuickCheckOutcome.
-	QuickCheck QuickCheckOutcome
+	// quickCheck is what the quickcheck stage was able to determine about
+	// this job's file CRCs. See QuickCheckOutcome. QuickCheckStage is its
+	// only writer: `git grep -n '[.]quickCheck =' -- '*.go' ':!*_test.go'`
+	// finds 5 lines, all in stage_quickcheck.go.
+	quickCheck QuickCheckOutcome
 
-	// DeferredPar2Sets names the par2 sets (par2.Set.Name) that quickcheck
+	// deferredPar2Sets names the par2 sets (par2.Set.Name) that quickcheck
 	// judged to protect files unpack has yet to extract (deferredSets).
 	// repair skips them and extracted_repair runs them once unpack has
 	// finished. QuickCheckStage.recordVerdict is its only writer:
-	// `git grep -n '[.]DeferredPar2Sets =' -- '*.go' ':!*_test.go'` finds 1 line.
-	DeferredPar2Sets []string
+	// `git grep -n '[.]deferredPar2Sets =' -- '*.go' ':!*_test.go'` finds 1 line.
+	deferredPar2Sets []string
 
-	// DeferredPar2Verified reports that extracted_repair verified, or
-	// repaired, every set in DeferredPar2Sets against the extracted files.
+	// deferredPar2Verified reports that extracted_repair verified, or
+	// repaired, every set in deferredPar2Sets against the extracted files.
 	// par2_cleanup keeps the par2 files of a job with deferred sets until
 	// this is true. ExtractedRepairStage.Run is its only writer:
-	// `git grep -n '[.]DeferredPar2Verified =' -- '*.go' ':!*_test.go'` finds 1 line.
-	DeferredPar2Verified bool
+	// `git grep -n '[.]deferredPar2Verified =' -- '*.go' ':!*_test.go'` finds 1 line.
+	deferredPar2Verified bool
 
 	// OutputLines is a scratch buffer that stages populate with tool output
 	// lines (e.g. par2 stdout, unrar output). runStage moves these into
@@ -262,15 +274,19 @@ type Job struct {
 	// normally; this is expected, not an error.
 	DirectUnpackSkipped map[string]directunpack.SkippedSet
 
-	// PendingDeletions lists paths relative to DownloadDir of extracted
+	// pendingDeletions lists paths relative to DownloadDir of extracted
 	// archives (from UnpackStage) and par2/backup files (from Par2CleanupStage)
 	// that are kept in DownloadDir until FinalizeStage has moved the job to
 	// FinalDir (#768), so a crash before finalize leaves the download directory
 	// intact for a rerun. Intermediate stages (extracted_repair,
 	// sample_cleanup, recover_par2_names, deobfuscate, unwanted_cleanup,
 	// extension_cleanup) skip them, and FinalizeStage deletes them once the
-	// final move succeeds.
-	PendingDeletions []string
+	// final move succeeds. recordPendingDeletion, loadPendingDeletions and
+	// clearPendingDeletions are its writers
+	// (`git grep -n 'j[.]pendingDeletions = ' -- '*.go' ':!*_test.go'` finds
+	// 2 lines, both in stages.go; loadPendingDeletions records through
+	// recordPendingDeletion).
+	pendingDeletions []string
 }
 
 // StageLogEntry records the outcome of a single stage execution.
@@ -319,6 +335,34 @@ func (e StageLogEntry) MarshalJSON() ([]byte, error) {
 	return json.Marshal(j)
 }
 
+// Failed reports whether the job has failed: repair or unpack failed, or a
+// stage or the caller set FailMsg. It is the one definition of a failed job.
+// Its readers are finalize, the summary headline, runStage's payloadDeleter
+// gate and the history entry (`git grep -n '[.]Failed()' -- '*.go' ':!*_test.go'`
+// finds 4 lines).
+func (j *Job) Failed() bool {
+	return j.ParError || j.UnpackError || j.FailMsg != ""
+}
+
+// payloadDeleter marks a stage that removes files from DownloadDir as it runs,
+// rather than recording them in pendingDeletions for finalize. runStage does
+// not run such a stage for a failed job (Job.Failed): a failed job's
+// directory stays as it is, for a retry to resume from (#907). The marked
+// stages are sample_cleanup, unwanted_cleanup and extension_cleanup
+// (`git grep -n '^func .* deletesPayload()' -- '*.go'` finds 3 lines).
+type payloadDeleter interface {
+	Stage
+	deletesPayload()
+}
+
+// ScriptLog returns the user script's combined stdout and stderr, as
+// captured up to MaxLogBytes, or "" when no script ran.
+func (j *Job) ScriptLog() string { return j.scriptLog } //nocover: single-field getter
+
+// ScriptLine returns the one-line summary of the user script's run
+// (formatScriptLine), or "" when no script ran.
+func (j *Job) ScriptLine() string { return j.scriptLine } //nocover: single-field getter
+
 // HasRecord reports whether this post-processing job wraps a download job record.
 func (j *Job) HasRecord() bool {
 	return j.Job != nil
@@ -327,7 +371,7 @@ func (j *Job) HasRecord() bool {
 // par2Deferred reports whether quickcheck deferred the named par2 set until
 // after unpack.
 func (j *Job) par2Deferred(set string) bool {
-	return slices.Contains(j.DeferredPar2Sets, set)
+	return slices.Contains(j.deferredPar2Sets, set)
 }
 
 // pendingDeletionRel normalizes path to a clean path relative to j.DownloadDir,
@@ -361,20 +405,42 @@ func (j *Job) recordPendingDeletion(path string) bool {
 	if !ok {
 		return false
 	}
-	if !slices.Contains(j.PendingDeletions, rel) {
-		j.PendingDeletions = append(j.PendingDeletions, rel)
+	if !slices.Contains(j.pendingDeletions, rel) {
+		j.pendingDeletions = append(j.pendingDeletions, rel)
 	}
 	return true
+}
+
+// loadPendingDeletions replaces the recorded list with the one finalize wrote
+// to its sidecar (a JSON array of paths), recording each entry through
+// recordPendingDeletion so an entry outside DownloadDir is dropped. On a
+// decode error the list is left as it was.
+func (j *Job) loadPendingDeletions(data []byte) error {
+	var paths []string
+	if err := json.Unmarshal(data, &paths); err != nil {
+		return fmt.Errorf("decode pending deletions: %w", err)
+	}
+	j.clearPendingDeletions()
+	for _, p := range paths {
+		j.recordPendingDeletion(p)
+	}
+	return nil
+}
+
+// clearPendingDeletions forgets every recorded path, once finalize has
+// deleted them.
+func (j *Job) clearPendingDeletions() {
+	j.pendingDeletions = nil
 }
 
 // isPendingDeletion reports whether path (relative to DownloadDir or absolute
 // within DownloadDir) has been recorded for deletion at finalize (#768).
 func (j *Job) isPendingDeletion(path string) bool {
-	if len(j.PendingDeletions) == 0 {
+	if len(j.pendingDeletions) == 0 {
 		return false
 	}
 	rel, ok := j.pendingDeletionRel(path)
-	return ok && slices.Contains(j.PendingDeletions, rel)
+	return ok && slices.Contains(j.pendingDeletions, rel)
 }
 
 // outputFileList returns the list finalize recorded, or the error it recorded
@@ -390,14 +456,14 @@ func (j *Job) outputFileList() ([]string, error) {
 	return j.outputFiles, nil
 }
 
-// pendingDeletionSet returns a set of the relative paths in PendingDeletions,
+// pendingDeletionSet returns a set of the relative paths in pendingDeletions,
 // or nil when none are recorded.
 func (j *Job) pendingDeletionSet() map[string]struct{} {
-	if len(j.PendingDeletions) == 0 {
+	if len(j.pendingDeletions) == 0 {
 		return nil
 	}
-	set := make(map[string]struct{}, len(j.PendingDeletions))
-	for _, rel := range j.PendingDeletions {
+	set := make(map[string]struct{}, len(j.pendingDeletions))
+	for _, rel := range j.pendingDeletions {
 		set[rel] = struct{}{}
 	}
 	return set

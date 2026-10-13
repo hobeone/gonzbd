@@ -19,7 +19,7 @@ import (
 // It is the backstop for what the ingest check cannot see: a file inside an
 // archive, a file whose NZB subject was obfuscated, a file par2 rebuilt or
 // renamed. It judges every file under DownloadDir except files recorded in
-// Job.PendingDeletions (#768; skipped by moveFileByFile and unlinked by
+// Job.pendingDeletions (#768; skipped by moveFileByFile and unlinked by
 // FinalizeStage.deletePending). DownloadDir is the download directory joined
 // with the job's
 // name, and no two registered jobs share a name: the dispatcher refuses one
@@ -34,9 +34,9 @@ import (
 //   - the rules' action is off;
 //   - the job is approved (unwanted.StateApproved): the user accepted the
 //     files, and SABnzbd's unwanted_ext == 2 skips its removal the same way;
-//   - the job has already failed (ParError, UnpackError or FailMsg): its
-//     files stay in the download area for a retry, and it delivers nothing
-//     to the complete directory.
+//   - the job has already failed (Job.Failed): runStage does not run a
+//     payloadDeleter for one, so its files stay in the download area for a
+//     retry, and it delivers nothing to the complete directory.
 //
 // It runs at every PP level, unlike SABnzbd, which removes only after its
 // unpack step: a download-only job delivers its files to the complete
@@ -59,14 +59,13 @@ func NewUnwantedCleanupStage(rules func() (unwanted.Rules, error)) *UnwantedClea
 // Name implements Stage.
 func (*UnwantedCleanupStage) Name() string { return "unwanted_cleanup" }
 
+func (*UnwantedCleanupStage) deletesPayload() {} //nocover: payloadDeleter marker, no body
+
 // Run implements Stage.
 func (s *UnwantedCleanupStage) Run(ctx context.Context, job *Job) error {
 	log := s.logger(job)
 	if job.Unwanted == unwanted.StateApproved {
 		logf(ctx, log, job, slog.LevelInfo, "Skipped: the job was approved with its unwanted extensions")
-		return nil
-	}
-	if job.ParError || job.UnpackError || job.FailMsg != "" {
 		return nil
 	}
 	rules, err := s.rules()

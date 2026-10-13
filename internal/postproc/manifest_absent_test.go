@@ -51,7 +51,7 @@ func TestBuildDownloadFileList_AbsentManifestExplainsItself(t *testing.T) {
 //
 // The outcome is the load-bearing part. The error goes into the stage log and
 // the history entry, but the repair stage never sees it — it reads
-// job.QuickCheck. Reporting "nothing to check here" is what let DirectUnpack's
+// job.quickCheck. Reporting "nothing to check here" is what let DirectUnpack's
 // success skip par2 for a job nothing had verified (#294).
 //
 // Run sets Inconclusive before calling this, once it knows par2 sets exist
@@ -59,7 +59,7 @@ func TestBuildDownloadFileList_AbsentManifestExplainsItself(t *testing.T) {
 // that standing rather than narrowing to a verdict it did not earn.
 func TestVerifyJobCRCs_AbsentManifestErrorsRatherThanClaimingVerified(t *testing.T) {
 	job := evictedJob(t)
-	job.QuickCheck = QuickCheckInconclusive
+	job.quickCheck = QuickCheckInconclusive
 	q := &QuickCheckStage{}
 
 	err := q.recordVerdict(context.Background(), slog.Default(), job, []par2.Set{}, par2.Assessment{})
@@ -67,7 +67,7 @@ func TestVerifyJobCRCs_AbsentManifestErrorsRatherThanClaimingVerified(t *testing
 	if err == nil {
 		t.Fatal("recordVerdict returned nil with no manifest; the stage log would record a clean pass over nothing")
 	}
-	if job.QuickCheck != QuickCheckInconclusive {
-		t.Errorf("QuickCheck = %s, want inconclusive: downstream cannot tell a verification that could not run from one that had nothing to run on", job.QuickCheck)
+	if job.quickCheck != QuickCheckInconclusive {
+		t.Errorf("QuickCheck = %s, want inconclusive: downstream cannot tell a verification that could not run from one that had nothing to run on", job.quickCheck)
 	}
 }

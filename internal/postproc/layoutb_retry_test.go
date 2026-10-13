@@ -11,11 +11,11 @@ import (
 
 // par2StagesCleanup is par2Stages with unpack's archive cleanup set as given.
 func par2StagesCleanup(cleanup bool) []Stage {
-	up := NewUnpackStageWith(unpack.Options{UseGoRAR: true, UseGo7z: true}, cleanup)
+	up := appliedUnpackStage(UnpackConfig{Base: unpack.Options{UseGoRAR: true, UseGo7z: true}, Cleanup: cleanup})
 	up.SetEnabled(true)
 	qc := &QuickCheckStage{Log: slog.New(slog.DiscardHandler), Unpack: up}
 	qc.SetEnabled(true)
-	repair := &RepairStage{UseGoPar2: true, Log: slog.New(slog.DiscardHandler)}
+	repair := appliedRepairStage(RepairConfig{UseGoPar2: true}, slog.New(slog.DiscardHandler))
 	extracted := NewExtractedRepairStage(repair)
 	extracted.Log = slog.New(slog.DiscardHandler)
 	par2Cleanup := NewPar2CleanupStage(true)
@@ -70,7 +70,7 @@ func TestLayoutB_RetryWithTheHeldVolumeRepairsTheExtraction(t *testing.T) {
 
 			if retry.ParError || retry.UnpackError {
 				t.Fatalf("retry: ParError=%v UnpackError=%v (QuickCheck=%s); stage errors: %v",
-					retry.ParError, retry.UnpackError, retry.QuickCheck, errs)
+					retry.ParError, retry.UnpackError, retry.quickCheck, errs)
 			}
 			assertFeatureExtracted(t, dir)
 			if _, err := os.Stat(filepath.Join(dir, "release.rar")); (err == nil) != tc.archiveKept {

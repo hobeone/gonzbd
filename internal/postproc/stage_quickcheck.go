@@ -56,7 +56,7 @@ func (q *QuickCheckStage) Run(ctx context.Context, job *Job) error {
 		// par2 sets is unknown. Claiming there was nothing to check would let
 		// the repair stage's DirectUnpack shortcut skip par2 on the strength
 		// of a question that was never answered.
-		job.QuickCheck = QuickCheckInconclusive
+		job.quickCheck = QuickCheckInconclusive
 		logf(ctx, log, job, slog.LevelWarn, "[quickcheck] Failed to find par2 files: %v", err)
 		return nil // non-fatal
 	}
@@ -77,7 +77,7 @@ func (q *QuickCheckStage) Run(ctx context.Context, job *Job) error {
 	// sets. Now the conservative state is the one you get for free and the
 	// permissive ones require saying so, which makes the next early return
 	// added below fail safe by construction rather than by review.
-	job.QuickCheck = QuickCheckInconclusive
+	job.quickCheck = QuickCheckInconclusive
 
 	logf(ctx, log, job, slog.LevelInfo, "[quickcheck] Found %d par2 set(s), checking for subdirectory entries", len(sets))
 
@@ -179,7 +179,7 @@ func (q *QuickCheckStage) recordVerdict(ctx context.Context, log *slog.Logger, j
 	// identification proved each file to be, before any of the moves above
 	// happened.
 	deferred := q.deferredSets(ctx, log, job, a.ID)
-	job.DeferredPar2Sets = deferred
+	job.deferredPar2Sets = deferred
 	skip := make(map[string]bool, len(deferred))
 	for _, name := range deferred {
 		skip[name] = true
@@ -241,17 +241,17 @@ func (q *QuickCheckStage) recordVerdict(ctx context.Context, log *slog.Logger, j
 
 	switch {
 	case len(deferred) > 0 && len(deferred) == len(setsWithEntries(a.ID)):
-		job.QuickCheck = QuickCheckUnidentified
+		job.quickCheck = QuickCheckUnidentified
 		logf(ctx, log, job, slog.LevelInfo,
 			"[quickcheck] Every par2 set protects files a delivered RAR/7z archive holds — repair is skipped, and par2 "+
 				"verifies the extracted files after unpack")
 	case unverifiable > 0:
-		job.QuickCheck = QuickCheckDamaged
+		job.quickCheck = QuickCheckDamaged
 		logf(ctx, log, job, slog.LevelInfo,
 			"[quickcheck] %d/%d par2-tracked files verified OK, %d file(s) need par2 verification — repair stage will run",
 			crcResult.Matched, crcResult.Matched+unverifiable, unverifiable)
 	case crcResult.Checked > 0:
-		job.QuickCheck = QuickCheckClean
+		job.quickCheck = QuickCheckClean
 		logf(ctx, log, job, slog.LevelInfo,
 			"[quickcheck] All %d par2-tracked files verified OK — skipping par2 repair",
 			crcResult.Matched)

@@ -201,8 +201,8 @@ func TestQuickCheckStage_Run(t *testing.T) {
 		t.Fatalf("Run failed: %v", err)
 	}
 
-	if job.QuickCheck != QuickCheckClean {
-		t.Errorf("QuickCheck = %s, want clean", job.QuickCheck)
+	if job.quickCheck != QuickCheckClean {
+		t.Errorf("QuickCheck = %s, want clean", job.quickCheck)
 	}
 
 	linesStr := strings.Join(job.OutputLines, "\n")
@@ -264,7 +264,7 @@ func TestQuickCheckStage_CRCErrors(t *testing.T) {
 			t.Fatalf("Run failed: %v", err)
 		}
 
-		if job.QuickCheck == QuickCheckClean {
+		if job.quickCheck == QuickCheckClean {
 			t.Error("QuickCheck = clean on a CRC mismatch")
 		}
 
@@ -318,7 +318,7 @@ func TestQuickCheckStage_CRCErrors(t *testing.T) {
 			t.Fatalf("Run failed: %v", err)
 		}
 
-		if job.QuickCheck == QuickCheckClean {
+		if job.quickCheck == QuickCheckClean {
 			t.Error("QuickCheck = clean on a missing CRC")
 		}
 
@@ -371,7 +371,7 @@ func TestQuickCheckStage_CRCErrors(t *testing.T) {
 			t.Fatalf("Run failed: %v", err)
 		}
 
-		if job.QuickCheck == QuickCheckClean {
+		if job.quickCheck == QuickCheckClean {
 			t.Error("QuickCheck = clean despite unverified files")
 		}
 
