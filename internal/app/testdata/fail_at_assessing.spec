@@ -18,7 +18,7 @@ run ^TestAdmitUnlessAssessing_DefersToTheVisit$
 
 [maybeFinalize does not defer]
 file internal/app/app.go
-run ^TestFail_WithAssessingPending_DefersToTheWorkerTheTickLaunches$
+run ^TestMaybeFinalize_AnEmptyReasonAtAssessing_IsNoFailure$
 --- anchor
 		return app.finalizeRegistered(j, failMsg, true)
 --- replace
