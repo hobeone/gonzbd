@@ -22,9 +22,9 @@ import (
 type UnpackStage struct {
 	// toggle provides the thread-safe SetEnabled/enabled flag.
 	toggle
-	// mu protects baseOpts, permissions, passwordFile, enableFileJoin,
-	// enableTar and enableRecursive. Apply replaces them together, from the
-	// API goroutine while a job runs.
+	// mu protects baseOpts, permissions, passwordFile, types and
+	// enableRecursive. Apply replaces them together, from the API goroutine
+	// while a job runs.
 	mu sync.RWMutex
 	// baseOpts holds config-driven extraction options (tool paths, flags).
 	// The job's password is merged at runtime.
@@ -43,15 +43,10 @@ type UnpackStage struct {
 	// passwordFile is the path to a text file with one password per line.
 	// These are appended after per-job passwords during extraction.
 	passwordFile string
-	// enableFileJoin enables split file joining (.001/.002).
-	// When false, SplitArchive types are skipped. The config default
-	// (postproc.enable_filejoin) is true; the stage's zero value is false.
-	enableFileJoin bool
-	// enableTar enables plain .tar extraction. When false, TarArchive
-	// types are skipped entirely (matching the enableFileJoin pattern).
-	// The config default (postproc.enable_tar) is true; the stage's zero
-	// value is false.
-	enableTar bool
+	// types is the set of archive types the stage extracts. The config
+	// defaults (postproc.enable_*) enable all four; the stage's zero value
+	// enables none.
+	types archiveTypes
 	// enableRecursive enables recursive unpacking (re-scan after each
 	// pass, up to maxUnpackDepth). When false, only one pass runs.
 	enableRecursive bool
@@ -78,10 +73,37 @@ type UnpackConfig struct {
 	Base            unpack.Options
 	Permissions     string
 	PasswordFile    string
+	EnableUnrar     bool
+	Enable7zip      bool
 	EnableFileJoin  bool
 	EnableTar       bool
 	EnableRecursive bool
 	Cleanup         bool
+}
+
+// archiveTypes holds one flag per archive type the unpack stage can extract,
+// from postproc.enable_unrar, enable_7zip, enable_filejoin and enable_tar.
+type archiveTypes struct {
+	rar, sevenZip, fileJoin, tar bool
+}
+
+// allows reports whether archives of type t are extracted. extractArchive
+// consults it before running an extractor, and quickcheck's
+// heldArchiveMembers reads it through UnpackStage.extracts. An unrecognised
+// type is not allowed.
+func (at archiveTypes) allows(t unpack.ArchiveType) bool {
+	switch t {
+	case unpack.RarArchive:
+		return at.rar
+	case unpack.SevenZipArchive:
+		return at.sevenZip
+	case unpack.SplitArchive:
+		return at.fileJoin
+	case unpack.TarArchive:
+		return at.tar
+	default:
+		return false
+	}
 }
 
 // Apply atomically replaces all runtime-mutable state from c under a single
@@ -95,8 +117,7 @@ func (u *UnpackStage) Apply(c UnpackConfig) {
 	u.baseOpts = c.Base
 	u.permissions = c.Permissions
 	u.passwordFile = c.PasswordFile
-	u.enableFileJoin = c.EnableFileJoin
-	u.enableTar = c.EnableTar
+	u.types = archiveTypes{rar: c.EnableUnrar, sevenZip: c.Enable7zip, fileJoin: c.EnableFileJoin, tar: c.EnableTar}
 	u.enableRecursive = c.EnableRecursive
 }
 
@@ -109,11 +130,21 @@ func (u *UnpackStage) Config() UnpackConfig {
 		Base:            u.baseOpts,
 		Permissions:     u.permissions,
 		PasswordFile:    u.passwordFile,
-		EnableFileJoin:  u.enableFileJoin,
-		EnableTar:       u.enableTar,
+		EnableUnrar:     u.types.rar,
+		Enable7zip:      u.types.sevenZip,
+		EnableFileJoin:  u.types.fileJoin,
+		EnableTar:       u.types.tar,
 		EnableRecursive: u.enableRecursive,
 		Cleanup:         u.cleanup.Load(),
 	}
+}
+
+// extracts reports whether the settings the last Apply installed extract
+// archives of type t (archiveTypes.allows). Thread-safe.
+func (u *UnpackStage) extracts(t unpack.ArchiveType) bool {
+	u.mu.RLock()
+	defer u.mu.RUnlock()
+	return u.types.allows(t)
 }
 
 // SetMinFreeSpace sets the free space, in bytes, an extraction must leave on
@@ -158,8 +189,7 @@ func (u *UnpackStage) Run(ctx context.Context, job *Job) error {
 	opts := u.baseOpts
 	permissions := u.permissions
 	passwordFile := u.passwordFile
-	enableFileJoin := u.enableFileJoin
-	enableTar := u.enableTar
+	types := u.types
 	enableRecursive := u.enableRecursive
 	u.mu.RUnlock()
 	opts.MinFreeSpace = u.minFreeSpace.Load()
@@ -216,7 +246,7 @@ func (u *UnpackStage) Run(ctx context.Context, job *Job) error {
 			logf(ctx, log, job, slog.LevelInfo, "  %s: %s (%d parts)", archiveTypeName(a.Type), a.MainFile, len(a.Parts))
 		}
 
-		extractedAny := u.extractPendingArchives(ctx, log, job, pending, processed, opts, enableFileJoin, enableTar, &firstErr, &allSuccessful)
+		extractedAny := u.extractPendingArchives(ctx, log, job, pending, processed, opts, types, &firstErr, &allSuccessful)
 		// If nothing was extracted this pass, no point re-scanning.
 		if !extractedAny {
 			break
@@ -239,8 +269,7 @@ func (u *UnpackStage) extractPendingArchives(
 	pending []unpack.Archive,
 	processed map[string]bool,
 	opts unpack.Options,
-	enableFileJoin bool,
-	enableTar bool,
+	types archiveTypes,
 	firstErr *error, //nolint:gocritic // ptrToRefParam: pointer required to accumulate first error across calls
 	allSuccessful *[]unpack.Archive,
 ) bool {
@@ -248,7 +277,7 @@ func (u *UnpackStage) extractPendingArchives(
 	for _, a := range pending {
 		processed[a.MainFile] = true
 
-		res, attempted, err := u.extractArchive(ctx, log, job, a, opts, enableFileJoin, enableTar)
+		res, attempted, err := u.extractArchive(ctx, log, job, a, opts, types)
 		if !attempted {
 			// A skipped archive stays out of allSuccessful, so its parts are
 			// not queued for deletion, and it does not set extractedAny: it
@@ -358,32 +387,32 @@ func (u *UnpackStage) filterPending(archives []unpack.Archive, processed map[str
 
 // extractArchive executes extraction based on the archive type. It is where
 // an archive is decided to be skipped: attempted is false when no extractor
-// ran (its type is disabled or unrecognised), and the archive's bytes are then
-// untouched, so the caller must treat it as neither extracted nor failed.
-// err is nil whenever attempted is false.
-func (u *UnpackStage) extractArchive(ctx context.Context, log *slog.Logger, job *Job, a unpack.Archive, opts unpack.Options, enableFileJoin, enableTar bool) (res unpack.Result, attempted bool, err error) {
+// ran (its type is unrecognised, or types does not allow it), and the
+// archive's bytes are then untouched, so the caller must treat it as neither
+// extracted nor failed. err is nil whenever attempted is false.
+func (u *UnpackStage) extractArchive(ctx context.Context, log *slog.Logger, job *Job, a unpack.Archive, opts unpack.Options, types archiveTypes) (res unpack.Result, attempted bool, err error) {
+	var extract func() (unpack.Result, error)
 	switch a.Type {
 	case unpack.RarArchive:
-		res, err = extractRARArchive(ctx, log, job, a, opts)
+		extract = func() (unpack.Result, error) { return extractRARArchive(ctx, log, job, a, opts) }
 	case unpack.SevenZipArchive:
-		res, err = extractSevenZipArchive(ctx, log, job, a, opts)
+		extract = func() (unpack.Result, error) { return extractSevenZipArchive(ctx, log, job, a, opts) }
 	case unpack.SplitArchive:
-		if !enableFileJoin {
-			logf(ctx, log, job, slog.LevelInfo, "Skipping file join (disabled): %s", filepath.Base(a.MainFile))
-			return unpack.Result{}, false, nil
+		extract = func() (unpack.Result, error) {
+			logf(ctx, log, job, slog.LevelInfo, "Joining split files: %s (%d parts)", filepath.Base(a.MainFile), len(a.Parts))
+			return unpack.FileJoin(ctx, log, a, job.DownloadDir, opts)
 		}
-		logf(ctx, log, job, slog.LevelInfo, "Joining split files: %s (%d parts)", filepath.Base(a.MainFile), len(a.Parts))
-		res, err = unpack.FileJoin(ctx, log, a, job.DownloadDir, opts)
 	case unpack.TarArchive:
-		if !enableTar {
-			logf(ctx, log, job, slog.LevelInfo, "Skipping tar archive (disabled): %s", filepath.Base(a.MainFile))
-			return unpack.Result{}, false, nil
-		}
-		res, err = extractTarArchive(ctx, log, job, a, opts)
+		extract = func() (unpack.Result, error) { return extractTarArchive(ctx, log, job, a, opts) }
 	default:
 		logf(ctx, log, job, slog.LevelInfo, "Skipping unrecognised archive type: %s", filepath.Base(a.MainFile))
 		return unpack.Result{}, false, nil
 	}
+	if !types.allows(a.Type) {
+		logf(ctx, log, job, slog.LevelInfo, "Skipping %s archive (disabled): %s", archiveTypeName(a.Type), filepath.Base(a.MainFile))
+		return unpack.Result{}, false, nil
+	}
+	res, err = extract()
 	return res, true, err
 }
 

@@ -183,7 +183,7 @@ func buildStages(cfg *config.Config, version string, log *slog.Logger, probe bin
 	unpackStage.Log = ppLog
 	unpackStage.Apply(unpackConfigFromPP(pp, probe, cmdCfg, extraUnrarArgs))
 	unpackStage.SetMinFreeSpace(int64(snap.Downloads.MinFreeSpace))
-	unpackStage.SetEnabled(pp.EnableUnrar || pp.Enable7zip || pp.EnableFileJoin || pp.EnableTar)
+	unpackStage.SetEnabled(unpackStageEnabled(pp))
 	stages = append(stages, unpackStage)
 	// Quickcheck lets repair defer to unpack only when unpack will run.
 	qcStage.Unpack = unpackStage

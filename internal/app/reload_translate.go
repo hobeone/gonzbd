@@ -37,11 +37,20 @@ func unpackConfigFromPP(pp config.PostProcConfig, probe binaryProbe, cmdCfg cmdu
 		},
 		Permissions:     pp.Permissions,
 		PasswordFile:    pp.PasswordFile,
+		EnableUnrar:     pp.EnableUnrar,
+		Enable7zip:      pp.Enable7zip,
 		EnableFileJoin:  pp.EnableFileJoin,
 		EnableTar:       pp.EnableTar,
 		EnableRecursive: pp.EnableRecursive,
 		Cleanup:         pp.EnableRarCleanup,
 	}
+}
+
+// unpackStageEnabled reports whether the unpack stage runs at all: when any
+// archive type is enabled. Which types it extracts is UnpackConfig's per-type
+// toggles, so this only spares a scan when none is.
+func unpackStageEnabled(pp config.PostProcConfig) bool {
+	return pp.EnableUnrar || pp.Enable7zip || pp.EnableFileJoin || pp.EnableTar
 }
 
 // repairConfigFromPP maps a PostProcConfig snapshot to the RepairStage's own

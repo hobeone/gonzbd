@@ -9,9 +9,12 @@ import (
 // PostProcConfig controls archive extraction, par2 repair, and related
 // post-download behavior. See spec §9.4.
 type PostProcConfig struct {
-	// EnableUnrar enables RAR extraction.
+	// EnableUnrar enables RAR extraction, in the unpack stage and by
+	// DirectUnpack. When false, the unpack stage skips RAR sets and they are
+	// delivered as they are.
 	EnableUnrar bool `yaml:"enable_unrar" json:"enable_unrar"`
-	// Enable7zip enables 7z extraction.
+	// Enable7zip enables 7z extraction. When false, the unpack stage skips 7z
+	// archives and they are delivered as they are.
 	Enable7zip bool `yaml:"enable_7zip" json:"enable_7zip"`
 	// EnableTar enables plain .tar extraction (not compressed variants
 	// like .tar.gz/.tgz). Matches SABnzbd's cfg.enable_tar(). Default true.

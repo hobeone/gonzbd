@@ -58,6 +58,53 @@ func TestUnpackConfigFromPP_ForwardsProbeUnrarVersion(t *testing.T) {
 	}
 }
 
+// TestUnpackConfigFromPP_ForwardsArchiveTypeToggles pins that each
+// postproc.enable_* archive toggle reaches its own UnpackConfig field: with
+// one turned off and the rest on, exactly that one arrives off (#947).
+func TestUnpackConfigFromPP_ForwardsArchiveTypeToggles(t *testing.T) {
+	t.Parallel()
+	all := config.PostProcConfig{EnableUnrar: true, Enable7zip: true, EnableFileJoin: true, EnableTar: true}
+	cases := []struct {
+		name string
+		off  func(*config.PostProcConfig)
+		want [4]bool // unrar, 7zip, filejoin, tar
+	}{
+		{"enable_unrar", func(p *config.PostProcConfig) { p.EnableUnrar = false }, [4]bool{false, true, true, true}},
+		{"enable_7zip", func(p *config.PostProcConfig) { p.Enable7zip = false }, [4]bool{true, false, true, true}},
+		{"enable_filejoin", func(p *config.PostProcConfig) { p.EnableFileJoin = false }, [4]bool{true, true, false, true}},
+		{"enable_tar", func(p *config.PostProcConfig) { p.EnableTar = false }, [4]bool{true, true, true, false}},
+	}
+	for _, tc := range cases {
+		pp := all
+		tc.off(&pp)
+		c := unpackConfigFromPP(pp, binaryProbe{}, cmdutil.CmdConfig{}, nil)
+		if got := [4]bool{c.EnableUnrar, c.Enable7zip, c.EnableFileJoin, c.EnableTar}; got != tc.want {
+			t.Errorf("%s off: (unrar, 7zip, filejoin, tar) = %v, want %v", tc.name, got, tc.want)
+		}
+	}
+}
+
+// TestUnpackStageEnabled_AnyArchiveType pins that the unpack stage runs when
+// any one archive type is enabled, and not when none is.
+func TestUnpackStageEnabled_AnyArchiveType(t *testing.T) {
+	t.Parallel()
+	if unpackStageEnabled(config.PostProcConfig{}) {
+		t.Error("unpackStageEnabled with every archive type off = true, want false")
+	}
+	for name, on := range map[string]func(*config.PostProcConfig){
+		"enable_unrar":    func(p *config.PostProcConfig) { p.EnableUnrar = true },
+		"enable_7zip":     func(p *config.PostProcConfig) { p.Enable7zip = true },
+		"enable_filejoin": func(p *config.PostProcConfig) { p.EnableFileJoin = true },
+		"enable_tar":      func(p *config.PostProcConfig) { p.EnableTar = true },
+	} {
+		var pp config.PostProcConfig
+		on(&pp)
+		if !unpackStageEnabled(pp) {
+			t.Errorf("unpackStageEnabled with only %s on = false, want true", name)
+		}
+	}
+}
+
 // TestRarDecodeWorkersPlumbing pins that rar_decode_workers reaches both the
 // post-process unpack options and the DirectUnpack options.
 func TestRarDecodeWorkersPlumbing(t *testing.T) {

@@ -1,6 +1,7 @@
 package postproc
 
 import (
+	"bytes"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -44,30 +45,47 @@ func TestUnpackStage_EnableFileJoinFalse_SkipsSplitArchive(t *testing.T) {
 }
 
 // TestUnpackStage_DisabledArchiveType_IsDelivered verifies that an archive
-// whose type is disabled (enable_filejoin or enable_tar off) is delivered
-// untouched: it is not reported as extracted, its parts are not queued for
+// whose type is disabled (enable_unrar, enable_7zip, enable_filejoin or
+// enable_tar off), with every other type enabled, is delivered untouched: it
+// is not extracted or reported as extracted, its parts are not queued for
 // deletion, the stage's permissions are not applied, and finalize moves it to
-// FinalDir (#943).
+// FinalDir (#943, #947).
 func TestUnpackStage_DisabledArchiveType_IsDelivered(t *testing.T) {
 	t.Parallel()
+	all := UnpackConfig{EnableUnrar: true, Enable7zip: true, EnableFileJoin: true, EnableTar: true}
 	cases := []struct {
-		name     string
-		files    []string
-		joinOn   bool
-		tarOn    bool
+		name  string
+		files []string
+		// fixture, when set, is the one file's content: a real archive, so
+		// an extraction that should not happen would succeed.
+		fixture  string
+		disable  func(*UnpackConfig)
 		mainBase string
+		// product is a file the archive extracts to, absent when skipped.
+		product string
 	}{
-		{name: "split with filejoin off", files: []string{"data.001", "data.002"}, tarOn: true, mainBase: "data"},
-		{name: "tar with tar off", files: []string{"x.tar"}, joinOn: true, mainBase: "x"},
+		{name: "split with filejoin off", files: []string{"data.001", "data.002"}, disable: func(c *UnpackConfig) { c.EnableFileJoin = false }, mainBase: "data", product: "data"},
+		{name: "tar with tar off", files: []string{"x.tar"}, disable: func(c *UnpackConfig) { c.EnableTar = false }, mainBase: "x"},
+		{name: "rar with unrar off", files: []string{"release.rar"}, fixture: par2LayoutFixture("layout_b", "release.rar"), disable: func(c *UnpackConfig) { c.EnableUnrar = false }, mainBase: "release", product: "feature.bin"},
+		{name: "7z with 7zip off", files: []string{"release.7z"}, fixture: par2LayoutFixture("layout_b", "release.7z"), disable: func(c *UnpackConfig) { c.Enable7zip = false }, mainBase: "release", product: "feature.bin"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			job, dir := stageJob(t)
 			job.FinalDir = filepath.Join(t.TempDir(), "final")
+			want := make(map[string][]byte, len(tc.files))
 			for _, f := range tc.files {
+				want[f] = []byte("payload " + f)
+				if tc.fixture != "" {
+					b, err := os.ReadFile(tc.fixture)
+					if err != nil {
+						t.Fatal(err)
+					}
+					want[f] = b
+				}
 				p := filepath.Join(dir, f)
-				if err := os.WriteFile(p, []byte("payload "+f), 0o644); err != nil {
+				if err := os.WriteFile(p, want[f], 0o644); err != nil {
 					t.Fatal(err)
 				}
 				// WriteFile's mode is masked by the umask; the mode
@@ -77,13 +95,13 @@ func TestUnpackStage_DisabledArchiveType_IsDelivered(t *testing.T) {
 				}
 			}
 
-			stage := appliedUnpackStage(UnpackConfig{
-				EnableFileJoin:  tc.joinOn,
-				EnableTar:       tc.tarOn,
-				EnableRecursive: true,
-				Cleanup:         true,
-				Permissions:     "700",
-			})
+			cfg := all
+			cfg.Base = unpack.Options{UseGoRAR: true, UseGo7z: true}
+			cfg.EnableRecursive = true
+			cfg.Cleanup = true
+			cfg.Permissions = "700"
+			tc.disable(&cfg)
+			stage := appliedUnpackStage(cfg)
 			stage.Log = slog.New(slog.DiscardHandler)
 			if err := stage.Run(t.Context(), job); err != nil {
 				t.Fatalf("unpack Run: %v", err)
@@ -93,6 +111,11 @@ func TestUnpackStage_DisabledArchiveType_IsDelivered(t *testing.T) {
 			}
 			if len(job.pendingDeletions) != 0 {
 				t.Errorf("pendingDeletions = %v; want none for a skipped archive", job.pendingDeletions)
+			}
+			if tc.product != "" {
+				if _, err := os.Lstat(filepath.Join(dir, tc.product)); err == nil {
+					t.Errorf("%s exists; a disabled archive type must not be extracted", tc.product)
+				}
 			}
 			for _, line := range job.OutputLines {
 				if strings.Contains(line, "Extracted "+tc.mainBase+" successfully") {
@@ -123,8 +146,8 @@ func TestUnpackStage_DisabledArchiveType_IsDelivered(t *testing.T) {
 					t.Errorf("%s not delivered to FinalDir: %v", f, err)
 					continue
 				}
-				if string(got) != "payload "+f {
-					t.Errorf("%s content = %q; want %q", f, got, "payload "+f)
+				if !bytes.Equal(got, want[f]) {
+					t.Errorf("%s content differs from what was delivered (%d bytes, want %d)", f, len(got), len(want[f]))
 				}
 			}
 		})

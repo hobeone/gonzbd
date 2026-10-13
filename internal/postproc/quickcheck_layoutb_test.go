@@ -57,10 +57,12 @@ func layoutBJob(t *testing.T, payloadName string) (*Job, string) {
 	return layoutJob(t, "layout_b", layoutBPar2, par2LayoutFixture("layout_b", "release.rar"), payloadName)
 }
 
-// layoutStages returns quickcheck wired to an enabled native unpack stage, as
-// buildStages wires them, and a native repair stage.
+// layoutStages returns quickcheck wired to an enabled native unpack stage with
+// every archive type on, as buildStages wires them under the config defaults,
+// and a native repair stage.
 func layoutStages() (*QuickCheckStage, *RepairStage, *UnpackStage) {
-	up := appliedUnpackStage(UnpackConfig{Base: unpack.Options{UseGoRAR: true, UseGo7z: true}, Cleanup: false})
+	up := appliedUnpackStage(UnpackConfig{Base: unpack.Options{UseGoRAR: true, UseGo7z: true},
+		EnableUnrar: true, Enable7zip: true, EnableFileJoin: true, EnableTar: true, Cleanup: false})
 	up.SetEnabled(true)
 	qc := &QuickCheckStage{Log: slog.New(slog.DiscardHandler), Unpack: up}
 	qc.SetEnabled(true)
@@ -229,6 +231,25 @@ func TestQuickCheckStage_UnidentifiedNeedsEveryCondition(t *testing.T) {
 		{name: "unpack not wired", layout: "layout_b", par2: layoutBPar2, src: layoutBRar, payload: "release.rar",
 			mutate: func(_ *testing.T, _ *Job, q *QuickCheckStage) { q.Unpack = nil }, want: QuickCheckDamaged},
 
+		// The archive holding the file must be one unpack extracts: with its
+		// type disabled it produces nothing for extracted_repair to verify.
+		// The other type staying enabled keeps the stage itself running.
+		{name: "rar with unrar disabled", layout: "layout_b", par2: layoutBPar2, src: layoutBRar, payload: "release.rar",
+			mutate: func(_ *testing.T, _ *Job, q *QuickCheckStage) {
+				editUnpackConfig(q.Unpack, func(c *UnpackConfig) { c.EnableUnrar = false })
+			},
+			want: QuickCheckDamaged},
+		{name: "7z with 7zip disabled", layout: "layout_b", par2: layoutBPar2, src: layoutB7z, payload: "release.7z",
+			mutate: func(_ *testing.T, _ *Job, q *QuickCheckStage) {
+				editUnpackConfig(q.Unpack, func(c *UnpackConfig) { c.Enable7zip = false })
+			},
+			want: QuickCheckDamaged},
+		{name: "7z with unrar disabled", layout: "layout_b", par2: layoutBPar2, src: layoutB7z, payload: "release.7z",
+			mutate: func(_ *testing.T, _ *Job, q *QuickCheckStage) {
+				editUnpackConfig(q.Unpack, func(c *UnpackConfig) { c.EnableUnrar = false })
+			},
+			want: QuickCheckUnidentified},
+
 		// An archive that does not name the protected file says nothing
 		// about it: here par2 protects feature.bin, and the only archive
 		// holds file1.txt, file2.txt and subdir/nested.txt.
@@ -375,7 +396,7 @@ func TestHeldArchiveMembers_ScanErrorIsNotHeld(t *testing.T) {
 
 	job, dir := stageJob(t)
 	job.DownloadDir = filepath.Join(dir, "does-not-exist")
-	if _, ok := heldArchiveMembers(t.Context(), slog.New(slog.DiscardHandler), job, nil); ok {
+	if _, ok := heldArchiveMembers(t.Context(), slog.New(slog.DiscardHandler), job, nil, allArchiveTypes.allows); ok {
 		t.Error("an unreadable directory was reported as holding the entries")
 	}
 }

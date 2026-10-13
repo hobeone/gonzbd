@@ -11,7 +11,7 @@ import (
 
 // par2StagesCleanup is par2Stages with unpack's archive cleanup set as given.
 func par2StagesCleanup(cleanup bool) []Stage {
-	up := appliedUnpackStage(UnpackConfig{Base: unpack.Options{UseGoRAR: true, UseGo7z: true}, Cleanup: cleanup})
+	up := appliedUnpackStage(UnpackConfig{Base: unpack.Options{UseGoRAR: true, UseGo7z: true}, EnableUnrar: true, Enable7zip: true, Cleanup: cleanup})
 	up.SetEnabled(true)
 	qc := &QuickCheckStage{Log: slog.New(slog.DiscardHandler), Unpack: up}
 	qc.SetEnabled(true)

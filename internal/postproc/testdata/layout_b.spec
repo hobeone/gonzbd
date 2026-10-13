@@ -75,6 +75,17 @@ file internal/postproc/stage_quickcheck.go
 		if a.Type == unpack.UnknownArchive {
 --- end
 
+# Condition 4's toggle filter dropped: a RAR with enable_unrar off (or a 7z
+# with enable_7zip off) holds the entry, so repair defers to an unpack that
+# will not extract it (#947).
+[an archive whose type is disabled counts as held]
+file internal/postproc/stage_quickcheck.go
+--- anchor
+		if !extracts(a.Type) {
+--- replace
+		if false {
+--- end
+
 [a listing error counts as held]
 file internal/postproc/stage_quickcheck.go
 --- anchor

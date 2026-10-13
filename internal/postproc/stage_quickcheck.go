@@ -286,8 +286,9 @@ func (q *QuickCheckStage) recordVerdict(ctx context.Context, log *slog.Logger, j
 //     an obfuscated volume damaged in its first 16 KB matches nothing and
 //     repair is exactly what it needs.
 //  4. Each of those entries' base name is a member of a RAR or 7z archive in
-//     the directory (heldArchiveMembers). An archive the entries do not name
-//     says nothing about them.
+//     the directory whose type unpack extracts (heldArchiveMembers). An
+//     archive the entries do not name says nothing about them, and one whose
+//     type is disabled (enable_unrar, enable_7zip) will not produce them.
 func (q *QuickCheckStage) deferredSets(ctx context.Context, log *slog.Logger, job *Job, id par2.Identification) []string {
 	unaccounted := make(map[string][]par2.FileDesc)
 	for _, fd := range id.Unaccounted {
@@ -321,7 +322,7 @@ func (q *QuickCheckStage) deferredSets(ctx context.Context, log *slog.Logger, jo
 	if len(candidates) == 0 {
 		return nil
 	}
-	held, ok := heldArchiveMembers(ctx, log, job, entries)
+	held, ok := heldArchiveMembers(ctx, log, job, entries, q.Unpack.extracts)
 	if !ok {
 		return nil
 	}
@@ -366,13 +367,14 @@ func (q *QuickCheckStage) unpackWillRun(job *Job) bool {
 }
 
 // heldArchiveMembers returns which of entries' base names are members of some
-// RAR or 7z archive in the download directory. Archives are found by name
+// RAR or 7z archive in the download directory whose type extracts reports
+// unpack will extract (UnpackStage.extracts). Archives are found by name
 // (unpack.Scan), so an obfuscated volume that rar_volume_recovery would rename
 // later is not seen, and members are read from headers only
 // (unpack.MemberBaseNames, which for RAR reads the first volume, and lists
 // only RAR and 7z). ok is false after a scan or listing error, which the
 // caller reads as nothing held.
-func heldArchiveMembers(ctx context.Context, log *slog.Logger, job *Job, entries []par2.FileDesc) (held map[string]bool, ok bool) {
+func heldArchiveMembers(ctx context.Context, log *slog.Logger, job *Job, entries []par2.FileDesc, extracts func(unpack.ArchiveType) bool) (held map[string]bool, ok bool) {
 	archives, err := unpack.Scan(job.DownloadDir)
 	if err != nil {
 		logf(ctx, log, job, slog.LevelWarn, "[quickcheck] Archive scan failed: %v — repair will run", err)
@@ -385,6 +387,9 @@ func heldArchiveMembers(ctx context.Context, log *slog.Logger, job *Job, entries
 	held = make(map[string]bool, len(want))
 	for _, a := range archives {
 		if a.Type != unpack.RarArchive && a.Type != unpack.SevenZipArchive {
+			continue
+		}
+		if !extracts(a.Type) {
 			continue
 		}
 		found, err := unpack.MemberBaseNames(a, want)

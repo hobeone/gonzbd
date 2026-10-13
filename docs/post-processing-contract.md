@@ -262,7 +262,7 @@ directory is left for a retry (#907):
 | **`quickcheck`** | Relocates flat files into expected subdirs; verifies file CRC32s against par2 headers without executing `par2`; defers each par2 set that protects what an archive extracts to until after unpack. | Skipped if disabled or `PP < 1`. | Sets `quickCheck` to one of `NotRun` / `Clean` / `Damaged` / `Inconclusive` / `Unidentified`, and `deferredPar2Sets`. |
 | **`repair`** | Executes native Go `go_par2` engine or external `par2` verify/repair if files are missing or corrupted, for every par2 set not in `deferredPar2Sets`. | Skipped if `PP < 1`, `quickCheck == Clean`, `quickCheck == Unidentified`, OR DirectUnpack extracted all archives without errors (every archive `unpack.Scan` finds in the download directory, of any type, is one of `DirectUnpackSets` or a file one extracted: `directUnpackExtractedAll`) **and** `quickCheck == NotRun`. | Sets `ParError` and `Par2Renames`. |
 | **`rar_volume_recovery`** | Renames obfuscated volume files (e.g. `abc.001` → `abc.part001.rar`) using RAR5 header volume sequencing if standard filename parsing found no RAR sets. | Skipped if disabled, standard RAR sets already detected, or volume indexing is ambiguous. | Renames volume files in `DownloadDir`. |
-| **`unpack`** | Decompresses archives (`RAR`, `7z`, `TAR`, `split join`) up to `maxUnpackDepth = 3` recursive passes using native pure-Go engines (`go_rar`, `go_7z`, `go_tar`, `filejoin`) with optional external CLI fallbacks (`unrar`, `7z`). Respects `DirectUnpackSets` to skip already-extracted archives. When archive cleanup is enabled, records extracted archive parts in `Job.pendingDeletions` for deletion at `finalize` (#768). An archive whose type is disabled (`enable_filejoin` or `enable_tar` off) is skipped, not extracted: `extractArchive` reports it as not attempted, so unpack neither records its parts for deletion nor counts it as an extraction (#943). | Skipped if `PP < 2` OR `ParError == true` (skips extraction unconditionally on repair failure). | Sets `UnpackError`; appends extracted archive parts to `pendingDeletions`. |
+| **`unpack`** | Decompresses archives (`RAR`, `7z`, `TAR`, `split join`) up to `maxUnpackDepth = 3` recursive passes using native pure-Go engines (`go_rar`, `go_7z`, `go_tar`, `filejoin`) with optional external CLI fallbacks (`unrar`, `7z`). Respects `DirectUnpackSets` to skip already-extracted archives. When archive cleanup is enabled, records extracted archive parts in `Job.pendingDeletions` for deletion at `finalize` (#768). An archive whose type is disabled (`enable_unrar`, `enable_7zip`, `enable_filejoin` or `enable_tar` off) is skipped, not extracted: `extractArchive` asks `archiveTypes.allows`, reports the archive as not attempted, and unpack neither records its parts for deletion nor counts it as an extraction, so `finalize` delivers it as it is (#943, #947). | Skipped if `PP < 2` OR `ParError == true` (skips extraction unconditionally on repair failure), or when all four `enable_*` archive toggles are off (the stage is disabled). | Sets `UnpackError`; appends extracted archive parts to `pendingDeletions`. |
 | **`extracted_repair`** | Runs `repair`'s per-set verify/repair, with `repair`'s configuration, on the sets in `deferredPar2Sets`, against the files unpack extracted. | Does nothing when `deferredPar2Sets` is empty; skipped if `ParError` or `UnpackError` is set. | Sets `ParError` when a deferred set cannot be verified or repaired, or is gone; otherwise sets `deferredPar2Verified`. |
 | **`sample_cleanup`** | Deletes sample video and proof files matching `(?i)(^|[\W_])(sample|proof)`, skipping entries recorded in `Job.pendingDeletions` (#768). Includes a false-positive guard where all non-pending files match the pattern. | Skipped if disabled in config, if every non-pending file in the directory matches the sample pattern, or if the job has failed (`Job.Failed`; `runStage` skips every `payloadDeleter` on a failed job, #907). | Unlinks sample files from `DownloadDir`. |
 | **`recover_par2_names`** | Restores original filenames by scanning `.par2` files on disk for 16KB MD5 hashes via `deobfuscate.Par2RenameExcluding`, skipping entries in `Job.pendingDeletions` (#768). | Runs unconditionally after unpack. | Renames files in `DownloadDir`. |
@@ -491,10 +491,12 @@ Both par2 engines are handed one candidate list, which `RepairStage.repairSets` 
      set protects archives (Layout A), and an obfuscated archive damaged
      inside its first 16 KB is what matches nothing there;
    - each of those entries' base name is a member of a RAR or 7z archive in
-     the directory, read from headers (`unpack.MemberBaseNames`; for RAR only
+     the directory whose type `unpack` extracts (`enable_unrar`,
+     `enable_7zip`), read from headers (`unpack.MemberBaseNames`; for RAR only
      the first volume). An archive that names none of them — a `Subs.rar`
-     beside a damaged obfuscated `Movie.mkv` — shows nothing about them, and
-     a scan or listing error defers no set.
+     beside a damaged obfuscated `Movie.mkv` — shows nothing about them, one
+     whose type is disabled will not produce them, and a scan or listing
+     error defers no set.
 
    The CRC verdict (`Clean`, `Damaged`, `Inconclusive`) is read over the sets
    that were not deferred (`par2.Assessment.CRCExcluding`), and `repair`
@@ -778,9 +780,10 @@ instead.
 Post-processing reads the same signature and narrows the ambiguity with facts
 the download path does not look at, per par2 set: whether unpack will run,
 whether the set's unmatched entries are named as archives, and whether each
-of them is a member of a delivered RAR or 7z archive. A set where all hold is
-deferred: `repair` skips it, `unpack` extracts, and `extracted_repair` runs
-par2 against the extracted files with whatever volumes are on disk; any
+of them is a member of a delivered RAR or 7z archive that unpack extracts. A
+set where all hold is deferred: `repair` skips it, `unpack` extracts, and
+`extracted_repair` runs par2 against the extracted files with whatever
+volumes are on disk; any
 other set is repaired before `unpack` as before (see Core Pipeline Invariant
 3). Neither path fetches the held volumes within the run. A healthy
 extraction verifies without them; a damaged one fails the run, and the job
