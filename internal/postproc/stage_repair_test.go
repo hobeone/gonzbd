@@ -1,6 +1,7 @@
 package postproc
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -581,30 +582,11 @@ func TestDispatchRepairTool_FallbackRunsWhenBinaryPresent(t *testing.T) {
 	}
 }
 
-// TestDispatchRepairTool_CorruptFileWithBlocksElsewhere_FallsBack pins the
-// stage-level effect of go_par2's intactness verdict: a damaged data.bin
-// whose every block exists in an intact copy under another name must reach
-// the external par2 retry instead of being filed as repaired.
-func TestDispatchRepairTool_CorruptFileWithBlocksElsewhere_FallsBack(t *testing.T) {
-	t.Parallel()
-
-	dir := t.TempDir()
-	for _, name := range []string{"data.par2", "data.vol000+102.par2", "data.bin"} {
-		body, err := os.ReadFile(filepath.Join("..", "..", "test", "fixtures", "par2", name))
-		if err != nil {
-			t.Fatalf("read fixture %s: %v", name, err)
-		}
-		if name == "data.bin" {
-			if err := os.WriteFile(filepath.Join(dir, "a8f3c0d2e1"), body, 0o600); err != nil {
-				t.Fatal(err)
-			}
-			body[len(body)/2] ^= 0xFF
-		}
-		if err := os.WriteFile(filepath.Join(dir, name), body, 0o600); err != nil {
-			t.Fatal(err)
-		}
-	}
-
+// dispatchWithStubFallback runs dispatchRepairTool on dir's data.par2 with
+// go_par2 enabled and a stub external par2 that exits 1, and reports whether
+// the external retry ran.
+func dispatchWithStubFallback(t *testing.T, dir string) (par2.RepairResult, bool) {
+	t.Helper()
 	var retried bool
 	job := &Job{
 		Job:         newQueueJob(t, "testjob", 0),
@@ -622,8 +604,62 @@ func TestDispatchRepairTool_CorruptFileWithBlocksElsewhere_FallsBack(t *testing.
 		true, // useGoPar2
 		true, // fallback
 	)
+	return res, retried
+}
+
+// TestDispatchRepairTool_CorruptFileWithBlocksElsewhere_RepairedNatively pins
+// that a damaged data.bin whose every block exists in an intact copy under
+// another name is rebuilt by go_par2 itself, with no external par2 retry.
+func TestDispatchRepairTool_CorruptFileWithBlocksElsewhere_RepairedNatively(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	copyPar2Fixtures(t, dir)
+	intact, err := os.ReadFile(par2Fixture("data.bin"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "a8f3c0d2e1"), intact, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	damaged := bytes.Clone(intact)
+	damaged[len(damaged)/2] ^= 0xFF
+	if err := os.WriteFile(filepath.Join(dir, "data.bin"), damaged, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	res, retried := dispatchWithStubFallback(t, dir)
+	if retried {
+		t.Error("the external par2 retry ran; go_par2 should have rebuilt data.bin itself")
+	}
+	if !res.Success {
+		t.Errorf("Success = false; want go_par2's native rebuild to succeed\nOutput: %s", res.Output)
+	}
+	if got, err := os.ReadFile(filepath.Join(dir, "data.bin")); err != nil || !bytes.Equal(got, intact) {
+		t.Errorf("data.bin does not hold its original bytes (err=%v)", err)
+	}
+}
+
+// TestDispatchRepairTool_SymlinkAtProtectedName_FallsBack pins the
+// stage-level effect of go_par2's intactness verdict on a set the engine
+// itself calls clean: par2engine follows a symlink at data.bin to an intact
+// copy, gonzbd's check requires a regular file there, and the refusal must
+// reach the external par2 retry instead of being filed as repaired.
+func TestDispatchRepairTool_SymlinkAtProtectedName_FallsBack(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	copyPar2Fixtures(t, dir)
+	if err := os.Rename(filepath.Join(dir, "data.bin"), filepath.Join(dir, "payload")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink("payload", filepath.Join(dir, "data.bin")); err != nil {
+		t.Fatal(err)
+	}
+
+	res, retried := dispatchWithStubFallback(t, dir)
 	if !retried {
-		t.Error("go_par2 accepted a corrupt data.bin; the external par2 retry did not run")
+		t.Error("go_par2 accepted a symlink at data.bin; the external par2 retry did not run")
 	}
 	if res.Success {
 		t.Errorf("Success = true; the stub external par2 exits 1\nOutput: %s", res.Output)
