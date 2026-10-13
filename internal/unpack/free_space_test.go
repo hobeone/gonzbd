@@ -241,6 +241,33 @@ func TestExtractors_RefuseWhatDoesNotFit(t *testing.T) {
 	}
 }
 
+// DirectUnpack's bound counts the volumes it is given. A member that starts
+// in the first volume is counted at the full size its header declares, though
+// it continues into later volumes, so the first volume of multi_new declares
+// what the whole set does.
+func TestCheckRarVolumesFreeSpace(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	first := filepath.Join("testdata", "multi_new.part01.rar")
+	whole, err := declaredSize(Archive{Type: RarArchive, Name: "multi_new", MainFile: first}, "")
+	if err != nil {
+		t.Fatalf("declaredSize: %v", err)
+	}
+	if got, err := rarDeclaredSize([]string{first}); err != nil || got != whole || got == 0 {
+		t.Errorf("rarDeclaredSize(part01) = %d, %v; want %d, the whole set's", got, err, whole)
+	}
+
+	if err := CheckRarVolumesFreeSpace(ctx, testLogger(), "multi_new", []string{first}, t.TempDir(), int64(1)<<62); !errors.Is(err, ErrInsufficientSpace) || !IsDiskFull(err) {
+		t.Errorf("CheckRarVolumesFreeSpace(no room) = %v, want ErrInsufficientSpace", err)
+	}
+	if err := CheckRarVolumesFreeSpace(ctx, testLogger(), "multi_new", []string{first}, t.TempDir(), 0); err != nil {
+		t.Errorf("CheckRarVolumesFreeSpace(room) = %v, want nil", err)
+	}
+	if err := CheckRarVolumesFreeSpace(ctx, testLogger(), "none", nil, t.TempDir(), int64(1)<<62); err != nil {
+		t.Errorf("CheckRarVolumesFreeSpace(no volumes) = %v, want nil", err)
+	}
+}
+
 // An archive whose size its headers do not declare is let through: the
 // check refuses nothing it cannot measure.
 func TestCheckFreeSpace_UnknownSizeProceeds(t *testing.T) {

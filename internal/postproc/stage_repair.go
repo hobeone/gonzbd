@@ -14,6 +14,7 @@ import (
 
 	"github.com/hobeone/gonzbd/internal/fsutil"
 	"github.com/hobeone/gonzbd/internal/par2"
+	"github.com/hobeone/gonzbd/internal/unpack"
 )
 
 // RepairStage verifies and repairs the downloaded files using par2 recovery
@@ -103,11 +104,9 @@ func (s *RepairStage) Run(ctx context.Context, job *Job) error {
 	// QuickCheckInconclusive is the case this switch exists to keep separate
 	// from QuickCheckNotRun. Both mean QuickCheck reported no damage, and
 	// only one of them means QuickCheck looked (#294).
-	directUnpackClean := len(job.DirectUnpackSets) > 0 &&
-		len(job.DirectUnpackFailures) == 0 && len(job.DirectUnpackSkipped) == 0
 	switch job.quickCheck {
 	case QuickCheckNotRun:
-		if directUnpackClean {
+		if directUnpackExtractedAll(ctx, log, job) {
 			logf(ctx, log, job, slog.LevelInfo, "[repair] Skipped: Direct Unpack successfully extracted all archives during download")
 			return nil
 		}
@@ -142,6 +141,42 @@ func (s *RepairStage) Run(ctx context.Context, job *Job) error {
 
 	_, err := s.repairSets(ctx, log, job, false)
 	return err
+}
+
+// directUnpackExtractedAll reports whether DirectUnpack extracted every
+// archive in job.DownloadDir: it extracted at least one set, none failed or
+// was skipped, and each archive unpack.Scan finds there, of any type, is one
+// of its sets (its main volume is among a set's RarParts, matched by base
+// name as UnpackStage.handleDirectUnpack marks them) or a file a set
+// extracted. An archive DirectUnpack has no outcome for, a RAR set it was
+// never fed or a 7z, tar or split archive it never handles, matches neither,
+// so it keeps the job from counting as clean. A scan that fails counts as not
+// clean.
+func directUnpackExtractedAll(ctx context.Context, log *slog.Logger, job *Job) bool {
+	if len(job.DirectUnpackSets) == 0 || len(job.DirectUnpackFailures) > 0 || len(job.DirectUnpackSkipped) > 0 {
+		return false
+	}
+	archives, err := unpack.Scan(job.DownloadDir)
+	if err != nil {
+		logf(ctx, log, job, slog.LevelWarn, "[repair] Archive scan failed: %v — repair will run", err)
+		return false
+	}
+	covered := make(map[string]bool)
+	for _, set := range job.DirectUnpackSets {
+		for _, part := range set.RarParts {
+			covered[filepath.Base(part)] = true
+		}
+		for _, f := range set.ExtractedFiles {
+			covered[filepath.Clean(f)] = true
+		}
+	}
+	for _, a := range archives {
+		if !covered[filepath.Base(a.MainFile)] && !covered[filepath.Clean(a.MainFile)] {
+			logf(ctx, log, job, slog.LevelInfo, "[repair] Direct Unpack did not extract %s", filepath.Base(a.MainFile))
+			return false
+		}
+	}
+	return true
 }
 
 // repairSets runs par2 verify+repair on the par2 sets in job.DownloadDir whose

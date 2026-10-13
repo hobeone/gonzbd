@@ -60,6 +60,22 @@ for i in $(seq 0 199); do
 done > "$TMPDIR/second.txt"
 ( cd "$TMPDIR" && rar a -ma5 -m0 -ep -v1k "$(cd - >/dev/null && pwd)/$OUTDIR/two_members.rar" first.txt second.txt >/dev/null )
 
+# first.bin (10000 random bytes) spans volumes 1-2 and second.bin (256 MiB of
+# zeros, compressed to a few KB) starts in volume 3, so volume 1's headers
+# declare 10000 bytes and the whole set's 268445456. DirectUnpack's free-space
+# test refuses it before extracting; rarengine refuses to extract second.bin
+# (its compression ratio reads as a RAR bomb). rar names the volumes with
+# padded numbers here, so they are renamed to partN.
+echo "==> late_member.partN.rar"
+head -c 10000 /dev/urandom > "$TMPDIR/first.bin"
+head -c 268435456 /dev/zero > "$TMPDIR/second.bin"
+( cd "$TMPDIR" && rar a -ma5 -m5 -ep -v4k late_member.rar first.bin second.bin >/dev/null )
+for f in "$TMPDIR"/late_member.part*.rar; do
+	n=$(basename "$f" | sed -E 's/^late_member\.part0*([0-9]+)\.rar$/\1/')
+	mv "$f" "$OUTDIR/late_member.part$n.rar"
+done
+rm -f "$TMPDIR/first.bin" "$TMPDIR/second.bin"
+
 # --- Password-protected RAR5 ---
 echo "==> password_rar5.rar (password: 'testpass')"
 ( cd "$TMPDIR" && rar a -ptestpass "$(cd - >/dev/null && pwd)/$OUTDIR/password_rar5.rar" file1.txt >/dev/null )

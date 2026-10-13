@@ -33,6 +33,11 @@ var errNotRAR = errors.New("not a RAR5 archive")
 // never became current, so nothing of it was extracted.
 var errNotStarted = errors.New("aborted before the set started")
 
+// errFirstVolumeMissing is the outcome Wait settles for each queued set when
+// run never started: no set's volume 1 was added, and Wait's caller has added
+// every volume it will.
+var errFirstVolumeMissing = errors.New("volume 1 never arrived")
+
 // SuccessSet records the outcome of a successfully extracted RAR set.
 type SuccessSet struct {
 	// RarParts lists absolute paths of the RAR volume files consumed.
@@ -46,6 +51,10 @@ type SuccessSet struct {
 type FailedSet struct {
 	// Reason is a human-readable description of why extraction failed.
 	Reason string
+	// Kind classifies the failure as post-processing's extractors classify
+	// theirs: unpack.FailDiskFull for a set refused for lack of space or one
+	// that filled the disk (unpack.IsDiskFull), otherwise unpack.FailUnknown.
+	Kind unpack.FailReason
 }
 
 // SkippedSet records a set that DirectUnpack did not attempt because it
@@ -72,6 +81,10 @@ type Options struct {
 	// DecodeWorkers is the configured rar_decode_workers value (see
 	// unpack.Options.DecodeWorkers). <= 0 means auto.
 	DecodeWorkers int
+	// MinFreeSpace is downloads.min_free_space: the bytes a set's extraction
+	// must leave free on the extract dir's filesystem
+	// (unpack.CheckRarVolumesFreeSpace).
+	MinFreeSpace int64
 
 	// OnLine is called for each line of extraction output. May be nil.
 	OnLine func(string)
@@ -110,8 +123,12 @@ type DirectUnpacker struct {
 
 	// Coordination.
 	volumeReady chan struct{} // signaled when a new RAR volume finishes
-	done        chan struct{} // closed when run() exits
+	queued      chan struct{} // signaled when a set is queued or input ends; awaitNextSet waits on it
+	done        chan struct{} // closed when run exits, or by Wait or Abort when run never started
 	started     bool          // whether the goroutine has been started
+	inputEnded  bool          // Wait or Abort was called: no more volumes will be added
+	finished    bool          // done is closed or run is exiting: Add admits nothing more
+	idle        bool          // awaitNextSet is waiting on queued with nothing queued
 
 	// Config.
 	opts Options
@@ -131,6 +148,7 @@ func New(log *slog.Logger, jobID, downloadDir, extractDir string, opts Options) 
 		skippedSets:   make(map[string]SkippedSet),
 		corruptSets:   make(map[string]string),
 		volumeReady:   make(chan struct{}, 1),
+		queued:        make(chan struct{}, 1),
 		done:          make(chan struct{}),
 		opts:          opts,
 	}
@@ -243,6 +261,9 @@ func (d *DirectUnpacker) MarkCorrupt(setname, reason string) {
 //
 // On the first call, it scans all job filenames to build the volume map.
 // If this is vol 1 of the first set, it starts extraction.
+//
+// A volume added once the unpacker has finished (Wait or Abort has returned,
+// or run is exiting) is refused: no run is left to extract its set.
 func (d *DirectUnpacker) Add(ctx context.Context, filename, path string) {
 	setname, vol := AnalyzeRarFilename(filename)
 	if setname == "" {
@@ -251,8 +272,13 @@ func (d *DirectUnpacker) Add(ctx context.Context, filename, path string) {
 
 	d.mu.Lock()
 
-	if d.killed {
+	if d.killed || d.finished {
+		late := !d.killed
 		d.mu.Unlock()
+		if late {
+			d.log.Warn("directunpack: volume added after the unpacker finished; left to post-processing",
+				"set", setname, "vol", vol)
+		}
 		return
 	}
 
@@ -271,7 +297,7 @@ func (d *DirectUnpacker) Add(ctx context.Context, filename, path string) {
 	d.completedVols[setname][vol] = path
 	totalForSet := d.totalVolumes[setname]
 
-	needStart := false
+	needStart, needWake := false, false
 	switch {
 	case !d.started && vol == 1:
 		// The first set to reach volume 1 starts extraction, leaving the
@@ -281,6 +307,7 @@ func (d *DirectUnpacker) Add(ctx context.Context, filename, path string) {
 		needStart = true
 	case !d.setAdmitted(setname):
 		d.nextSets = append(d.nextSets, setname)
+		needWake = true
 	}
 
 	d.mu.Unlock()
@@ -300,10 +327,19 @@ func (d *DirectUnpacker) Add(ctx context.Context, filename, path string) {
 	if needStart {
 		go d.run(ctx)
 	}
+	if needWake {
+		signal(d.queued)
+	}
 
 	// Signal the reader goroutine that a new volume is available.
+	signal(d.volumeReady)
+}
+
+// signal leaves one pending wake-up on ch, a channel with a buffer of one,
+// without blocking.
+func signal(ch chan struct{}) {
 	select {
-	case d.volumeReady <- struct{}{}:
+	case ch <- struct{}{}:
 	default:
 	}
 }
@@ -359,20 +395,16 @@ func (d *DirectUnpacker) Abort() {
 		return
 	}
 	d.killed = true
+	d.inputEnded = true
 
 	for _, s := range d.nextSets {
 		d.settleLocked(s, SuccessSet{}, errNotStarted)
 	}
 	d.nextSets = nil
 
-	// If run() never started, it will never close d.done. Close it here so
-	// Done()/Wait() observers unblock, and skip the wait below. run()'s
-	// `defer close(d.done)` only fires when started==true (set under the lock
-	// before `go d.run` in Add), so this close and that one are mutually
-	// exclusive — d.done is never double-closed.
 	started := d.started
 	if !started {
-		close(d.done)
+		d.finishUnstartedLocked()
 	}
 	d.mu.Unlock()
 	// --- No lock held below this line ---
@@ -382,31 +414,59 @@ func (d *DirectUnpacker) Abort() {
 		return
 	}
 
-	// Signal the reader goroutine to unblock.
-	select {
-	case d.volumeReady <- struct{}{}:
-	default:
-	}
+	// Wake run, whether it is waiting for a volume or for a set.
+	signal(d.volumeReady)
+	signal(d.queued)
 
 	// Wait for the goroutine to exit.
 	<-d.done
 }
 
-// Wait blocks until the DirectUnpacker goroutine has finished (either
-// successfully or via abort). Safe to call when not started.
+// Wait declares that every volume has been added, and blocks until each set
+// the unpacker admitted has an outcome and run has exited. A volume added
+// once the unpacker has finished is refused (Add). A set whose volume 1 has
+// not been added by then is recorded as failed, "volume 1 never arrived":
+// waitForVolume returns that for volume 1 once the input has ended. A set
+// past volume 1 is still waited for volume by volume, so a later volume of it
+// that is never added keeps Wait blocked until Abort.
+//
+// When run never started, no set's volume 1 was added, so each queued set is
+// recorded as failed here, and Wait returns at once.
 func (d *DirectUnpacker) Wait() {
 	d.mu.Lock()
-	started := d.started
-	d.mu.Unlock()
-	if !started {
+	d.inputEnded = true
+	if !d.started {
+		for _, s := range d.nextSets {
+			d.settleLocked(s, SuccessSet{}, errFirstVolumeMissing)
+		}
+		d.nextSets = nil
+		d.finishUnstartedLocked()
+		d.mu.Unlock()
 		return
 	}
+	d.mu.Unlock()
+	// Wake run whether it waits for a set or for a set's volume 1.
+	signal(d.queued)
+	signal(d.volumeReady)
 	<-d.done
 }
 
-// Done returns a channel that is closed when run exits, or by Abort when run
-// was never started. An unpacker that is never started and never aborted
-// never closes it.
+// finishUnstartedLocked closes done for an unpacker whose run never started,
+// which would otherwise never be closed, and sets finished so Add starts no
+// run to close it again. run is started where started is set, in Add, under
+// mu and after Add's finished check (`git grep -n 'd[.]started = true' --
+// internal/directunpack/directunpack.go` returns 1 line), so the two closes
+// are exclusive. Must be called with mu held and started false.
+func (d *DirectUnpacker) finishUnstartedLocked() {
+	if !d.finished {
+		d.finished = true
+		close(d.done)
+	}
+}
+
+// Done returns a channel that is closed when run exits, or by Wait or Abort
+// when run was never started. An unpacker that is never started, waited for
+// or aborted never closes it.
 func (d *DirectUnpacker) Done() <-chan struct{} {
 	return d.done
 }
@@ -477,7 +537,11 @@ func (d *DirectUnpacker) settleLocked(setname string, res SuccessSet, err error)
 	case d.killed:
 		d.failedSets[setname] = FailedSet{Reason: "aborted"}
 	default:
-		d.failedSets[setname] = FailedSet{Reason: err.Error()}
+		kind := unpack.FailUnknown
+		if unpack.IsDiskFull(err) {
+			kind = unpack.FailDiskFull
+		}
+		d.failedSets[setname] = FailedSet{Reason: err.Error(), Kind: kind}
 	}
 }
 
@@ -499,6 +563,7 @@ func (d *DirectUnpacker) run(ctx context.Context) {
 		res, err := d.extractSet(ctx, setname)
 		d.mu.Lock()
 		d.settleLocked(setname, res, err)
+		d.curSetname = ""
 		killed := d.killed
 		d.mu.Unlock()
 		switch {
@@ -514,19 +579,48 @@ func (d *DirectUnpacker) run(ctx context.Context) {
 		}
 		d.notifyChange()
 
-		// Check if we should start the next set.
-		d.mu.Lock()
-		if d.killed || len(d.nextSets) == 0 {
-			d.mu.Unlock()
+		nextSet, ok := d.awaitNextSet(ctx)
+		if !ok {
 			return
 		}
-		nextSet := d.nextSets[0]
-		d.makeCurrentLocked(nextSet)
-		d.mu.Unlock()
-
 		d.notifyChange()
 
 		d.log.Info("starting next archive set", "set", nextSet)
+	}
+}
+
+// awaitNextSet makes the next queued set current and returns it, waiting
+// while the queue is empty and more volumes may still be added. It returns
+// false when run is to exit: the unpacker was aborted (Abort settled the
+// queue), or the queue is empty and input has ended or ctx is done. It sets
+// finished under the lock it decided under, so Add queues no set after the
+// decision that run would never take.
+func (d *DirectUnpacker) awaitNextSet(ctx context.Context) (string, bool) {
+	for {
+		d.mu.Lock()
+		d.idle = false
+		switch {
+		case d.killed:
+			d.finished = true
+			d.mu.Unlock()
+			return "", false
+		case len(d.nextSets) > 0:
+			next := d.nextSets[0]
+			d.makeCurrentLocked(next)
+			d.mu.Unlock()
+			return next, true
+		case d.inputEnded || ctx.Err() != nil:
+			d.finished = true
+			d.mu.Unlock()
+			return "", false
+		}
+		d.idle = true
+		d.mu.Unlock()
+
+		select {
+		case <-d.queued:
+		case <-ctx.Done():
+		}
 	}
 }
 
@@ -565,6 +659,13 @@ func (d *DirectUnpacker) extractSet(ctx context.Context, setname string) (res Su
 			return errNotRAR
 		}
 		d.log.Info("starting extraction", "set", setname, "rar_version", ver)
+
+		// The free-space bound post-processing applies to an archive, over
+		// the volumes on disk now: later volumes may still be downloading.
+		if err := unpack.CheckRarVolumesFreeSpace(ctx, d.log, setname, d.leadingVolumes(setname),
+			d.extractDir, d.opts.MinFreeSpace); err != nil {
+			return err
+		}
 
 		volumesChan, feedErrChan := d.startVolumeFeed(ctx, setname, maxVol)
 
@@ -625,6 +726,21 @@ func (d *DirectUnpacker) extractSet(ctx context.Context, setname string) (res Su
 		return nil
 	})
 	return res, err
+}
+
+// leadingVolumes returns the paths of setname's volumes added so far that
+// form an unbroken run from volume 1, in volume order.
+func (d *DirectUnpacker) leadingVolumes(setname string) []string {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	var vols []string
+	for vol := 1; ; vol++ {
+		p, ok := d.completedVols[setname][vol]
+		if !ok {
+			return vols
+		}
+		vols = append(vols, p)
+	}
 }
 
 // startVolumeFeed spawns a goroutine that opens each completed RAR volume in
@@ -766,6 +882,10 @@ func (d *DirectUnpacker) waitForVolume(ctx context.Context, setname string, vol 
 				d.mu.Unlock()
 				return nil
 			}
+		}
+		if vol == 1 && d.inputEnded {
+			d.mu.Unlock()
+			return errFirstVolumeMissing
 		}
 		d.mu.Unlock()
 

@@ -9,6 +9,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 )
 
 // The helpers below were untested when this file was added. They are
@@ -196,6 +197,67 @@ func TestExtractEntries_ExitsBeforeReadingTheArchive(t *testing.T) {
 
 		if err == nil || !strings.Contains(err.Error(), "killed") {
 			t.Errorf("extractEntries() error = %v, want it to mention killed", err)
+		}
+	})
+}
+
+func TestAwaitNextSet(t *testing.T) {
+	newD := func() *DirectUnpacker { return New(slog.New(slog.DiscardHandler), "job", "", "", Options{}) }
+
+	t.Run("an aborted unpacker exits", func(t *testing.T) {
+		d := newD()
+		d.killed = true
+		d.nextSets = []string{"a"}
+		if s, ok := d.awaitNextSet(t.Context()); ok || s != "" || !d.finished {
+			t.Errorf("awaitNextSet = %q, %v, finished %v; want an exit with finished set", s, ok, d.finished)
+		}
+	})
+	t.Run("a queued set becomes current", func(t *testing.T) {
+		d := newD()
+		d.nextSets = []string{"a", "b"}
+		d.inputEnded = true
+		if s, ok := d.awaitNextSet(t.Context()); !ok || s != "a" || d.curSetname != "a" || !slices.Equal(d.nextSets, []string{"b"}) {
+			t.Errorf("awaitNextSet = %q, %v; current %q, queue %q; want a taken from the queue", s, ok, d.curSetname, d.nextSets)
+		}
+	})
+	t.Run("an empty queue after the input ended exits", func(t *testing.T) {
+		d := newD()
+		d.inputEnded = true
+		if _, ok := d.awaitNextSet(t.Context()); ok || !d.finished {
+			t.Errorf("awaitNextSet ok %v, finished %v; want an exit with finished set", ok, d.finished)
+		}
+	})
+	t.Run("an empty queue after ctx is done exits", func(t *testing.T) {
+		d := newD()
+		ctx, cancel := context.WithCancel(t.Context())
+		cancel()
+		if _, ok := d.awaitNextSet(ctx); ok || !d.finished {
+			t.Errorf("awaitNextSet ok %v, finished %v; want an exit with finished set", ok, d.finished)
+		}
+	})
+	t.Run("an empty queue waits for a set", func(t *testing.T) {
+		d := newD()
+		got := make(chan string, 1)
+		go func() {
+			s, _ := d.awaitNextSet(t.Context())
+			got <- s
+		}()
+		select {
+		case s := <-got:
+			t.Fatalf("awaitNextSet returned %q with nothing queued and the input open", s)
+		case <-time.After(50 * time.Millisecond):
+		}
+		d.mu.Lock()
+		d.nextSets = append(d.nextSets, "late")
+		d.mu.Unlock()
+		signal(d.queued)
+		select {
+		case s := <-got:
+			if s != "late" {
+				t.Errorf("awaitNextSet = %q, want late", s)
+			}
+		case <-time.After(5 * time.Second):
+			t.Fatal("awaitNextSet never took the set queued while it waited")
 		}
 	})
 }

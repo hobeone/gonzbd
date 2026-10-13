@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -64,6 +65,92 @@ func TestRepairStage_DirectUnpackWithFailuresDontSkip(t *testing.T) {
 	}
 	if job.ParError {
 		t.Error("ParError = true; want false (no par2 sets in empty dir)")
+	}
+}
+
+// A RAR set in the download directory that DirectUnpack has no outcome for
+// keeps repair from being skipped on DirectUnpack's say, though every set it
+// did report was extracted. A file a set extracted is not such a set.
+func TestRepairStage_ARarSetDirectUnpackDidNotSettleDoesNotSkip(t *testing.T) {
+	t.Parallel()
+	const skipped = "[repair] Skipped: Direct Unpack successfully extracted all archives during download"
+
+	for _, tc := range []struct {
+		name     string
+		files    []string
+		wantSkip bool
+	}{
+		{"every set extracted", []string{"movie.part01.rar", "movie.part02.rar"}, true},
+		{"an extracted archive", []string{"movie.part01.rar", "inner.rar"}, true},
+		{"a set with no outcome", []string{"movie.part01.rar", "extra.part01.rar"}, false},
+		{"a 7z archive beside the set", []string{"movie.part01.rar", "extra.7z"}, false},
+		{"a split archive beside the set", []string{"movie.part01.rar", "extra.bin.001"}, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			job, dir := stageJob(t)
+			for _, name := range tc.files {
+				if err := os.WriteFile(filepath.Join(dir, name), []byte("x"), 0o600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			job.DirectUnpackSets = map[string]directunpack.SuccessSet{
+				"movie": {
+					RarParts:       []string{filepath.Join(dir, "movie.part01.rar"), filepath.Join(dir, "movie.part02.rar")},
+					ExtractedFiles: []string{filepath.Join(dir, "inner.rar")},
+				},
+			}
+
+			if err := NewRepairStage().Run(t.Context(), job); err != nil {
+				t.Fatalf("Run: %v", err)
+			}
+
+			didSkip := slices.Contains(job.OutputLines, skipped)
+			if didSkip != tc.wantSkip {
+				t.Errorf("repair skipped = %v, want %v; output %v", didSkip, tc.wantSkip, job.OutputLines)
+			}
+		})
+	}
+}
+
+func TestDirectUnpackExtractedAll(t *testing.T) {
+	t.Parallel()
+	ok := map[string]directunpack.SuccessSet{"movie": {RarParts: []string{"/elsewhere/movie.part01.rar"}}}
+	for _, tc := range []struct {
+		name    string
+		files   []string
+		sets    map[string]directunpack.SuccessSet
+		failed  map[string]directunpack.FailedSet
+		skipped map[string]directunpack.SkippedSet
+		noDir   bool
+		want    bool
+	}{
+		{name: "no set extracted", want: false},
+		{name: "a set failed", sets: ok, failed: map[string]directunpack.FailedSet{"x": {}}, want: false},
+		{name: "a set skipped", sets: ok, skipped: map[string]directunpack.SkippedSet{"x": {}}, want: false},
+		{name: "the scan fails", sets: ok, noDir: true, want: false},
+		{name: "a volume matched by base name", sets: ok, files: []string{"movie.part01.rar"}, want: true},
+		{name: "a 7z archive it never handles", sets: ok, files: []string{"movie.part01.rar", "other.7z"}, want: false},
+		{name: "a split archive it never handles", sets: ok, files: []string{"movie.part01.rar", "other.bin.001"}, want: false},
+		{name: "a RAR set it has no outcome for", sets: ok, files: []string{"movie.part01.rar", "other.rar"}, want: false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			job, dir := stageJob(t)
+			for _, name := range tc.files {
+				if err := os.WriteFile(filepath.Join(dir, name), []byte("x"), 0o600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if tc.noDir {
+				job.DownloadDir = filepath.Join(dir, "missing")
+			}
+			job.DirectUnpackSets, job.DirectUnpackFailures, job.DirectUnpackSkipped = tc.sets, tc.failed, tc.skipped
+
+			if got := directUnpackExtractedAll(t.Context(), slog.New(slog.DiscardHandler), job); got != tc.want {
+				t.Errorf("directUnpackExtractedAll = %v, want %v", got, tc.want)
+			}
+		})
 	}
 }
 

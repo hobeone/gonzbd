@@ -257,7 +257,7 @@ directory is left for a retry (#907):
 | Stage Name | Responsibilities | Skip / Gating Condition | Key Flags Updated |
 |---|---|---|---|
 | **`quickcheck`** | Relocates flat files into expected subdirs; verifies file CRC32s against par2 headers without executing `par2`; defers each par2 set that protects what an archive extracts to until after unpack. | Skipped if disabled or `PP < 1`. | Sets `quickCheck` to one of `NotRun` / `Clean` / `Damaged` / `Inconclusive` / `Unidentified`, and `deferredPar2Sets`. |
-| **`repair`** | Executes native Go `go_par2` engine or external `par2` verify/repair if files are missing or corrupted, for every par2 set not in `deferredPar2Sets`. | Skipped if `PP < 1`, `quickCheck == Clean`, `quickCheck == Unidentified`, OR DirectUnpack extracted all archives without errors **and** `quickCheck == NotRun`. | Sets `ParError` and `Par2Renames`. |
+| **`repair`** | Executes native Go `go_par2` engine or external `par2` verify/repair if files are missing or corrupted, for every par2 set not in `deferredPar2Sets`. | Skipped if `PP < 1`, `quickCheck == Clean`, `quickCheck == Unidentified`, OR DirectUnpack extracted all archives without errors (every archive `unpack.Scan` finds in the download directory, of any type, is one of `DirectUnpackSets` or a file one extracted: `directUnpackExtractedAll`) **and** `quickCheck == NotRun`. | Sets `ParError` and `Par2Renames`. |
 | **`rar_volume_recovery`** | Renames obfuscated volume files (e.g. `abc.001` → `abc.part001.rar`) using RAR5 header volume sequencing if standard filename parsing found no RAR sets. | Skipped if disabled, standard RAR sets already detected, or volume indexing is ambiguous. | Renames volume files in `DownloadDir`. |
 | **`unpack`** | Decompresses archives (`RAR`, `7z`, `TAR`, `split join`) up to `maxUnpackDepth = 3` recursive passes using native pure-Go engines (`go_rar`, `go_7z`, `go_tar`, `filejoin`) with optional external CLI fallbacks (`unrar`, `7z`). Respects `DirectUnpackSets` to skip already-extracted archives. When archive cleanup is enabled, records extracted archive parts in `Job.pendingDeletions` for deletion at `finalize` (#768). An archive whose type is disabled (`enable_filejoin` or `enable_tar` off) is skipped, not extracted: `extractArchive` reports it as not attempted, so unpack neither records its parts for deletion nor counts it as an extraction (#943). | Skipped if `PP < 2` OR `ParError == true` (skips extraction unconditionally on repair failure). | Sets `UnpackError`; appends extracted archive parts to `pendingDeletions`. |
 | **`extracted_repair`** | Runs `repair`'s per-set verify/repair, with `repair`'s configuration, on the sets in `deferredPar2Sets`, against the files unpack extracted. | Does nothing when `deferredPar2Sets` is empty; skipped if `ParError` or `UnpackError` is set. | Sets `ParError` when a deferred set cannot be verified or repaired, or is gone; otherwise sets `deferredPar2Verified`. |
@@ -911,11 +911,21 @@ recorded entirely through the fetch-policy discard, not through this field.
   their size (RAR headers encrypted without the password) is not checked. An
   extraction that fills the disk anyway fails as `FailDiskFull` whichever
   engine ran it. There is no compression-ratio or total-size limit besides
-  this (#901). DirectUnpack, which calls `unpack.ExtractStaged` directly, does
-  not run the check.
+  this (#901). DirectUnpack, which calls `unpack.ExtractStaged` directly,
+  applies the same comparison to a set through
+  `unpack.CheckRarVolumesFreeSpace` once volume 1 is on disk. It counts the
+  volumes on disk then, from volume 1 up to the first one missing: a member
+  whose header starts in one of them counts at the full size the header
+  declares, and a member starting in a later volume is not counted. A set
+  refused for space, or one that fills the disk, is a `FailedSet` of `Kind`
+  `FailDiskFull` (`unpack.IsDiskFull`), and the unpack stage extracts it
+  again under its own check.
   (`TestExtractors_RefuseWhatDoesNotFit`,
   `TestExtractInStage_DiskFullIsFailDiskFull`,
-  `TestMinFreeSpace_ReachesUnpackStage`.)
+  `TestMinFreeSpace_ReachesUnpackStage`,
+  `TestCheckRarVolumesFreeSpace`,
+  `TestDirectUnpack_RefusesASetThatDoesNotFit`,
+  `TestDirectUnpackOptsFromConfig`.)
 - **Insufficient Recovery Blocks**: When `par2` reports it needs more blocks
   than are on disk, `repair` sets `ParError = true` and leaves the block count
   in its own log line rather than on `Job` — `unpack` reads `ParError` to skip

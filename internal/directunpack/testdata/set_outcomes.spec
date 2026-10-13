@@ -26,8 +26,12 @@ file internal/directunpack/directunpack.go
 [Abort clears the sets that already succeeded]
 file internal/directunpack/directunpack.go
 --- anchor
+		d.settleLocked(s, SuccessSet{}, errNotStarted)
+	}
 	d.nextSets = nil
 --- replace
+		d.settleLocked(s, SuccessSet{}, errNotStarted)
+	}
 	d.nextSets = nil
 	d.successSets = make(map[string]SuccessSet)
 --- end
@@ -35,8 +39,12 @@ file internal/directunpack/directunpack.go
 [Abort records the current set as failed]
 file internal/directunpack/directunpack.go
 --- anchor
+		d.settleLocked(s, SuccessSet{}, errNotStarted)
+	}
 	d.nextSets = nil
 --- replace
+		d.settleLocked(s, SuccessSet{}, errNotStarted)
+	}
 	d.nextSets = nil
 	if d.curSetname != "" {
 		d.failedSets[d.curSetname] = FailedSet{Reason: "aborted"}
