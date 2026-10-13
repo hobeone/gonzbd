@@ -109,6 +109,12 @@ func TestAffectedSpecs_AnUnreadableSpecIsAnError(t *testing.T) {
 	}
 }
 
+// TestAffectedSpecs_AllMarkdownReadsInRepoAreRouted is a tripwire checking
+// that every relative .md path string literal (containing '/' and ending in
+// '.md') in a tracked *_test.go file that resolves to an existing repository
+// file is routed by affectedSpecs to that test package's specs. It inspects
+// single string literals rather than paths assembled via filepath.Join or
+// variables.
 func TestAffectedSpecs_AllMarkdownReadsInRepoAreRouted(t *testing.T) {
 	t.Parallel()
 

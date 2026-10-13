@@ -1053,6 +1053,26 @@ func TestBroken(t *testing.T) {
 		}
 	})
 
+	t.Run("per-mutation run in chunk 2 is still baselined by chunk 1", func(t *testing.T) {
+		_ = os.Remove(filepath.Join(root, "mutated_ran"))
+		specPath := filepath.Join(root, "chunked_broken_block.spec")
+		mustWrite(t, specPath, "pkg .\nrun ^TestOK$\n\n[mut1]\nfile target.go\n--- anchor\n\treturn 1\n--- replace\n\treturn 2\n--- end\n\n[mut2]\nfile target.go\nrun ^TestBroken$\n--- anchor\n\treturn 1\n--- replace\n\treturn 2\n--- end\n")
+
+		var code int
+		out, errOut := captureOutput(t, func() {
+			code = runSpec(root, specPath, runOpts{skipRunfilter: true, chunk: "1/2"})
+		})
+		if code != 1 {
+			t.Errorf("runSpec(chunk 1/2) = %d, want 1 (BASELINE FAILED); stdout:\n%s\nstderr:\n%s", code, out, errOut)
+		}
+		if !strings.Contains(errOut, "BASELINE FAILED") {
+			t.Errorf("stderr lacks 'BASELINE FAILED':\n%s", errOut)
+		}
+		if _, err := os.Stat(filepath.Join(root, "mutated_ran")); !os.IsNotExist(err) {
+			t.Errorf("chunk 1 mutation was applied despite a broken chunk 2 per-mutation baseline (stat err = %v)", err)
+		}
+	})
+
 	t.Run("covered per-mutation run is not re-run at baseline", func(t *testing.T) {
 		listed := []string{"TestOK", "TestBroken"}
 		spCovered := &spec{
@@ -1060,7 +1080,7 @@ func TestBroken(t *testing.T) {
 			run:       "^(TestOK|TestBroken)$",
 			mutations: []mutation{{name: "m", run: "^TestOK$"}},
 		}
-		if got := spCovered.baselineRuns(listed); !slices.Equal(got, []string{"^(TestOK|TestBroken)$"}) {
+		if got := spCovered.baselineRuns(spCovered.mutations, listed); !slices.Equal(got, []string{"^(TestOK|TestBroken)$"}) {
 			t.Errorf("baselineRuns(covered) = %v, want only the top-level filter", got)
 		}
 		spSubtest := &spec{
@@ -1068,7 +1088,7 @@ func TestBroken(t *testing.T) {
 			run:       "TestOK|TestOther/sub",
 			mutations: []mutation{{name: "m", run: "^TestOK$"}},
 		}
-		if got := spSubtest.baselineRuns(listed); !slices.Equal(got, []string{"TestOK|TestOther/sub", "^TestOK$"}) {
+		if got := spSubtest.baselineRuns(spSubtest.mutations, listed); !slices.Equal(got, []string{"TestOK|TestOther/sub", "^TestOK$"}) {
 			t.Errorf("baselineRuns(subtest) = %v, want both filters when '/' is present", got)
 		}
 	})

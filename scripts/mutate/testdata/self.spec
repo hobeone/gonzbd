@@ -605,6 +605,16 @@ run ^TestRunSpec_BaselinesPerMutationRun$
 	}
 --- end
 
+[runSpec baselines only the current chunk's mutations instead of the full spec]
+file scripts/mutate/main.go
+run ^TestRunSpec_BaselinesPerMutationRun$
+--- anchor
+		for _, r := range sp.baselineRuns(allMutations, listed) {
+--- replace
+		_ = allMutations
+		for _, r := range sp.baselineRuns(sp.mutations, listed) {
+--- end
+
 [runSpec returns 0 on a confirmExclusions error]
 file scripts/mutate/main.go
 --- anchor

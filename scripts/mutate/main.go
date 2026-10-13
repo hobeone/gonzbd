@@ -223,15 +223,16 @@ func (sp *spec) runFor(m mutation) string {
 
 // baselineRuns returns the distinct -run filters the baseline must verify, in
 // declaration order: the spec's top-level `run` followed by any per-mutation
-// `run` override whose selected tests are not already covered by the top-level
-// `run`.
+// `run` override in mutations whose selected tests are not already covered by
+// the top-level `run`. Callers pass the full, unchunked mutation slice so
+// chunk 1 verifies overrides in later chunks that run with -skip-baseline.
 //
 // Do not combine them into a single `a|b` pattern: `go test` splits -run on
 // unbracketed `/`, so a union of subtest filters is not expressible as a
 // single -run flag.
-func (sp *spec) baselineRuns(listed []string) []string {
+func (sp *spec) baselineRuns(mutations []mutation, listed []string) []string {
 	runs := []string{sp.run}
-	for _, m := range sp.mutations {
+	for _, m := range mutations {
 		r := sp.runFor(m)
 		if !slices.Contains(runs, r) && !coveredByTopLevel(sp.run, r, listed) {
 			runs = append(runs, r)
@@ -241,9 +242,11 @@ func (sp *spec) baselineRuns(listed []string) []string {
 }
 
 // coveredByTopLevel reports whether blockRun selects at least one top-level
-// test in listed, every test it selects is also selected by topRun, and
-// neither filter restricts subtests via '/'. When true, a passing top-level
-// baseline has already executed every test blockRun will run.
+// Test function in listed (see listTests in testlist.go, which intentionally
+// omits Fuzz, Benchmark, and Example functions), every Test it selects is also
+// selected by topRun, and neither filter restricts subtests via '/'. When
+// true, a passing top-level baseline has already executed every Test blockRun
+// will run.
 func coveredByTopLevel(topRun, blockRun string, listed []string) bool {
 	if strings.Contains(topRun+blockRun, "/") {
 		return false
@@ -414,6 +417,7 @@ func runSpec(root, path string, opts runOpts) int {
 	}
 	sp.parallel = opts.parallel
 	sp.gcflags = opts.gcflags
+	allMutations := sp.mutations
 	if opts.chunk != "" {
 		if err := sp.applyChunk(opts.chunk); err != nil {
 			return fail("%v", err)
@@ -432,15 +436,16 @@ func runSpec(root, path string, opts runOpts) int {
 
 	// The baseline runs first and unmutated. Every verdict below is a claim
 	// about what the mutation changed, and that claim is empty if the test was
-	// not passing to begin with. Every distinct effective -run filter (the
-	// top-level `run` plus each per-mutation `run` override) is checked so a
-	// block override cannot point at an already-failing or non-matching test.
+	// not passing to begin with. Every distinct effective -run filter across
+	// allMutations (not just the current chunk's slice, since chunks 2..M run
+	// with -skip-baseline in run_tests.sh) is checked so a block override
+	// cannot point at an already-failing or non-matching test.
 	if !opts.skipBaseline {
 		var listed []string
 		if l, lerr := listTests(root, sp); lerr == nil {
 			listed = l
 		}
-		for _, r := range sp.baselineRuns(listed) {
+		for _, r := range sp.baselineRuns(allMutations, listed) {
 			baseSpec := *sp
 			baseSpec.run = r
 			baselineCmd := "go " + strings.Join(testArgs(&baseSpec), " ")

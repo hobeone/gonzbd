@@ -13,7 +13,7 @@ YELLOW='\033[0;33m'
 NC='\033[0m' # No Color
 
 echo "===================================================="
-echo "Starting Full Test Suite: gonzbd
+echo "Starting Full Test Suite: gonzbd"
 echo "===================================================="
 
 # Check prerequisites
