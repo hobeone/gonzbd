@@ -7,15 +7,15 @@ run TestOwnedRanges_ClaimKeepsOffsetOrder$
 [claim appends instead of inserting in offset order]
 file internal/assembler/ranges.go
 --- anchor
-	i := sort.Search(len(o.s), func(i int) bool { return o.s[i].r.Off >= r.Off })
+	o.s = slices.Insert(o.s, lo, ownedRange{r: r, id: id})
 --- replace
-	i := len(o.s)
+	o.s = slices.Insert(o.s, len(o.s), ownedRange{r: r, id: id})
 --- end
 
 [claim prepends instead of inserting in offset order]
 file internal/assembler/ranges.go
 --- anchor
-	i := sort.Search(len(o.s), func(i int) bool { return o.s[i].r.Off >= r.Off })
+	o.s = slices.Insert(o.s, lo, ownedRange{r: r, id: id})
 --- replace
-	i := 0
+	o.s = slices.Insert(o.s, 0, ownedRange{r: r, id: id})
 --- end

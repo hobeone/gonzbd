@@ -12,10 +12,10 @@ file internal/assembler/ranges.go
 [ownerOf starts its scan at the first range starting at or after the probe]
 file internal/assembler/ranges.go
 --- anchor
-func (o *ownedRanges) ownerOf(r Range, arriving articleID) (articleID, bool) {
+func (o *ownedRanges) ownerOf(r Range) (articleID, bool) {
 	i := sort.Search(len(o.s), func(i int) bool { return o.s[i].r.end() > r.Off })
 --- replace
-func (o *ownedRanges) ownerOf(r Range, arriving articleID) (articleID, bool) {
+func (o *ownedRanges) ownerOf(r Range) (articleID, bool) {
 	i := sort.Search(len(o.s), func(i int) bool { return o.s[i].r.Off >= r.Off })
 --- end
 
@@ -23,10 +23,10 @@ func (o *ownedRanges) ownerOf(r Range, arriving articleID) (articleID, bool) {
 file internal/assembler/ranges.go
 --- anchor
 	for ; i < len(o.s) && o.s[i].r.Off < r.end(); i++ {
-		if o.s[i].r.intersects(r) && !o.s[i].id.sameArticle(arriving) {
+		if o.s[i].r.intersects(r) {
 --- replace
 	for ; i < len(o.s) && o.s[i].r.Off <= r.Off; i++ {
-		if o.s[i].r.intersects(r) && !o.s[i].id.sameArticle(arriving) {
+		if o.s[i].r.intersects(r) {
 --- end
 
 [claim records an empty range]
@@ -54,15 +54,15 @@ file internal/assembler/filewriter.go
 [acceptArticle probes a zero-length range]
 file internal/assembler/assembler.go
 --- anchor
-	if _, settled := f.w.owned.ownerOf(rng, id); settled {
+	if _, settled := f.w.owned.ownerOf(rng); settled {
 --- replace
-	if _, settled := f.w.owned.ownerOf(Range{Off: rng.Off, Len: 0}, id); settled {
+	if _, settled := f.w.owned.ownerOf(Range{Off: rng.Off, Len: 0}); settled {
 --- end
 
 [ownerOf neutered in acceptArticle]
 file internal/assembler/assembler.go
 --- anchor
-	if _, settled := f.w.owned.ownerOf(rng, id); settled {
+	if _, settled := f.w.owned.ownerOf(rng); settled {
 --- replace
-	if _, settled := f.w.owned.ownerOf(rng, id); settled && false {
+	if _, settled := f.w.owned.ownerOf(rng); settled && false {
 --- end

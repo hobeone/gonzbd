@@ -215,17 +215,11 @@ func TestRetryAfterFailedWriteLandsOnDisk(t *testing.T) {
 	dir := t.TempDir()
 	f := newHelperFile(t, dir, "retry.dat", 0)
 
+	realWrite := f.w.writeAt
+	f.w.writeAt = func([]byte, int64) (int, error) { return 0, errors.New("injected write fault") }
 	req := WriteRequest{JobID: "job", MessageID: "msg0", ArtIdx: 0, Offset: 0, Data: []byte("first")}
 	a.handleSuccessArticle(f, req)
-	if f.w.parts() != 1 {
-		t.Fatal("article was not accepted")
-	}
-	if _, ok := f.w.seenDone[0]; !ok {
-		t.Fatal("precondition: accepting the article should record it in seenDone")
-	}
-
-	// Roll the article back directly, as a failed sync does.
-	f.w.resolve(0, dispositionRolledBack)
+	f.w.writeAt = realWrite
 	if _, stillDone := f.w.seenDone[0]; stillDone {
 		t.Error("the failed article is still in seenDone; its retry would take " +
 			"the discard branch and never be written")

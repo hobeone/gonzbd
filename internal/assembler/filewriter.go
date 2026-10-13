@@ -21,10 +21,6 @@ type articleID struct {
 	artIdx int32
 }
 
-// sameArticle reports whether two identities name the same article: the
-// manifest index, which is what fileWriter's seen-sets key on.
-func (a articleID) sameArticle(b articleID) bool { return a.artIdx == b.artIdx }
-
 // disposition is how an article leaves the writer's accounting: the one value
 // resolve dispatches on, so that every exit is a named arm of one switch and
 // an exit nobody named is a panic rather than a fallthrough.
