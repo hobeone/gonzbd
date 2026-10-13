@@ -1,5 +1,5 @@
 #!/bin/bash
-# run_tests.sh - Comprehensive test suite for sabnzbd-go
+# run_tests.sh - Comprehensive test suite for gonzbd
 # Includes Go static analysis, linters, unit tests (-race), Go integration tests,
 # the crash-consistency suite, Svelte UI checks/tests, parallel mutation tests,
 # and Playwright E2E tests (skippable via SKIP_PLAYWRIGHT=1 / SKIP_UITEST=1).
@@ -13,7 +13,7 @@ YELLOW='\033[0;33m'
 NC='\033[0m' # No Color
 
 echo "===================================================="
-echo "Starting Full Test Suite: sabnzbd-go"
+echo "Starting Full Test Suite: gonzbd"
 echo "===================================================="
 
 # Check prerequisites
@@ -266,9 +266,10 @@ echo -e "${GREEN}✓ Mutation Anchor Check Passed${NC}"
 
 mapfile -t SPECS < <(git ls-files --cached --others --exclude-standard -- '*testdata/*.spec' | sort -u)
 # MUTATE_SINCE=<ref> narrows the sweep to the specs `mutate -affected` selects
-# for a diff against <ref>. It is a fast loop for iterating, not the gate: the
-# selection misses a spec whose pinned behaviour changed through a file it does
-# not mutate, so the full sweep stays the check before a merge.
+# for a diff against <ref> (see its usage text for the rule). It is a fast loop
+# for iterating, not the gate: the selection cannot see a test that reads a .go
+# file outside its own package by a path built at runtime, so the full sweep
+# stays the check before a merge.
 TOTAL_SPECS=${#SPECS[@]}
 SWEEP_SCOPE="All"
 SWEEP_COLOR="$GREEN"

@@ -21,13 +21,17 @@ func testConfig(dl, comp, admin string, servers ...config.ServerConfig) *config.
 	return cfg
 }
 
-func newTestApplication(t *testing.T) *Application {
+// newTestApplication is New on a config of fresh temporary directories and no
+// history database, with its dispatcher restored. A test that needs an
+// Application builds it here or through New: TestApplicationLiterals_OnlyInNew
+// refuses any other construction.
+func newTestApplication(t *testing.T, opts ...func(*Application)) *Application {
 	t.Helper()
 	dl := t.TempDir()
 	comp := t.TempDir()
 	admin := t.TempDir()
 	cfg := testConfig(dl, comp, admin)
-	application, err := New(cfg, nil)
+	application, err := New(cfg, nil, opts...)
 	if err != nil {
 		t.Fatalf("newTestApplication: %v", err)
 	}

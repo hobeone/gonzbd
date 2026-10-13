@@ -28,6 +28,12 @@ type failMsgFile struct {
 // articles at failIdx, returning the job as failMsgForJob will see it.
 func buildFailMsgJob(t *testing.T, files []failMsgFile, failIdx ...int) *job.Job {
 	t.Helper()
+	return addFailMsgJob(t, newTestApplication(t), files, failIdx...)
+}
+
+// addFailMsgJob is buildFailMsgJob on an application the caller holds.
+func addFailMsgJob(t *testing.T, app *Application, files []failMsgFile, failIdx ...int) *job.Job {
+	t.Helper()
 	parsed := &nzb.NZB{}
 	for i, f := range files {
 		parsed.Files = append(parsed.Files, nzb.File{
@@ -36,7 +42,6 @@ func buildFailMsgJob(t *testing.T, files []failMsgFile, failIdx ...int) *job.Job
 			Articles: []nzb.Article{{ID: fmt.Sprintf("a%d@t", i), Bytes: int(f.bytes), Number: 1}},
 		})
 	}
-	app := newTestApplication(t)
 	j, hdr, err := BuildIngestJob(app.config, parsed, "t.nzb", types.FetchOptions{NzbName: "t.nzb"}, nil)
 	if err != nil {
 		t.Fatalf("BuildIngestJob: %v", err)

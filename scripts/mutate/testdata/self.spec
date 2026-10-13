@@ -140,15 +140,15 @@ file scripts/mutate/spec.go
 [a global directive inside a block is accepted]
 file scripts/mutate/spec.go
 --- anchor
-		if cur != nil && key != "file" {
+		if cur != nil && key != "file" && key != "run" {
 --- replace
-		if false && cur != nil && key != "file" {
+		if false && cur != nil && key != "file" && key != "run" {
 --- end
 
 [a passing mutation is never widened past the run filter]
 file scripts/mutate/main.go
 --- anchor
-	if sp.run == "" {
+	if effRun == "" {
 --- replace
 	if true {
 --- end
@@ -156,7 +156,7 @@ file scripts/mutate/main.go
 [the wider run is made even when the spec has no filter]
 file scripts/mutate/main.go
 --- anchor
-	if sp.run == "" {
+	if effRun == "" {
 --- replace
 	if false {
 --- end
@@ -359,9 +359,48 @@ file scripts/mutate/runfilter.go
 [a run filter alternative that matches a real test is reported dead, and vice versa]
 file scripts/mutate/runfilter.go
 --- anchor
-		if !selects(listed, alt, startAnchored, endAnchored) {
+			if !selects(listed, alt, startAnchored, endAnchored) && !slices.Contains(dead, alt) {
 --- replace
-		if selects(listed, alt, startAnchored, endAnchored) {
+			if selects(listed, alt, startAnchored, endAnchored) && !slices.Contains(dead, alt) {
+--- end
+
+[per-mutation run lines are skipped by the dead-name check]
+file scripts/mutate/runfilter.go
+run TestDeadRunFilterNames_ChecksPerMutationRunLines|TestRunCheck_NamesDeadPerMutationRunFilterAlternative
+--- anchor
+	for _, m := range sp.mutations {
+		if m.run != "" {
+			filters = append(filters, m.run)
+		}
+	}
+--- replace
+	for _, m := range sp.mutations {
+		if false && m.run != "" {
+			filters = append(filters, m.run)
+		}
+	}
+--- end
+
+[a mutated run omits -failfast]
+file scripts/mutate/main.go
+run TestRunSpec_StopsAfterFirstFailingTestOnMutation
+--- anchor
+	mutSpec.failfast = true
+--- replace
+	mutSpec.failfast = false
+--- end
+
+[a mutation's own run line is ignored in favor of the top-level run]
+file scripts/mutate/main.go
+run TestParseSpec_ParsesPerMutationRun|TestWidenOnPass_UsesTheMutationsOwnRunFilter|TestRunSpec_PerMutationRunOverridesSpecRun
+--- anchor
+	if m.run != "" {
+		return m.run
+	}
+--- replace
+	if false && m.run != "" {
+		return m.run
+	}
 --- end
 
 [-check accepts an anchor that does not resolve to exactly one site]
@@ -507,15 +546,73 @@ file scripts/mutate/main.go
 [runSpec returns 0 on a baseline goTest launch error]
 file scripts/mutate/main.go
 --- anchor
-		out, code, launchErr := goTest(root, sp)
-		if launchErr != nil {
-			return fail("could not run go test: %v", launchErr)
+			out, code, launchErr := goTest(root, &baseSpec)
+			if launchErr != nil {
+				return fail("could not run go test: %v", launchErr)
+			}
+--- replace
+			out, code, launchErr := goTest(root, &baseSpec)
+			if launchErr != nil {
+				return 0
+			}
+--- end
+
+[baselineRuns ignores per-mutation run overrides]
+file scripts/mutate/main.go
+run ^TestRunSpec_BaselinesPerMutationRun$
+--- anchor
+		if !slices.Contains(runs, r) && !coveredByTopLevel(sp.run, r, listed) {
+			runs = append(runs, r)
 		}
 --- replace
-		out, code, launchErr := goTest(root, sp)
-		if launchErr != nil {
-			return 0
+		if false && !slices.Contains(runs, r) && !coveredByTopLevel(sp.run, r, listed) {
+			runs = append(runs, r)
 		}
+--- end
+
+[coveredByTopLevel treats an uncovered test as covered]
+file scripts/mutate/main.go
+run ^TestRunSpec_BaselinesPerMutationRun$
+--- anchor
+			if !topRe.MatchString(name) {
+				return false
+			}
+--- replace
+			if false && !topRe.MatchString(name) {
+				return false
+			}
+--- end
+
+[coveredByTopLevel treats a zero-match filter as covered]
+file scripts/mutate/main.go
+run ^TestRunSpec_BaselinesPerMutationRun$
+--- anchor
+	return matched
+--- replace
+	return matched || true
+--- end
+
+[coveredByTopLevel ignores subtest slashes]
+file scripts/mutate/main.go
+run ^TestRunSpec_BaselinesPerMutationRun$
+--- anchor
+	if strings.Contains(topRun+blockRun, "/") {
+		return false
+	}
+--- replace
+	if false && strings.Contains(topRun+blockRun, "/") {
+		return false
+	}
+--- end
+
+[runSpec baselines only the current chunk's mutations instead of the full spec]
+file scripts/mutate/main.go
+run ^TestRunSpec_BaselinesPerMutationRun$
+--- anchor
+		for _, r := range sp.baselineRuns(allMutations, listed) {
+--- replace
+		_ = allMutations
+		for _, r := range sp.baselineRuns(sp.mutations, listed) {
 --- end
 
 [runSpec returns 0 on a confirmExclusions error]

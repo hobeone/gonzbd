@@ -16,13 +16,13 @@ file internal/app/app.go
 [RetryHistoryJob WithoutCancel neutered]
 file internal/app/app.go
 --- anchor
-		addCtx, addCancel := context.WithTimeout(context.WithoutCancel(ctx), addPersistTimeout)
-		err := app.dispatcher.Add(addCtx, j, hdr)
-		addCancel()
+	addCtx, addCancel := context.WithTimeout(context.WithoutCancel(ctx), addPersistTimeout)
+	addErr := app.dispatcher.Add(addCtx, j, hdr)
+	addCancel()
 --- replace
-		addCtx, addCancel := context.WithTimeout(ctx, addPersistTimeout)
-		err := app.dispatcher.Add(addCtx, j, hdr)
-		addCancel()
+	addCtx, addCancel := context.WithTimeout(ctx, addPersistTimeout)
+	addErr := app.dispatcher.Add(addCtx, j, hdr)
+	addCancel()
 --- end
 
 [AddJob's deferred cleanup neutered]

@@ -33,9 +33,9 @@ file internal/app/residency.go
 [the consumer ignores the carried message]
 file internal/app/app.go
 --- anchor
-		unwantedFail := fc.FailMsg
+	unwantedFail := fc.FailMsg
 --- replace
-		unwantedFail := ""
+	unwantedFail := ""
 --- end
 
 [installVerification marks a finished file before it peeks it]
@@ -80,9 +80,9 @@ file internal/app/app.go
 [the Resumed consumer peeks again]
 file internal/app/app.go
 --- anchor
-		if !fc.Resumed {
-			unwantedFail = app.peekArchiveForUnwanted(j, fc)
+	if !fc.Resumed {
+		unwantedFail = app.peekArchiveForUnwanted(j, fc)
 --- replace
-		if true {
-			unwantedFail = app.peekArchiveForUnwanted(j, fc)
+	if true {
+		unwantedFail = app.peekArchiveForUnwanted(j, fc)
 --- end

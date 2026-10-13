@@ -26,11 +26,6 @@ func TestApplicationConstructsAWiredDispatcher(t *testing.T) {
 
 	w := &appWorkers{app: app}
 	w.Abort(job.New("test-job", "Test Job", job.Policy{}))
-
-	appNilDisp := &Application{}
-	if _, ok := appNilDisp.lookupJob("test-job"); ok {
-		t.Fatal("lookupJob must return false when dispatcher is nil")
-	}
 }
 
 type mockCancelWakeDownloader struct {
@@ -68,11 +63,7 @@ func TestAppWorkers_Abort(t *testing.T) {
 	// Nil job should safely return without panic.
 	wNil.Abort(nil)
 
-	// 2. App with nil downloader and nil dispatcher should safely return.
-	wEmpty := &appWorkers{app: &Application{}}
-	wEmpty.Abort(job.New("job-empty", "Job Empty", job.Policy{}))
-
-	// 3. App with wired mock downloader and real dispatcher.
+	// 2. App with wired mock downloader and real dispatcher.
 	app := newTestApplication(t)
 	w := &appWorkers{app: app}
 

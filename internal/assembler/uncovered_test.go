@@ -6,8 +6,7 @@ import (
 )
 
 // TestOwnedRanges_Covered pins the arithmetic of covered: the bytes of a range
-// that ranges owned by OTHER articles cover, summed over every owner it
-// touches. The arriving article's own range is not cover.
+// that owned ranges cover, summed over every owner it touches.
 func TestOwnedRanges_Covered(t *testing.T) {
 	var o ownedRanges
 	o.claim(Range{Off: 0, Len: 100}, articleID{artIdx: 0})
@@ -15,23 +14,21 @@ func TestOwnedRanges_Covered(t *testing.T) {
 	o.claim(Range{Off: 300, Len: 50}, articleID{artIdx: 5})
 
 	cases := map[string]struct {
-		r        Range
-		arriving int32
-		want     int64
+		r    Range
+		want int64
 	}{
-		"inside one owner":                {Range{Off: 10, Len: 50}, 9, 50},
-		"identical to an owner":           {Range{Off: 0, Len: 100}, 9, 100},
-		"tail of one owner and a gap":     {Range{Off: 60, Len: 100}, 9, 40},
-		"spans a gap between two owners":  {Range{Off: 50, Len: 200}, 9, 100},
-		"two abutting owners exactly":     {Range{Off: 200, Len: 150}, 9, 150},
-		"three owners and both ends open": {Range{Off: 50, Len: 400}, 9, 200},
-		"touches nothing":                 {Range{Off: 100, Len: 100}, 9, 0},
-		"its own range is not cover":      {Range{Off: 250, Len: 100}, 2, 50},
+		"inside one owner":                {Range{Off: 10, Len: 50}, 50},
+		"identical to an owner":           {Range{Off: 0, Len: 100}, 100},
+		"tail of one owner and a gap":     {Range{Off: 60, Len: 100}, 40},
+		"spans a gap between two owners":  {Range{Off: 50, Len: 200}, 100},
+		"two abutting owners exactly":     {Range{Off: 200, Len: 150}, 150},
+		"three owners and both ends open": {Range{Off: 50, Len: 400}, 200},
+		"touches nothing":                 {Range{Off: 100, Len: 100}, 0},
 	}
 	for name, tc := range cases {
 		t.Run(name, func(t *testing.T) {
-			if got := o.covered(tc.r, articleID{artIdx: tc.arriving}); got != tc.want {
-				t.Errorf("covered(%+v) by article %d = %d, want %d", tc.r, tc.arriving, got, tc.want)
+			if got := o.covered(tc.r); got != tc.want {
+				t.Errorf("covered(%+v) = %d, want %d", tc.r, got, tc.want)
 			}
 		})
 	}

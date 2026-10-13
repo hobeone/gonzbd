@@ -2002,7 +2002,10 @@ func TestApplication_Shutdown_WedgedComponent(t *testing.T) {
 
 func TestApplication_TestNNTPServer(t *testing.T) {
 	t.Parallel()
-	appInst := &app.Application{}
+	appInst, err := app.New(testConfig(t.TempDir(), t.TempDir(), t.TempDir()), nil)
+	if err != nil {
+		t.Fatalf("app.New: %v", err)
+	}
 	cfg := config.ServerConfig{
 		Host:               "127.0.0.1",
 		Port:               1,

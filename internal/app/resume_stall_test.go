@@ -40,7 +40,7 @@ func TestResume_ReevaluatesStalls(t *testing.T) {
 
 			application.handleLowDisk(dir, 0)
 			j := addStallTestJob(t, application, "lowdisk-stall")
-			application.Stall(j.ID(), testFault("write"))
+			application.Stall(j, testFault("write"))
 			if got := application.StallReason(j.ID()).Reason; got == "" {
 				t.Fatal("the fixture is not stalled")
 			}

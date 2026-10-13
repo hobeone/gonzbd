@@ -2,11 +2,11 @@ package assembler
 
 import (
 	"errors"
+	"slices"
 	"testing"
 )
 
 func TestOwnedRanges_SeedMergesIntersectingRanges(t *testing.T) {
-	probe := articleID{artIdx: 3}
 	for _, tc := range []struct {
 		name    string
 		in      []Range
@@ -26,12 +26,12 @@ func TestOwnedRanges_SeedMergesIntersectingRanges(t *testing.T) {
 				t.Fatal(err)
 			}
 			for _, r := range tc.covered {
-				if _, ok := o.ownerOf(r, probe); !ok {
+				if _, ok := o.ownerOf(r); !ok {
 					t.Errorf("ownerOf(%+v) not owned after seeding %+v", r, tc.in)
 				}
 			}
 			for _, r := range tc.free {
-				if _, ok := o.ownerOf(r, probe); ok {
+				if _, ok := o.ownerOf(r); ok {
 					t.Errorf("ownerOf(%+v) owned after seeding %+v", r, tc.in)
 				}
 			}
@@ -52,9 +52,7 @@ func TestOwnedRanges_SeedOnNonEmptySetChangesNothing(t *testing.T) {
 
 func TestOwnedRanges_IntersectionIsOwned(t *testing.T) {
 	var o ownedRanges
-	a := articleID{artIdx: 1}
-	b := articleID{artIdx: 2}
-	o.claim(Range{Off: 0, Len: 1000}, a)
+	o.claim(Range{Off: 0, Len: 1000}, articleID{artIdx: 1})
 
 	cases := []struct {
 		name string
@@ -73,24 +71,9 @@ func TestOwnedRanges_IntersectionIsOwned(t *testing.T) {
 		{"zero-length at start", Range{0, 0}, false},
 	}
 	for _, tc := range cases {
-		if _, got := o.ownerOf(tc.r, b); got != tc.want {
+		if _, got := o.ownerOf(tc.r); got != tc.want {
 			t.Errorf("%s: ownerOf(%+v) owned = %v, want %v", tc.name, tc.r, got, tc.want)
 		}
-	}
-	if _, got := o.ownerOf(Range{0, 1000}, a); got {
-		t.Error("an article does not collide with its own range (a write-fault retry re-arrives at the same offset)")
-	}
-}
-
-func TestOwnedRanges_SeededRangeIsOwnedByEveryArrival(t *testing.T) {
-	var o ownedRanges
-	if err := o.seed([]Range{{0, 100}}); err != nil {
-		t.Fatal(err)
-	}
-	// artIdx 0 is the zero articleID's index: a zero sentinel would treat it
-	// as the owner itself and wave it through.
-	if _, got := o.ownerOf(Range{50, 10}, articleID{artIdx: 0}); !got {
-		t.Error("article 0 was waved through a seeded range")
 	}
 }
 
@@ -105,51 +88,58 @@ func TestOwnedRanges_ClaimKeepsOffsetOrder(t *testing.T) {
 		off  int64
 		want int32
 	}{{50, 1}, {150, 2}, {250, 0}} {
-		if got, ok := o.ownerOf(Range{tc.off, 10}, articleID{artIdx: 9}); !ok || got.artIdx != tc.want {
+		if got, ok := o.ownerOf(Range{tc.off, 10}); !ok || got.artIdx != tc.want {
 			t.Errorf("ownerOf([%d,%d)) = %+v, %v; want article %d", tc.off, tc.off+10, got, ok, tc.want)
 		}
 	}
 }
 
-func TestOwnedRanges_ReclaimBySameArticleLeavesOneEntry(t *testing.T) {
-	a := articleID{artIdx: 1}
-	probe := articleID{artIdx: 9}
+// TestOwnedRanges_ClaimOverAnOwnedRangePanics pins that claim refuses every
+// intersection, its own owner's included: no owner of a range reaches claim
+// again (TestFileWriter_RangeOwnersStayAdmitted), so a claim over one is an
+// invariant violation and must not quietly replace the range.
+func TestOwnedRanges_ClaimOverAnOwnedRangePanics(t *testing.T) {
 	for _, tc := range []struct {
-		name   string
-		second Range
-		probe  Range
+		name string
+		r    Range
+		id   articleID
 	}{
-		{"longer", Range{0, 100}, Range{60, 10}},
-		{"shorter", Range{0, 20}, Range{5, 10}},
-		{"shifted", Range{10, 50}, Range{55, 3}},
+		{"another article over the tail", Range{40, 50}, articleID{artIdx: 2}},
+		{"the owner itself", Range{0, 50}, articleID{artIdx: 1}},
+		{"a range starting below and ending inside", Range{80, 30}, articleID{artIdx: 2}},
+		{"a range enclosing two owners", Range{-10, 300}, articleID{artIdx: 2}},
+		{"the seeded range", Range{205, 5}, articleID{artIdx: 2}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			var o ownedRanges
-			o.claim(Range{200, 50}, articleID{artIdx: 2})
-			o.claim(Range{0, 50}, a)
-			o.claim(tc.second, a)
-			if len(o.s) != 2 {
-				t.Fatalf("entries = %+v, want the re-claim to replace the first range", o.s)
+			if err := o.seed([]Range{{200, 50}}); err != nil {
+				t.Fatal(err)
 			}
-			// The probe lies inside the new range; the old range's end would
-			// put it past the broken search's starting point.
-			if got, ok := o.ownerOf(tc.probe, probe); !ok || got != a {
-				t.Errorf("ownerOf(%+v) = %+v, %v; want article 1", tc.probe, got, ok)
-			}
-			if got, ok := o.ownerOf(Range{210, 10}, probe); !ok || got.artIdx != 2 {
-				t.Errorf("the neighbour was lost: ownerOf = %+v, %v", got, ok)
-			}
+			o.claim(Range{0, 50}, articleID{artIdx: 1})
+			o.claim(Range{100, 50}, articleID{artIdx: 3})
+			defer func() {
+				if recover() == nil {
+					t.Errorf("claim of %+v by %+v did not panic; set = %+v", tc.r, tc.id, o.s)
+				}
+			}()
+			o.claim(tc.r, tc.id)
 		})
 	}
 }
 
-func TestOwnedRanges_ClaimOverAnotherArticlePanics(t *testing.T) {
+// TestOwnedRanges_ClaimBetweenAbuttingRangesIsAccepted is the other side of
+// the panic: a range that only abuts its neighbours intersects nothing.
+func TestOwnedRanges_ClaimBetweenAbuttingRangesIsAccepted(t *testing.T) {
 	var o ownedRanges
 	o.claim(Range{0, 50}, articleID{artIdx: 1})
-	defer func() {
-		if recover() == nil {
-			t.Error("claiming over another article's range did not panic")
-		}
-	}()
-	o.claim(Range{40, 50}, articleID{artIdx: 2})
+	o.claim(Range{100, 50}, articleID{artIdx: 3})
+	o.claim(Range{50, 50}, articleID{artIdx: 2})
+	want := []Range{{0, 50}, {50, 50}, {100, 50}}
+	got := make([]Range, 0, len(o.s))
+	for _, e := range o.s {
+		got = append(got, e.r)
+	}
+	if !slices.Equal(got, want) {
+		t.Errorf("ranges = %v, want %v", got, want)
+	}
 }

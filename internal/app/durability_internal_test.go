@@ -109,7 +109,7 @@ func TestStall_PausesTheJobAndSurfacesTheReason(t *testing.T) {
 	t.Parallel()
 	application, job := newDurabilityTestApp(t, 1, 2)
 
-	application.Stall(job.ID(), storagefault.Classify("sync", "/mnt/full/A.bin", syscall.ENOSPC))
+	application.Stall(job, storagefault.Classify("sync", "/mnt/full/A.bin", syscall.ENOSPC))
 
 	row, ok := application.dispatcher.Row(job.ID())
 	if !ok {
@@ -149,7 +149,7 @@ func TestFail_SurfacesTheReasonAndStillFailsNoArticle(t *testing.T) {
 	t.Parallel()
 	application, job := newDurabilityTestApp(t, 1, 2)
 
-	application.Fail(job.ID(), storagefault.Classify("write", "/mnt/ro/A.bin", syscall.EROFS))
+	application.Fail(job, storagefault.Classify("write", "/mnt/ro/A.bin", syscall.EROFS))
 
 	row, ok := application.dispatcher.Row(job.ID())
 	if !ok {
@@ -206,7 +206,11 @@ func TestDropJobAlreadyInHistory_DoesNothingWithoutAHistoryDatabase(t *testing.T
 	} {
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()
-			application := &Application{historyRepo: repo, log: slog.New(slog.DiscardHandler)}
+			cfg := testConfig(t.TempDir(), t.TempDir(), t.TempDir())
+			application, err := New(cfg, repo, WithLogger(slog.New(slog.DiscardHandler)))
+			if err != nil {
+				t.Fatalf("New: %v", err)
+			}
 			application.dropJobAlreadyInHistory(t.Context(), "job-a")
 		})
 	}
@@ -226,18 +230,6 @@ type failingRuleStore struct {
 func (f failingRuleStore) Reclaim(context.Context, string, ...string) error { return f.err }
 
 func (f failingRuleStore) SweepOrphans(context.Context) error { return f.err }
-
-// TestStall_ReportsRatherThanPanicsOnAJobThatHasLeft pins the case a storage
-// fault most easily hits: the assembler finds the fault, and by the time the
-// stall reaches the queue the job has been removed. Both queue writes fail and
-// neither may take the process down or abort the other.
-func TestStall_ReportsRatherThanPanicsOnAJobThatHasLeft(t *testing.T) {
-	t.Parallel()
-	application, _, _ := newLifecycleTestApp(t)
-
-	application.Stall("no-such-job", storagefault.Classify("sync", "/x", syscall.ENOSPC))
-	application.Fail("no-such-job", storagefault.Classify("write", "/x", syscall.EROFS))
-}
 
 // ---------- event emission ----------
 
@@ -264,7 +256,7 @@ func TestEmit_ReachesTheRegisteredEmitter(t *testing.T) {
 		t.Fatalf("emit delivered %+v, want one queue_updated for \"direct\"", rec.events)
 	}
 
-	application.Stall(job.ID(), storagefault.Classify("sync", "/mnt/full/A.bin", syscall.ENOSPC))
+	application.Stall(job, storagefault.Classify("sync", "/mnt/full/A.bin", syscall.ENOSPC))
 	var sawStallUpdate bool
 	for _, e := range rec.events[1:] {
 		if e.Type == "queue_updated" && e.NzoID == job.ID() {
@@ -577,14 +569,11 @@ func TestDropJobAlreadyInHistory_KeepsTheJobWhenTheHistoryLookupFails(t *testing
 	}
 }
 
-// TestHoldUnreconciledJob_LeavesACancelledJobAlone pins the two cases the
-// hold cannot pause: with no dispatcher there is nothing to pause, and a
-// cancelled job's intent is latched. Neither is routed onward, and a job the
-// hold did not pause gets no note saying it did.
+// TestHoldUnreconciledJob_LeavesACancelledJobAlone pins the case the hold
+// cannot pause: a cancelled job's intent is latched. It is not routed onward,
+// and a job the hold did not pause gets no note saying it did.
 func TestHoldUnreconciledJob_LeavesACancelledJobAlone(t *testing.T) {
 	t.Parallel()
-	(&Application{log: slog.New(slog.DiscardHandler)}).holdUnreconciledJob("job-a", errors.New("lookup failed"))
-
 	application, _, _ := newLifecycleTestApp(t)
 	j, _ := removeJobFixture(t, application, "cancelledhold")
 	if err := application.Dispatcher().Cancel(j.ID()); err != nil {

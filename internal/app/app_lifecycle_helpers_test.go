@@ -44,11 +44,11 @@ func newLifecycleTestApp(t *testing.T, opts ...func(*Application)) (*Application
 
 // TestDeleteHistoryEntries_EmptyIsNoOp pins the guard: an empty slice
 // returns (0, nil) immediately, without touching historyRepo — checked here
-// by calling it on a zero-value Application whose historyRepo is nil, which
+// by calling it on an Application built with no history repository, which
 // would panic if the empty check were ever removed or reordered.
 func TestDeleteHistoryEntries_EmptyIsNoOp(t *testing.T) {
 	t.Parallel()
-	application := &Application{}
+	application := newTestApplication(t)
 	n, err := application.deleteHistoryEntries(t.Context(), nil, nil)
 	if err != nil {
 		t.Errorf("err = %v, want nil", err)
@@ -301,11 +301,6 @@ func TestWatchCompletions_DrainsPendingOnContextCancel(t *testing.T) {
 
 func TestHasDownloadableJobs_Branches(t *testing.T) {
 	t.Parallel()
-	app := &Application{}
-	if app.hasDownloadableJobs() {
-		t.Error("hasDownloadableJobs with nil dispatcher should be false")
-	}
-
 	appReal := newTestApplication(t)
 	if appReal.hasDownloadableJobs() {
 		t.Error("hasDownloadableJobs with empty queue should be false")

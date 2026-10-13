@@ -30,7 +30,7 @@ func TestFail_FromFetching_AbortsTheDirectUnpack(t *testing.T) {
 	du := waitingDirectUnpack(t, application, id)
 
 	fault := storagefault.Classify("write", "/mnt/ro/held.bin", syscall.EROFS)
-	application.Fail(id, fault)
+	application.Fail(j, fault)
 	awaitAdmissionsEnded(t, application)
 
 	select {

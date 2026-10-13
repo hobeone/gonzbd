@@ -6,7 +6,7 @@ file internal/app/stall.go
 --- anchor
 	if app.stallKindOf(jobID) == stallVerify && j.Intent() == job.IntentPause {
 --- replace
-	if _ = j; false {
+	if _, _ = j, job.IntentPause; false {
 --- end
 
 [a verification fault is never lifted, even once the job is resumed]
@@ -14,7 +14,7 @@ file internal/app/stall.go
 --- anchor
 	if app.stallKindOf(jobID) == stallVerify && j.Intent() == job.IntentPause {
 --- replace
-	if _ = j; app.stallKindOf(jobID) == stallVerify {
+	if _, _ = j, job.IntentPause; app.stallKindOf(jobID) == stallVerify {
 --- end
 
 [a write fault on a paused job is kept as a verification fault is]

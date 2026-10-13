@@ -30,9 +30,13 @@ quality gates).
   (step 6/7) for environments lacking Playwright browsers. Outputs a notice
   that the run is partial (`PARTIAL: UI E2E skipped, not the gate`).
 - `MUTATE_SINCE=<ref>`: Narrows the mutation phase to the specs
-  `go run ./scripts/mutate -affected <ref>` selects: those whose spec file,
-  or a file one of their mutations edits, differs from `<ref>` in the working
-  tree. It is a loop for iterating, not the final gate before merge.
+  `go run ./scripts/mutate -affected <ref>` selects: those whose spec file
+  changed, whose test binary is built from a package a changed non-test `.go`
+  file sits in (or whose mutated file's directory holds one), whose own package
+  holds a changed `_test.go` file (or is `internal/sched` when
+  `docs/job-lifecycle.md` changes), or whose test runs `go` or `git`. Any other
+  changed file that is neither `.go`, `.md`, nor a spec selects every spec. It
+  is a loop for iterating, not the final gate before merge.
 - `MUTATE_PARALLEL_WORKERS=<n>`: Number of parallel git worktrees running
   `scripts/mutate` (default `3/4 * NUM_CPUS`, clamped to 4..16).
 - `MUTATE_MAX_CHUNK=<n>`: Maximum mutations per chunk (default 5).

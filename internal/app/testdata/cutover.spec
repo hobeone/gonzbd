@@ -1,5 +1,5 @@
 pkg ./internal/app/
-run TestLooseRecord_|TestHandleFileUntrusted_ReturnsArticlesToOutstandingWhenSQLiteFails|TestResidencyFault_|TestVerifyAndAttach_|TestInstallVerification_|TestVerifyRetry_|TestVerifyPausedJobs_|TestRecorder_|TestDurability_DoneMeansWrittenAndRecorded|TestRecord_FlushesOnCleanShutdown|TestFinalize_
+run ^(TestVerifyAndAttach_MissingDirectoryParksTheJob|TestLooseRecord_UntrustedSurvivesEviction|TestLooseRecord_FinalizerFlushesBeforeTheJobLeaves|TestLooseRecord_HandOverFlushesBeforePostProcessing|TestRecorder_DropsRowsOfAReplacedInstance|TestLooseRecord_ResumedCompletionIsNotFedToDirectUnpack|TestLooseRecord_CompleteFileInstallsItsFailedSet|TestLooseRecord_CorruptRowCostsOnlyItself|TestInstallVerification_RestoresThePolicyOnlyWhenAsked|TestVerifyRetry_ReadsEveryFileAndReportsWhatItFinished|TestHandleFileUntrusted_ReturnsArticlesToOutstandingWhenSQLiteFails|TestResidencyFault_ParksOnlyADeviceFault|TestLooseRecord_PausedJobReportsVerifiedProgress)$
 
 # Restart and retry resume from the loose article record (written_articles +
 # job_files). Each mutation removes one half of that path; each must be caught
@@ -10,6 +10,7 @@ run TestLooseRecord_|TestHandleFileUntrusted_ReturnsArticlesToOutstandingWhenSQL
 # unverified is ever served to the scheduler.
 [the content is attached before the record is verified]
 file internal/app/residency.go
+run TestVerifyAndAttach_MissingDirectoryParksTheJob
 --- anchor
 	files, rows, err := r.readRecord(ctx, j.ID())
 	if err != nil {
@@ -29,6 +30,7 @@ file internal/app/residency.go
 # next start trusts bytes whose fsync failed.
 [an untrust clears the file in memory only]
 file internal/app/record.go
+run TestLooseRecord_UntrustedSurvivesEviction
 --- anchor
 	if err := app.recorder.untrust(ctx, j, fileIdx); err != nil {
 --- replace
@@ -40,6 +42,7 @@ file internal/app/record.go
 # FAILED entry's retry would start from less than was written.
 [the finalizer does not flush before the instance leaves the dispatcher]
 file internal/app/job_finalizer.go
+run TestLooseRecord_FinalizerFlushesBeforeTheJobLeaves
 --- anchor
 		_ = app.recorder.flush(flushCtx) //nolint:errcheck // flush logs its own failure
 --- replace
@@ -50,6 +53,7 @@ file internal/app/job_finalizer.go
 # post-processing can change the bytes it describes.
 [the hand-over to post-processing does not flush]
 file internal/app/app.go
+run TestLooseRecord_HandOverFlushesBeforePostProcessing
 --- anchor
 	err := app.recorder.flush(flushCtx)
 	flushCancel()
@@ -67,6 +71,7 @@ file internal/app/app.go
 # rows over the record the retry verified.
 [the recorder writes the rows of an instance the dispatcher no longer holds]
 file internal/app/record.go
+run TestRecorder_DropsRowsOfAReplacedInstance
 --- anchor
 	return r.current(j.ID()) == j
 --- replace
@@ -77,16 +82,18 @@ file internal/app/record.go
 # process already finished; DirectUnpack is not fed it.
 [a resumed completion is fed to DirectUnpack]
 file internal/app/app.go
+run TestLooseRecord_ResumedCompletionIsNotFedToDirectUnpack
 --- anchor
-		if pp := app.config.GetPostProc(); pp.DirectUnpack && pp.EnableUnrar && !fc.Resumed {
+	if pp := app.config.GetPostProc(); pp.DirectUnpack && pp.EnableUnrar && !fc.Resumed {
 --- replace
-		if pp := app.config.GetPostProc(); pp.DirectUnpack && pp.EnableUnrar {
+	if pp := app.config.GetPostProc(); pp.DirectUnpack && pp.EnableUnrar {
 --- end
 
 # Design item 1: a complete=1 file is trusted unread, so every article of its
 # range without a row is failed (the complement), not left Outstanding.
 [a complete file leaves its rowless articles Outstanding]
 file internal/job/verification.go
+run TestLooseRecord_CompleteFileInstallsItsFailedSet
 --- anchor
 		_ = p.markFailed(m, i) // a no-op for an article a row just marked Done
 --- replace
@@ -97,6 +104,7 @@ file internal/job/verification.go
 # CRC is settled. A complete=1 file's CRC is settled from its rows at install.
 [a complete file's CRC is not settled at install]
 file internal/job/verification.go
+run TestLooseRecord_CorruptRowCostsOnlyItself
 --- anchor
 	if v.Complete || v.Settle {
 --- replace
@@ -107,6 +115,7 @@ file internal/job/verification.go
 # file's or the job's install (Standing Design Rule 3).
 [a row that cannot be placed fails the whole install]
 file internal/job/verified.go
+run TestLooseRecord_CorruptRowCostsOnlyItself
 --- anchor
 			dropped++
 			continue
@@ -117,6 +126,7 @@ file internal/job/verified.go
 # Hydration restores the stored fetch policy; a retry keeps the one it derived.
 [a retry installs the stored fetch policy]
 file internal/app/residency.go
+run TestInstallVerification_RestoresThePolicyOnlyWhenAsked
 --- anchor
 			RestorePolicy: restorePolicy,
 --- replace
@@ -127,6 +137,7 @@ file internal/app/residency.go
 # the bytes since the flag was written.
 [a retry trusts complete=1 unread]
 file internal/app/app.go
+run TestVerifyRetry_ReadsEveryFileAndReportsWhatItFinished
 --- anchor
 		files[i].Complete = false
 --- replace
@@ -136,6 +147,7 @@ file internal/app/app.go
 # A failed SQLite untrust still returns the file's articles to Outstanding.
 [a failed SQLite untrust skips the in-memory half]
 file internal/app/record.go
+run TestHandleFileUntrusted_ReturnsArticlesToOutstandingWhenSQLiteFails
 --- anchor
 		app.log.Error("could not remove an untrusted file's record now; the delete is owed and rides ahead of the file's rows in the recorder's next write",
 			"job", jobID, "fileidx", fileIdx, "err", err)
@@ -150,6 +162,7 @@ file internal/app/record.go
 # A cancelled hydration is not a device fault: it parks nothing.
 [a cancelled hydration parks the job]
 file internal/app/residency.go
+run TestResidencyFault_ParksOnlyADeviceFault
 --- anchor
 	if ctx.Err() != nil || errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 --- replace
@@ -160,6 +173,7 @@ file internal/app/residency.go
 # before the first tick, so its progress reads what the record holds.
 [a paused job is not loaded after startup]
 file internal/app/startup_reconcile.go
+run TestLooseRecord_PausedJobReportsVerifiedProgress
 --- anchor
 		err := app.dispatcher.LoadProgress(jctx, row.ID)
 --- replace

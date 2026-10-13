@@ -88,7 +88,7 @@ func TestAdvanceToFetching_WithADeferredFailureReason_KeepsTheFinish(t *testing.
 	if err := f.d.AdvanceFrom(f.j, job.Fetching, job.Assessing); err != nil {
 		t.Fatalf("AdvanceFrom: %v", err)
 	}
-	f.app.Fail(f.j.ID(), assessFault())
+	f.app.Fail(f.j, assessFault())
 	f.requireNotAdmitted(t, "Fail with Assessing pending", job.StateView{State: job.Fetching, Next: job.Assessing}, false)
 
 	f.app.runner.advance(f.j, job.Fetching)

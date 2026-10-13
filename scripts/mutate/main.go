@@ -43,7 +43,8 @@
 // silently — the remaining alternatives still select real tests, the
 // baseline still passes, and the phantom name reads as though it were part
 // of the pin. Before the baseline runs, deadRunFilterNames lists the
-// package's declared tests with `go test -list` and checks every alternative
+// package's declared tests — reading the test files' declarations rather than
+// compiling them (listTests, testlist.go) — and checks every alternative
 // of a plain `run` line — one that is nothing but test names joined by `|`,
 // in one of three shapes: bare (`A|B`), the whole thing wrapped
 // (`^(A|B)$`), or a shared prefix sitting outside the group
@@ -84,8 +85,11 @@
 //
 // -check parses one or more specs, resolves every anchor with the same
 // strings.Count checkAnchor uses, and reports any that do not match exactly
-// one site — without compiling, running a test, or writing to the working
-// tree. -check-all does the same over every spec this checkout has, found
+// one site; then it checks every plain-alternation `run` line against
+// listTests, as the pre-flight does. It writes nothing to the working tree,
+// and it compiles nothing unless a spec's pkg is a pattern or GOFLAGS is set,
+// the two cases listTests hands to `go test -list`. -check-all does the same
+// over every spec this checkout has, found
 // the way scripts/run_tests.sh finds them: `git ls-files --cached --others
 // --exclude-standard -- '*testdata/*.spec'`, never `find` or filepath.Walk —
 // both descend into the gitignored `.claude/worktrees/` and would check a
@@ -185,6 +189,7 @@ const survivedEvidence = "the assertion does not discriminate"
 type mutation struct {
 	name    string
 	file    string
+	run     string
 	anchor  string
 	replace string
 }
@@ -203,7 +208,64 @@ type spec struct {
 	// It applies to the package the spec names, which is the package every
 	// mutation is rebuilt through.
 	gcflags   string
+	failfast  bool
 	mutations []mutation
+}
+
+// runFor returns the -run pattern that evaluates m: the block's own `run`
+// line when it sets one, and the spec's top-level `run` otherwise.
+func (sp *spec) runFor(m mutation) string {
+	if m.run != "" {
+		return m.run
+	}
+	return sp.run
+}
+
+// baselineRuns returns the distinct -run filters the baseline must verify, in
+// declaration order: the spec's top-level `run` followed by any per-mutation
+// `run` override in mutations whose selected tests are not already covered by
+// the top-level `run`. Callers pass the full, unchunked mutation slice so
+// chunk 1 verifies overrides in later chunks that run with -skip-baseline.
+//
+// Do not combine them into a single `a|b` pattern: `go test` splits -run on
+// unbracketed `/`, so a union of subtest filters is not expressible as a
+// single -run flag.
+func (sp *spec) baselineRuns(mutations []mutation, listed []string) []string {
+	runs := []string{sp.run}
+	for _, m := range mutations {
+		r := sp.runFor(m)
+		if !slices.Contains(runs, r) && !coveredByTopLevel(sp.run, r, listed) {
+			runs = append(runs, r)
+		}
+	}
+	return runs
+}
+
+// coveredByTopLevel reports whether blockRun selects at least one top-level
+// Test function in listed (see listTests in testlist.go, which intentionally
+// omits Fuzz, Benchmark, and Example functions), every Test it selects is also
+// selected by topRun, and neither filter restricts subtests via '/'. When
+// true, a passing top-level baseline has already executed every Test blockRun
+// will run.
+func coveredByTopLevel(topRun, blockRun string, listed []string) bool {
+	if strings.Contains(topRun+blockRun, "/") {
+		return false
+	}
+	topRe, errTop := regexp.Compile(topRun)
+	blockRe, errBlock := regexp.Compile(blockRun)
+	if errTop != nil || errBlock != nil {
+		return false
+	}
+	matched := false
+	for _, name := range listed {
+		if blockRe.MatchString(name) {
+			if !topRe.MatchString(name) {
+				return false
+			}
+			matched = true
+		}
+	}
+	return matched
 }
 
 // runOpts is how the command line shapes one spec's run.
@@ -355,6 +417,7 @@ func runSpec(root, path string, opts runOpts) int {
 	}
 	sp.parallel = opts.parallel
 	sp.gcflags = opts.gcflags
+	allMutations := sp.mutations
 	if opts.chunk != "" {
 		if err := sp.applyChunk(opts.chunk); err != nil {
 			return fail("%v", err)
@@ -373,35 +436,50 @@ func runSpec(root, path string, opts runOpts) int {
 
 	// The baseline runs first and unmutated. Every verdict below is a claim
 	// about what the mutation changed, and that claim is empty if the test was
-	// not passing to begin with.
+	// not passing to begin with. Every distinct effective -run filter across
+	// allMutations (not just the current chunk's slice, since chunks 2..M run
+	// with -skip-baseline in run_tests.sh) is checked so a block override
+	// cannot point at an already-failing or non-matching test.
 	if !opts.skipBaseline {
-		baselineCmd := "go " + strings.Join(testArgs(sp), " ")
-		if !opts.quiet {
-			fmt.Printf("baseline: %s\n", baselineCmd)
+		var listed []string
+		if l, lerr := listTests(root, sp); lerr == nil {
+			listed = l
 		}
-		out, code, launchErr := goTest(root, sp)
-		if launchErr != nil {
-			return fail("could not run go test: %v", launchErr)
-		}
-		if code != 0 {
-			fmt.Fprintf(os.Stderr, "\nBASELINE FAILED — no mutation was applied.\n\n"+
-				"Every verdict this command produces is a statement about what the\n"+
-				"mutation changed. A test that already fails yields KILLED for any\n"+
-				"mutation, and none of them mean anything.\n\n"+
-				"command: %s\n\n%s\n", baselineCmd, indent(out))
-			return 1
-		}
-		if ranNothing(out) {
-			// `go test -run TestTypo` exits 0 and prints "[no tests to run]", so
-			// a misspelled run filter reads as a green baseline and then reports
-			// every mutation SURVIVED — a full sweep of "nothing pins this",
-			// against a test that never executed.
-			fmt.Fprintf(os.Stderr, "\nBASELINE RAN NO TESTS — no mutation was applied.\n\n"+
-				"go test exited 0 without executing anything, which usually means the\n"+
-				"`run` pattern matches no test in %s. Left unchecked this reports every\n"+
-				"mutation as SURVIVED.\n\n"+
-				"command: %s\n\n%s\n", sp.pkg, baselineCmd, indent(out))
-			return 1
+		for _, r := range sp.baselineRuns(allMutations, listed) {
+			baseSpec := *sp
+			baseSpec.run = r
+			baselineCmd := "go " + strings.Join(testArgs(&baseSpec), " ")
+			if !opts.quiet {
+				fmt.Printf("baseline: %s\n", baselineCmd)
+			}
+			out, code, launchErr := goTest(root, &baseSpec)
+			if launchErr != nil {
+				return fail("could not run go test: %v", launchErr)
+			}
+			if code != 0 {
+				fmt.Fprintf(os.Stderr, "\nBASELINE FAILED — no mutation was applied.\n\n"+
+					"Every verdict this command produces is a statement about what the\n"+
+					"mutation changed. A test that already fails yields KILLED for any\n"+
+					"mutation, and none of them mean anything.\n\n"+
+					"command: %s\n\n%s\n", baselineCmd, indent(out))
+				if d, ok := timedOut(out); ok {
+					fmt.Fprintf(os.Stderr, "\nthe unmutated test ran out of time (-timeout %s). If it needs that\n"+
+						"long, give the spec a `timeout` line; one that sets none gets %s.\n", d, defaultTestTimeout)
+				}
+				return 1
+			}
+			if ranNothing(out) {
+				// `go test -run TestTypo` exits 0 and prints "[no tests to run]", so
+				// a misspelled run filter reads as a green baseline and then reports
+				// every mutation SURVIVED — a full sweep of "nothing pins this",
+				// against a test that never executed.
+				fmt.Fprintf(os.Stderr, "\nBASELINE RAN NO TESTS — no mutation was applied.\n\n"+
+					"go test exited 0 without executing anything, which usually means the\n"+
+					"`run` pattern matches no test in %s. Left unchecked this reports every\n"+
+					"mutation as SURVIVED.\n\n"+
+					"command: %s\n\n%s\n", sp.pkg, baselineCmd, indent(out))
+				return 1
+			}
 		}
 		if !opts.quiet {
 			fmt.Println("baseline: PASS")
@@ -459,7 +537,10 @@ func run(root string, sp *spec, m mutation, verbose bool) result {
 		fatalRestoring(path, backup, original, "write %s: %v", m.file, err)
 	}
 
-	out, code, launchErr := goTest(root, sp)
+	mutSpec := *sp
+	mutSpec.run = sp.runFor(m)
+	mutSpec.failfast = true
+	out, code, launchErr := goTest(root, &mutSpec)
 	if launchErr != nil {
 		fatalRestoring(path, backup, original, "could not run go test: %v", launchErr)
 	}
@@ -476,6 +557,9 @@ func run(root string, sp *spec, m mutation, verbose bool) result {
 		// mutation rather than about the tree in general.
 		return widenOnPass(root, sp, m, verbose)
 	default:
+		if d, ok := timedOut(out); ok {
+			return result{mutation: m, verdict: killed, evidence: "the mutated test never finished: go test timed out after " + d}
+		}
 		return result{mutation: m, verdict: killed, evidence: firstAssertion(out)}
 	}
 }
@@ -495,7 +579,8 @@ func run(root string, sp *spec, m mutation, verbose bool) result {
 // mutation reaching here has already failed the command, so this only ever
 // lengthens a run that was going to exit non-zero.
 func widenOnPass(root string, sp *spec, m mutation, verbose bool) result {
-	if sp.run == "" {
+	effRun := sp.runFor(m)
+	if effRun == "" {
 		// The command already ran the whole package; there is no wider run to
 		// compare against and nothing was excluded.
 		return result{mutation: m, verdict: survived, evidence: survivedEvidence}
@@ -514,7 +599,7 @@ func widenOnPass(root string, sp *spec, m mutation, verbose bool) result {
 		return result{mutation: m, verdict: survived, evidence: survivedEvidence}
 	}
 
-	v, ev := classifyWiderFailure(sp.run, out)
+	v, ev := classifyWiderFailure(effRun, out)
 	return result{mutation: m, verdict: v, evidence: ev}
 }
 
@@ -853,16 +938,53 @@ func testArgs(sp *spec) []string {
 	if sp.run != "" {
 		args = append(args, "-run", sp.run)
 	}
-	if sp.timeout > 0 {
-		args = append(args, "-timeout", sp.timeout.String())
-	}
+	args = append(args, "-timeout", sp.testTimeout().String())
 	if sp.parallel > 0 {
 		args = append(args, "-parallel", strconv.Itoa(sp.parallel))
 	}
 	if sp.gcflags != "" {
 		args = append(args, "-gcflags="+sp.gcflags)
 	}
+	if sp.failfast {
+		args = append(args, "-failfast")
+	}
 	return args
+}
+
+// defaultTestTimeout is go test's -timeout for a spec with no `timeout` line.
+// go test's own default is ten minutes, so a mutation that removes a loop
+// exit or a channel close would hold a sweep worker that long before being
+// killed. It sits far above the slowest unmutated run a full sweep measured
+// (the commit that set it records the figures); a spec whose tests need
+// longer says so with its own `timeout` line.
+//
+// A run that reaches it is classified like any other non-zero exit: a mutated
+// run that times out is KILLED (the mutation made the test hang, and timedOut
+// names that in the evidence), and a baseline that times out is a failed
+// baseline, so a deadline too short for the unmutated tests can never be
+// recorded as a kill.
+const defaultTestTimeout = 3 * time.Minute
+
+// testTimeout is the -timeout every go test for this spec runs with.
+func (sp *spec) testTimeout() time.Duration {
+	if sp.timeout > 0 {
+		return sp.timeout
+	}
+	return defaultTestTimeout
+}
+
+// timedOutRe matches the panic the testing package raises when -timeout
+// expires. It is anchored to the start of a line so a test's own message
+// quoting the phrase does not match.
+var timedOutRe = regexp.MustCompile(`(?m)^panic: test timed out after (\S+)$`)
+
+// timedOut reports whether go test's deadline ended the run, and the deadline.
+func timedOut(out string) (string, bool) {
+	m := timedOutRe.FindStringSubmatch(out)
+	if m == nil {
+		return "", false
+	}
+	return m[1], true
 }
 
 // testWaitEnv names the wait budget every go test this command runs is given,
@@ -1147,7 +1269,7 @@ func fatal(format string, args ...any) {
 }
 
 func usage() {
-	fmt.Fprint(os.Stderr, `usage: go run ./scripts/mutate [-v | -q] [-parallel N] [-gcflags FLAGS] [-chunk K/M] <spec-file>
+	fmt.Fprintf(os.Stderr, `usage: go run ./scripts/mutate [-v | -q] [-parallel N] [-gcflags FLAGS] [-chunk K/M] <spec-file>
        go run ./scripts/mutate -check <spec-file>...
        go run ./scripts/mutate -check-all
        go run ./scripts/mutate -affected REF
@@ -1173,17 +1295,28 @@ inlining) makes that rebuild cheaper. A test that depends on inlining or escape
 analysis sees a different build than a plain go test; -gcflags= (empty) passes
 nothing.
 
+Every go test run gets the spec's timeout, or %s when the spec sets none, in
+place of go test's ten-minute default. A mutation whose test runs out of that
+time is KILLED; a baseline that does is BASELINE FAILED.
+
 Every go test run gets GONZBD_TEST_WAIT=3s unless the environment sets it:
 the budget a test's hang-guard wait uses in place of its generous default, so
 a mutation that removes what the wait is for is killed in seconds.
 
--affected REF prints the specs, one per line, that a change since REF can move:
-the spec file itself changed, or a file one of its mutations edits did. Tracked
-files are compared with the working tree, and untracked files that are not
-gitignored also count. It is a fast loop, not a gate. A change to any other
-file selects nothing, including the test a spec runs and the package it
-targets, so it misses a spec whose pinned behaviour such a file altered; only
-the full sweep covers that.
+-affected REF prints the specs, one per line, that a change since REF can move.
+Tracked files are compared with the working tree, and untracked files that are
+not gitignored also count. A spec is selected when the spec file changed; when
+a changed non-test .go file is in the directory of a file it mutates, or of any
+package of this module its test binary is built from (its own package and
+everything it imports, under its tags); when a changed _test.go file is in the
+directory of the spec's own package; or when its test binary runs go or git,
+which every change selects. A changed .md file selects those go/git runners
+plus internal/sched when docs/job-lifecycle.md changes (a new test that reads
+another .md file by path must be added to affectedSpecs). Any other changed file
+that is neither .go, .md nor a spec (a fixture, go.mod) selects every spec,
+because tests read such files by path and the import graph cannot say which. It
+reads package metadata with go list and compiles nothing. It is a fast loop,
+not the gate: the full sweep stays the check before a merge.
 
 -q is for sweeping every spec: a spec that passes prints one line, and one that
 does not prints only its failing rows and the command to rerun it with the full
@@ -1191,8 +1324,11 @@ table. Without it the evidence column is printed for every mutation, which is
 what a commit body records.
 
 -check parses the given spec(s) and reports every anchor that resolves to
-zero or several sites, without compiling anything, running a test, or writing
-to the working tree. -check-all does the same over every spec this checkout
+zero or several sites, and every name in a plain-alternation run line that
+declares no test, without running a test or writing to the working tree. Tests
+are found by reading the package's test files, not by compiling them, unless
+the pkg line is a pattern or GOFLAGS is set. -check-all does the same over
+every spec this checkout
 has, discovered with 'git ls-files --cached --others --exclude-standard --
 *testdata/*.spec' — the same command scripts/run_tests.sh uses, and for the
 same reason: 'find' and filepath.Walk both descend into the gitignored
@@ -1220,5 +1356,5 @@ counted by check_citations against the citation that enumerates it.
 Outside a block, blank lines and lines starting with # are ignored. Between
 --- anchor and --- replace, and between --- replace and --- end, every line is
 taken literally.
-`)
+`, defaultTestTimeout)
 }

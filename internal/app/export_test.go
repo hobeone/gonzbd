@@ -63,9 +63,6 @@ func (a *Application) TriggerPersistAndCommit(log *slog.Logger, entry history.En
 
 // DispatcherIsOccupied reports whether the dispatcher has active occupiers for id.
 func (a *Application) DispatcherIsOccupied(id string) bool {
-	if a.dispatcher == nil {
-		return false
-	}
 	return a.dispatcher.IsOccupied(id)
 }
 
@@ -214,9 +211,7 @@ func (a *Application) stopAndJoin() error {
 		return nil
 	}
 	a.stopping.Store(true)
-	if a.dispatcher != nil {
-		a.dispatcher.Pause()
-	}
+	a.dispatcher.Pause()
 
 	stepTimeout := min(a.stepTimeout(), 5*time.Second)
 	var errs []error

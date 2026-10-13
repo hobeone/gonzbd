@@ -1,14 +1,15 @@
 pkg ./internal/app/
-run ^(TestFail_AtAssessingWithALiveWorker_DefersToTheWorkersExit|TestFail_WithAssessingPending_DefersToTheWorkerTheTickLaunches|TestFail_OnACompleteJobAtFetching_DefersToAssessing|TestFail_BetweenTheVerdictAndItsReport_IsHandedOffAfterTheReport|TestAwaitsAssessing|TestAdmitUnlessAssessing_DefersToTheVisit|TestAdmitUnlessAssessing_AdmitsWhatIsNotAtAssessing|TestBeginAssess_AnEarlierVisitsEndTakesNothingDeferredToALaterOne|TestAdmitUnlessAssessing_AVisitNoWorkerOwnsGoesWithItsJob|TestAdmitLocked_Outcomes|TestFail_OnAStalledCompleteJobAtFetching_ResumesItForAssessing|TestFail_OnAStalledJobWithAssessingPending_ResumesItForAssessing|TestFail_OnAUserPausedJob_DefersWithoutResumingIt|TestAdmitUnlessAssessing_KeepsNoEmptyReason|TestMaybeFinalize_AnEmptyReasonAtAssessing_IsNoFailure)$
+run ^(TestFail_WithAssessingPending_DefersToTheWorkerTheTickLaunches|TestFail_OnACompleteJobAtFetching_DefersToAssessing|TestFail_BetweenTheVerdictAndItsReport_IsHandedOffAfterTheReport|TestAwaitsAssessing|TestAdmitUnlessAssessing_DefersToTheVisit|TestBeginAssess_AnEarlierVisitsEndTakesNothingDeferredToALaterOne|TestAdmitUnlessAssessing_AVisitNoWorkerOwnsGoesWithItsJob|TestFail_OnAStalledCompleteJobAtFetching_ResumesItForAssessing|TestFail_OnAUserPausedJob_DefersWithoutResumingIt|TestAdmitUnlessAssessing_KeepsNoEmptyReason|TestMaybeFinalize_AnEmptyReasonAtAssessing_IsNoFailure)$
 timeout 5m
 
-# A hand-off by job ID (Fail, the hopeless callbacks) does not admit a job at
+# A deferring hand-off (Fail, the hopeless callbacks) does not admit a job at
 # Assessing. Its reason waits for the job's Assessing worker, which hands the
 # job over in place of its verdict, or after its report for a reason that
 # arrived after it last looked.
 
 [a hand-off by ID admits a job at Assessing]
 file internal/app/postproc_admission.go
+run ^TestAdmitUnlessAssessing_DefersToTheVisit$
 --- anchor
 	if _, admitted := a.jobs[j]; !admitted && awaitsAssessing(j) {
 --- replace
@@ -17,14 +18,24 @@ file internal/app/postproc_admission.go
 
 [maybeFinalize does not defer]
 file internal/app/app.go
+run ^TestFail_WithAssessingPending_DefersToTheWorkerTheTickLaunches$
 --- anchor
 		return app.finalizeRegistered(j, failMsg, true)
 --- replace
 		return app.finalizeRegistered(j, failMsg, false)
 --- end
 
+[Fail's hand-over does not defer]
+file internal/app/durability.go
+--- anchor
+	if app.finalizeRegistered(j, reason, true) && parked {
+--- replace
+	if app.finalizeRegistered(j, reason, false) && parked {
+--- end
+
 [enqueuePostProc ignores the deferral]
 file internal/app/app.go
+run ^TestFail_WithAssessingPending_DefersToTheWorkerTheTickLaunches$
 --- anchor
 	if deferAtAssessing {
 --- replace
@@ -33,6 +44,7 @@ file internal/app/app.go
 
 [a job at Assessing is not deferred to]
 file internal/app/postproc_admission.go
+run ^TestAwaitsAssessing$
 --- anchor
 	case s.State.State == job.Assessing:
 --- replace
@@ -41,6 +53,7 @@ file internal/app/postproc_admission.go
 
 [a job with Assessing pending is not deferred to]
 file internal/app/postproc_admission.go
+run ^TestAwaitsAssessing$
 --- anchor
 	case s.State.Next == job.Assessing:
 --- replace
@@ -49,6 +62,7 @@ file internal/app/postproc_admission.go
 
 [a complete job at Fetching is not deferred to]
 file internal/app/postproc_admission.go
+run ^TestFail_OnACompleteJobAtFetching_DefersToAssessing$
 --- anchor
 		return j.IsComplete()
 --- replace
@@ -57,6 +71,7 @@ file internal/app/postproc_admission.go
 
 [a settled job is deferred to]
 file internal/app/postproc_admission.go
+run ^TestAwaitsAssessing$
 --- anchor
 	if !s.IsOpen() {
 --- replace
@@ -65,6 +80,7 @@ file internal/app/postproc_admission.go
 
 [a job past its verdict is deferred to]
 file internal/app/postproc_admission.go
+run ^TestAwaitsAssessing$
 --- anchor
 	case s.State.Next != job.StateUnset:
 --- replace
@@ -73,6 +89,7 @@ file internal/app/postproc_admission.go
 
 [the Assessing worker reports its verdict over a deferred reason]
 file internal/app/runner.go
+run ^TestFail_WithAssessingPending_DefersToTheWorkerTheTickLaunches$
 --- anchor
 		if reasons := r.app.postProcAdmissions.takeDeferred(j); len(reasons) > 0 {
 --- replace
@@ -81,6 +98,7 @@ file internal/app/runner.go
 
 [a reason deferred after the worker looked is never handed over]
 file internal/app/runner.go
+run ^TestFail_BetweenTheVerdictAndItsReport_IsHandedOffAfterTheReport$
 --- anchor
 	for _, reason := range r.app.postProcAdmissions.endAssess(j, visit) {
 --- replace
@@ -89,6 +107,7 @@ file internal/app/runner.go
 
 [the Assessing worker begins no visit]
 file internal/app/runner.go
+run ^TestMaybeFinalize_AnEmptyReasonAtAssessing_IsNoFailure$
 --- anchor
 	visit := r.app.postProcAdmissions.beginAssess(j)
 --- replace
@@ -97,6 +116,7 @@ file internal/app/runner.go
 
 [an earlier visit's end takes a later visit's reasons]
 file internal/app/postproc_admission.go
+run ^TestBeginAssess_AnEarlierVisitsEndTakesNothingDeferredToALaterOne$
 --- anchor
 	if a.assessing[key] != visit {
 --- replace
@@ -105,6 +125,7 @@ file internal/app/postproc_admission.go
 
 [a visit no worker owns outlives its job]
 file internal/app/postproc_admission.go
+run ^TestAdmitUnlessAssessing_AVisitNoWorkerOwnsGoesWithItsJob$
 --- anchor
 	defer a.mu.Unlock()
 	delete(a.assessing, key)
@@ -115,6 +136,7 @@ file internal/app/postproc_admission.go
 
 [a new visit adopts one still owned]
 file internal/app/postproc_admission.go
+run ^TestBeginAssess_AnEarlierVisitsEndTakesNothingDeferredToALaterOne$
 --- anchor
 	case v.owned:
 --- replace
@@ -126,22 +148,25 @@ file internal/app/postproc_admission.go
 
 [a deferred Fail leaves Stall's pause in place]
 file internal/app/durability.go
+run ^TestFail_OnAStalledCompleteJobAtFetching_ResumesItForAssessing$
 --- anchor
-	if app.maybeFinalize(jobID, reason) && parked {
+	if app.finalizeRegistered(j, reason, true) && parked {
 --- replace
-	if app.maybeFinalize(jobID, reason) && parked && false {
+	if app.finalizeRegistered(j, reason, true) && parked && false {
 --- end
 
 [a deferred Fail resumes a pause the user made]
 file internal/app/durability.go
+run ^TestFail_OnAUserPausedJob_DefersWithoutResumingIt$
 --- anchor
-	if app.maybeFinalize(jobID, reason) && parked {
+	if app.finalizeRegistered(j, reason, true) && parked {
 --- replace
-	if app.maybeFinalize(jobID, reason) && (parked || true) {
+	if app.finalizeRegistered(j, reason, true) && (parked || true) {
 --- end
 
 [a stall record Stall did not park counts as its pause]
 file internal/app/stall.go
+run ^TestFail_OnAUserPausedJob_DefersWithoutResumingIt$
 --- anchor
 	delete(app.stalls, jobID)
 	return ok && rec.parked
@@ -152,6 +177,7 @@ file internal/app/stall.go
 
 [a Fail that admits counts as deferred]
 file internal/app/app.go
+run ^TestFail_OnAStalledCompleteJobAtFetching_ResumesItForAssessing$
 --- anchor
 		app.log.Info("postproc: job is at Assessing; its Assessing worker hands it over",
 			"job", j.ID(), "fail_msg", failMsg)
@@ -167,6 +193,7 @@ file internal/app/app.go
 
 [an empty reason is deferred to the Assessing worker]
 file internal/app/postproc_admission.go
+run ^TestAdmitUnlessAssessing_KeepsNoEmptyReason$
 --- anchor
 		if failMsg == "" {
 --- replace

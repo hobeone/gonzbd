@@ -103,10 +103,10 @@ func TestOpenTargetFile_SeedsFromOwnedAndDropsInvalid(t *testing.T) {
 	if len(s) != 1 || s[0].r != (Range{Off: 0, Len: 1000}) {
 		t.Fatalf("seeded ranges = %+v, want exactly [{0 1000}]", s)
 	}
-	if _, owned := f.w.owned.ownerOf(Range{Off: 500, Len: 10}, articleID{artIdx: 3}); !owned {
+	if _, owned := f.w.owned.ownerOf(Range{Off: 500, Len: 10}); !owned {
 		t.Error("valid range not owned")
 	}
-	if _, owned := f.w.owned.ownerOf(Range{Off: 2000, Len: 10}, articleID{artIdx: 3}); owned {
+	if _, owned := f.w.owned.ownerOf(Range{Off: 2000, Len: 10}); owned {
 		t.Error("invalid range was seeded")
 	}
 	if n := strings.Count(logs.String(), "dropping invalid owned range"); n != 3 {

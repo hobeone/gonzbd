@@ -45,20 +45,6 @@ file internal/app/durability.go
 		""))
 --- end
 
-[a hold with no dispatcher reaches for one]
-file internal/app/durability.go
---- anchor
-	if app.dispatcher == nil {
-		return
-	}
-	if err := app.dispatcher.PauseJob(jobID); err != nil {
---- replace
-	if false {
-		return
-	}
-	if err := app.dispatcher.PauseJob(jobID); err != nil {
---- end
-
 [a refused pause still notes the job as held]
 file internal/app/durability.go
 --- anchor
