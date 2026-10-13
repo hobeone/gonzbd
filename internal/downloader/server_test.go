@@ -479,6 +479,27 @@ func TestBadConnsResetsOnGood(t *testing.T) {
 	}
 }
 
+func TestApplyPenalty_NonOptionalNotDeactivated(t *testing.T) {
+	t.Parallel()
+	for _, required := range []bool{false, true} {
+		s := newTestServer(config.ServerConfig{
+			Enable:      true,
+			Required:    required,
+			Connections: 10,
+		})
+		for range 9 { // ratio 0.9, far above OptionalDeactivationThreshold
+			s.RecordBadConnection()
+		}
+		s.ApplyPenalty(time.Hour)
+		s.mu.RLock()
+		deactivated := s.deactivated
+		s.mu.RUnlock()
+		if deactivated {
+			t.Errorf("required=%v: non-optional server deactivated by ApplyPenalty", required)
+		}
+	}
+}
+
 func TestClearDeactivation(t *testing.T) {
 	t.Parallel()
 	s := newTestServer(config.ServerConfig{
