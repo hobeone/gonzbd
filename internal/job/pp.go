@@ -15,12 +15,16 @@ type PP struct{ level uint8 }
 // ClampPP returns the PP for level n saturated into [0,3]: below 0 is 0, above
 // 3 is 3.
 func ClampPP(n int) PP {
-	if n < 0 {
-		n = 0
-	} else if n > maxPP {
-		n = maxPP
+	// The conversion sits inside the branch both comparisons guard, so the
+	// range check dominates it.
+	switch {
+	case n < 0:
+		return PP{}
+	case n > maxPP:
+		return PP{level: maxPP}
+	default:
+		return PP{level: uint8(n)}
 	}
-	return PP{level: uint8(n)}
 }
 
 // Int returns the level as an integer in [0,3].
