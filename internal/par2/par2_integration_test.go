@@ -105,8 +105,10 @@ func TestVerifyAndRepair(t *testing.T) {
 }
 
 // TestExternalRepair_CorruptFileWithAllBlocksPresent shows that the external
-// par2 binary — the fallback GoRepair's refusal hands these cases to — repairs
-// the shapes par2engine v1.0.7 leaves corrupt while reporting success.
+// par2 binary, go_par2's fallback, repairs the same damaged-but-every-block-
+// located shapes that GoRepair rebuilds natively
+// (TestGoRepair_CorruptFileWithAllBlocksPresent_IsRepairedNatively), so the
+// two engines agree on them.
 func TestExternalRepair_CorruptFileWithAllBlocksPresent(t *testing.T) {
 	if _, ok := hasPar2(); !ok {
 		t.Skip("par2 binary not found in PATH; skipping integration tests")

@@ -6,14 +6,15 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 )
 
 // corruptButAllBlocksPresent builds the par2 fixture set in a fresh directory
-// and damages data.bin so that par2engine v1.0.7 can still locate every one
-// of its blocks — the shape in which ShardCounts.RepairNeeded() reports false
-// even though the engine itself logs data.bin as not intact.
+// and damages data.bin so that the engine can still locate every one of its
+// blocks somewhere: a damaged file that needs no recovery data, only a
+// rebuild from the blocks it located.
 type corruptButAllBlocksPresent struct {
 	name   string
 	damage func(t *testing.T, dir string, intact []byte)
@@ -60,11 +61,12 @@ func setUpCorruptCase(t *testing.T, tc corruptButAllBlocksPresent) (dir, mainFil
 	return dir, mainFile, intact
 }
 
-// TestGoRepair_CorruptFileWithAllBlocksPresent_IsNotSuccess pins that GoRepair
-// never reports success while a protected file's full-file MD5 differs from
-// the par2 description. Success here suppresses the external par2 fallback
-// and files a corrupt payload as repaired.
-func TestGoRepair_CorruptFileWithAllBlocksPresent_IsNotSuccess(t *testing.T) {
+// TestGoRepair_CorruptFileWithAllBlocksPresent_IsRepairedNatively pins that
+// GoRepair rebuilds a damaged file whose every block was located elsewhere,
+// and reports success only with the file's original bytes on disk. A run
+// that leaves the file damaged must not succeed: success suppresses the
+// external par2 fallback and files the payload as repaired.
+func TestGoRepair_CorruptFileWithAllBlocksPresent_IsRepairedNatively(t *testing.T) {
 	t.Parallel()
 	for _, tc := range corruptButAllBlocksPresentCases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -75,23 +77,14 @@ func TestGoRepair_CorruptFileWithAllBlocksPresent_IsNotSuccess(t *testing.T) {
 			if err != nil {
 				t.Fatalf("GoRepair: %v", err)
 			}
-			got, readErr := os.ReadFile(filepath.Join(dir, "data.bin"))
-			if readErr != nil {
-				t.Fatalf("read data.bin: %v", readErr)
-			}
-			if res.Success && !bytes.Equal(got, intact) {
-				t.Errorf("Success = true but data.bin does not match its par2 hash\nOutput: %s", res.Output)
-			}
-			if res.NeedMoreBlocks {
-				t.Errorf("NeedMoreBlocks = true; the set has ample recovery data, so the external fallback must stay reachable")
-			}
+			requireRepairedNatively(t, res, filepath.Join(dir, "data.bin"), intact)
 		})
 	}
 }
 
-// TestGoVerify_CorruptFileWithAllBlocksPresent_IsNotAllFilesOK is GoVerify's
-// half of the same verdict.
-func TestGoVerify_CorruptFileWithAllBlocksPresent_IsNotAllFilesOK(t *testing.T) {
+// TestGoVerify_CorruptFileWithAllBlocksPresent_IsRepairPossible is GoVerify's
+// half: the set needs a rebuild, and the rebuild needs no recovery data.
+func TestGoVerify_CorruptFileWithAllBlocksPresent_IsRepairPossible(t *testing.T) {
 	t.Parallel()
 	for _, tc := range corruptButAllBlocksPresentCases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -102,10 +95,127 @@ func TestGoVerify_CorruptFileWithAllBlocksPresent_IsNotAllFilesOK(t *testing.T) 
 			if err != nil {
 				t.Fatalf("GoVerify: %v", err)
 			}
-			if res.Status == StatusAllFilesOK {
-				t.Errorf("Status = StatusAllFilesOK for a file whose hash does not match\nOutput: %s", res.Stdout)
-			}
+			requireRebuildPossible(t, res)
 		})
+	}
+}
+
+// requireRebuildPossible fails t unless res reports a repair that is possible.
+func requireRebuildPossible(t *testing.T, res VerifyResult) {
+	t.Helper()
+	if res.Status != StatusRepairPossible {
+		t.Errorf("Status = %v, want StatusRepairPossible\nOutput: %s", res.Status, res.Stdout)
+	}
+}
+
+// requireRepairedNatively fails t unless res is a native success that left
+// path holding want.
+func requireRepairedNatively(t *testing.T, res RepairResult, path string, want []byte) {
+	t.Helper()
+	got, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read %s: %v", path, err)
+	}
+	if !bytes.Equal(got, want) {
+		t.Errorf("%s does not hold its original bytes after GoRepair\nOutput: %s", filepath.Base(path), res.Output)
+	}
+	if !res.Success {
+		t.Errorf("Success = false; want the native engine to rebuild the file from its located blocks\nOutput: %s", res.Output)
+	}
+}
+
+// TestGoRepair_DamagedBlockWhoseContentRecurs_IsRepairedNatively covers a
+// file whose damaged block holds content that recurs elsewhere in the same
+// file, as zero padding and other repetitive payloads do. The scan locates
+// the damaged block's correct bytes at another block's offset, so no block
+// is missing and the set has no recovery data at all; the file is still
+// damaged, and must be rebuilt rather than reported correct.
+func TestGoRepair_DamagedBlockWhoseContentRecurs_IsRepairedNatively(t *testing.T) {
+	t.Parallel()
+
+	const sliceSize = 16
+	intact := slices.Concat(
+		make([]byte, sliceSize*3),             // three all-zero blocks
+		bytes.Repeat([]byte{0x5A}, sliceSize), // and one other
+	)
+	damaged := bytes.Clone(intact)
+	copy(damaged[sliceSize:2*sliceSize], bytes.Repeat([]byte{0xFF}, sliceSize))
+
+	setUp := func(t *testing.T) (dir, mainFile string) {
+		t.Helper()
+		dir = t.TempDir()
+		mainFile = buildMinimalPar2Index(t, dir, "zeros.bin", intact, sliceSize)
+		writeFile(t, dir, "zeros.bin", damaged)
+		return dir, mainFile
+	}
+
+	t.Run("GoRepair", func(t *testing.T) {
+		t.Parallel()
+		dir, mainFile := setUp(t)
+		res, err := GoRepair(context.Background(), discardLogger(), mainFile, candidatesIn(t, dir), nil)
+		if err != nil {
+			t.Fatalf("GoRepair: %v", err)
+		}
+		requireRepairedNatively(t, res, filepath.Join(dir, "zeros.bin"), intact)
+	})
+	t.Run("GoVerify", func(t *testing.T) {
+		t.Parallel()
+		dir, mainFile := setUp(t)
+		res, err := GoVerify(context.Background(), discardLogger(), mainFile, candidatesIn(t, dir), nil)
+		if err != nil {
+			t.Fatalf("GoVerify: %v", err)
+		}
+		requireRebuildPossible(t, res)
+	})
+}
+
+// symlinkAtProtectedName builds the par2 fixture set in a fresh directory and
+// replaces data.bin with a symlink to an intact copy. par2engine opens the
+// name through os.Root, which follows the link, so the engine finds nothing
+// to repair; gonzbd's own check requires a regular file at the name.
+func symlinkAtProtectedName(t *testing.T) (dir, mainFile string) {
+	t.Helper()
+	dir = t.TempDir()
+	mainFile = copyPar2Fixtures(t, dir)
+	if err := os.Rename(filepath.Join(dir, "data.bin"), filepath.Join(dir, "payload")); err != nil {
+		t.Fatalf("rename: %v", err)
+	}
+	if err := os.Symlink("payload", filepath.Join(dir, "data.bin")); err != nil {
+		t.Fatalf("symlink: %v", err)
+	}
+	return dir, mainFile
+}
+
+// TestGoRepair_SymlinkAtProtectedName_IsNotSuccess pins that GoRepair's clean
+// verdict is protectedFilesIntact's as well as the engine's: the engine
+// reports nothing to repair here, and only gonzbd's check refuses.
+func TestGoRepair_SymlinkAtProtectedName_IsNotSuccess(t *testing.T) {
+	t.Parallel()
+	dir, mainFile := symlinkAtProtectedName(t)
+
+	res, err := GoRepair(context.Background(), discardLogger(), mainFile, candidatesIn(t, dir), nil)
+	if err != nil {
+		t.Fatalf("GoRepair: %v", err)
+	}
+	if res.Success {
+		t.Errorf("Success = true with a symlink at data.bin\nOutput: %s", res.Output)
+	}
+	if !strings.Contains(res.Output, `Engine reported "All files are correct", but`) {
+		t.Errorf("output does not show the engine's clean verdict being overruled\nOutput: %s", res.Output)
+	}
+}
+
+// TestGoVerify_SymlinkAtProtectedName_IsNotAllFilesOK is GoVerify's half.
+func TestGoVerify_SymlinkAtProtectedName_IsNotAllFilesOK(t *testing.T) {
+	t.Parallel()
+	dir, mainFile := symlinkAtProtectedName(t)
+
+	res, err := GoVerify(context.Background(), discardLogger(), mainFile, candidatesIn(t, dir), nil)
+	if err != nil {
+		t.Fatalf("GoVerify: %v", err)
+	}
+	if res.Status != StatusRepairRequired {
+		t.Errorf("Status = %v, want StatusRepairRequired\nOutput: %s", res.Status, res.Stdout)
 	}
 }
 

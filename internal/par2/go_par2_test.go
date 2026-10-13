@@ -574,16 +574,14 @@ func buildMinimalPar2Index(t *testing.T, dir, filename string, content []byte, s
 	return path
 }
 
-// TestGoRepair_MissingFileFoundElsewhere_DoesNotReportSuccess pins the fix for
-// a par2engine bug report: its block scanner locates a missing protected
-// file's shards wherever their bytes happen to sit in another on-disk file
-// (e.g. a stored, uncompressed archive member). Its own detectRenameCandidate
-// correctly declines to treat that as a same-file rename, because the shards
-// are not found at the candidate's own offset 0, so the file stays Missing —
-// but the shard locations it already recorded are still counted as usable
-// data in the final tally, so RepairNeeded() is false and GoRepair reports
-// Success=true even though the protected file was never written to disk.
-func TestGoRepair_MissingFileFoundElsewhere_DoesNotReportSuccess(t *testing.T) {
+// TestGoRepair_MissingFileFoundElsewhere_IsRebuilt covers a missing protected
+// file whose every block sits inside another on-disk file (e.g. a stored,
+// uncompressed archive member). par2engine's detectRenameCandidate declines
+// to treat that as a rename, because the blocks are not at the candidate's
+// offset 0, so the file stays missing with every block located. GoRepair must
+// rebuild it under its own name from those blocks and leave the container as
+// it was.
+func TestGoRepair_MissingFileFoundElsewhere_IsRebuilt(t *testing.T) {
 	t.Parallel()
 
 	dir := t.TempDir()
@@ -607,11 +605,9 @@ func TestGoRepair_MissingFileFoundElsewhere_DoesNotReportSuccess(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GoRepair: %v", err)
 	}
-	if res.Success {
-		t.Errorf("Success = true; want false — missing.bin does not exist on disk\nOutput: %s", res.Output)
-	}
-	if _, statErr := os.Stat(filepath.Join(dir, "missing.bin")); statErr == nil {
-		t.Error("missing.bin exists on disk but nothing should have created it")
+	requireRepairedNatively(t, res, filepath.Join(dir, "missing.bin"), payload)
+	if got, readErr := os.ReadFile(filepath.Join(dir, "container.bin")); readErr != nil || !bytes.Equal(got, container) {
+		t.Errorf("container.bin changed or is unreadable (err=%v); the rebuild must only read it", readErr)
 	}
 }
 

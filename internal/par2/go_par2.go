@@ -92,9 +92,10 @@ func runWithProgress(label string, onUpdate func(string), engineCall func(chan p
 // It returns a VerifyResult compatible with the existing par2 package API.
 // candidates are the files beside parfile that the engine may content-match
 // against the set regardless of their names: the list RepairWith takes as
-// extra files (see addCandidateFiles). nil registers none. par2engine v1.0.7
+// extra files (see addCandidateFiles). nil registers none. par2engine v1.1.0
 // lists the directory once, in loadVolumeFiles, and keeps only .par2 names
-// from it, so a file in neither this list nor the set is not scanned.
+// from it, so a file in neither this list nor the set is not scanned. (At
+// v1.1.0 its non-test par2 sources call ReadDir at one site, in decoder.go.)
 // onLine is called for progress updates and diagnostic messages (may be nil).
 func GoVerify(ctx context.Context, log *slog.Logger, parfile string, candidates []string, onLine func(string)) (res VerifyResult, err error) {
 	err = cmdutil.SafeEngineRun("go_par2: par2engine panic during verify", func() error {
@@ -271,20 +272,26 @@ func GoRepair(ctx context.Context, log *slog.Logger, parfile string, candidates 
 // `git grep -n -e 'Status = StatusAllFilesOK$' -e 'Success = true$' -- internal/par2/go_par2.go`
 // returns 2 lines, one in each.
 //
-// par2engine v1.0.7's own success signal, ShardCounts.RepairNeeded(), is not
-// that verdict. It counts a block as usable wherever the scan located it, in
-// any file, and ignores the per-file hash result, so it reports nothing to
-// repair when a damaged file's correct blocks exist elsewhere: an intact copy
-// under another name, a stored archive member, or the file's own blocks
-// shifted by inserted bytes. Repair() returns early on the same signal.
+// From par2engine v1.1.0, the engine's own signal, ShardCounts.RepairNeeded(),
+// is true while any protected file is missing, the wrong size or fails its
+// full-file MD5, including one whose every block was located somewhere else
+// (ShardCounts.FilesNeedingRebuild). Repair() rebuilds each such file in a
+// temp file and renames it over the target only once its MD5 matches. So for
+// damaged content this check is expected to agree with the engine.
+//
+// It stays as gonzbd's own verdict anyway. A clean report suppresses the
+// external par2 fallback and files the payload as repaired, so it rests on a
+// hash gonzbd computed rather than on the engine's per-file bookkeeping. It
+// also judges one thing the engine does not: the engine opens a protected
+// name through os.Root, which follows a symlink to its target, while
+// protectedFileProblem requires a regular file at the name.
 //
 // A file par2engine's verification report logged as OK (engineVerified) has
 // already had its full-file MD5 matched by the engine with every block at its
-// own offset, and Repair() writes only to a file that is flagged or has a
-// block elsewhere (buildNeedsWrite in par2engine's repair.go), so hashing it
-// again would only repeat a read. Every other protected file is hashed here.
-// That trust fails closed: if the engine's report changes shape, nothing is
-// recorded as verified and every file is hashed.
+// own offset, so hashing it again would only repeat a read; a rebuild of it
+// would have been re-hashed by Repair() before install. Every other protected
+// file is hashed here. That trust fails closed: if the engine's report
+// changes shape, nothing is recorded as verified and every file is hashed.
 //
 // A check that cannot run — the index does not parse, the directory does not
 // open, a file cannot be read — is also a refusal: the caller cannot report a
@@ -346,7 +353,7 @@ func protectedFileProblem(root *os.Root, fd FileDesc, verified *engineVerified) 
 	return ""
 }
 
-// engineFileOKMessage is the message par2engine v1.0.7's verification report
+// engineFileOKMessage is the message par2engine v1.1.0's verification report
 // (Decoder.logVerificationReport) logs, with a "file" attribute naming the
 // par2 entry, for a protected file whose MD5 it matched.
 const engineFileOKMessage = "File status: OK"
