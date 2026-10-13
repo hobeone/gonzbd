@@ -292,8 +292,9 @@ func faultReason(f *storagefault.Fault) string {
 // leaves the reason for the job's Assessing
 // worker, which hands the job over itself
 // (postProcAdmissions.admitUnlessAssessing), so the finalize does not run
-// beside runAssess. Fail resumes such a job if Stall paused it, so that
-// worker launches; a job the user paused waits for the user's resume.
+// beside runAssess. The hand-over resumes such a job if Stall paused it, so
+// that worker launches; a job the user paused waits for the user's resume
+// (handOverStall).
 //
 // # No stopping guard, unlike Stall
 //
@@ -311,9 +312,9 @@ func faultReason(f *storagefault.Fault) string {
 // it leaves the queue.
 //
 // j is the attempt the fault belongs to. A j no longer registered under its ID
-// fails nothing. Otherwise the reason, the hand-over and the resume go through
-// instance doors, and the stall record, which is keyed by ID, is cleared only
-// after the check that j holds the ID.
+// fails nothing. Otherwise the reason and the hand-over go through instance
+// doors, and the stall record, which is keyed by ID, is cleared by the
+// hand-over only once finalizeRegistered has found j holding the ID.
 func (app *Application) Fail(j *job.Job, f *storagefault.Fault) {
 	jobID := j.ID()
 	reason := faultReason(f)
@@ -323,27 +324,15 @@ func (app *Application) Fail(j *job.Job, f *storagefault.Fault) {
 		return
 	}
 	app.log.Error("job failed by a permanent storage fault", "job", jobID, "fault", f.Error())
-	// A permanent fault is not re-evaluated (R20), so the job leaves the
-	// stalled list: a job handed over is on its way to history, and the
-	// re-evaluation would resume it there.
-	parked := app.clearStall(jobID)
 	// enqueuePostProc hands the job to the postproc queue rather than
 	// removing it synchronously, so history.Entry.FailMessage (this
 	// reason's eventual permanent home) does not exist yet — this is
 	// the only live signal for the window until it does.
 	warnUnlessGone(app.log, "record the fail reason", jobID, app.dispatcher.SetFailReason(j, reason))
-	if app.finalizeRegistered(j, reason, true) && parked {
-		// The reason waits for an Assessing worker the tick launches only for
-		// a job not paused, and the pause is Stall's, whose record was just
-		// cleared: nothing else would resume it. Resumed as the re-evaluation
-		// resumes a job Stall parked (reevaluateStall). A pause the
-		// user made has no parked record, and holds the reason until the user
-		// resumes the job.
-		if err := app.dispatcher.ResumeInstance(j); err != nil {
-			// Removed or cancelled since: nothing is left to hand over.
-			app.log.Info("failed job could not be resumed for its Assessing worker", "job", jobID, "err", err)
-		}
-	}
+	// A permanent fault is not re-evaluated (R20): the hand-over takes the
+	// job off the stalled list, and resumes it if Stall paused it
+	// (handOverStall).
+	app.finalizeRegistered(j, reason, true)
 }
 
 // runStallRecheck is R19's cadence: every parked job is re-evaluated on an

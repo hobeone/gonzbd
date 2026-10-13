@@ -2154,14 +2154,13 @@ func (app *Application) maybeFinalizeJob(j *job.Job, failMsg string) {
 // finalizeHopeless make with the instance they hold. With deferAtAssessing a
 // job at, or due at, Assessing (awaitsAssessing) is not handed over: failMsg
 // is left for its Assessing worker, which hands the job over
-// (postProcAdmissions.admitUnlessAssessing). It reports enqueuePostProc's
-// deferral.
-func (app *Application) finalizeRegistered(j *job.Job, failMsg string, deferAtAssessing bool) (deferred bool) {
+// (postProcAdmissions.admitUnlessAssessing).
+func (app *Application) finalizeRegistered(j *job.Job, failMsg string, deferAtAssessing bool) {
 	row, ok := app.dispatcher.RowJob(j)
 	if !ok {
-		return false
+		return
 	}
-	return app.enqueuePostProc(j, row.Header, failMsg, deferAtAssessing)
+	app.enqueuePostProc(j, row.Header, failMsg, deferAtAssessing)
 }
 
 // directUnpackWaiter is the subset of *directunpack.DirectUnpacker that
@@ -2229,35 +2228,43 @@ func faultIn(err error) *storagefault.Fault {
 // this instance is already admitted, or has been and ended
 // (postProcAdmissions). In the first case it does nothing but offer failMsg to
 // the admitted run; in the second, nothing. With deferAtAssessing it hands over
-// no job at, or due at, Assessing (awaitsAssessing), leaves failMsg for the
-// job's Assessing worker, and reports that it deferred.
-func (app *Application) enqueuePostProc(j *job.Job, hdr dispatch.Header, failMsg string, deferAtAssessing bool) (deferred bool) {
+// no job at, or due at, Assessing (awaitsAssessing), and leaves failMsg for the
+// job's Assessing worker.
+//
+// It is every hand-over's door: `git grep -n 'enqueuePostProc[(]' -- '*.go'
+// ':!*_test.go'` returns 4 lines, this definition and its callers
+// finalizeRegistered, appRunner.runPostProc and fileOwedUnwantedFailure. So
+// the job's stall record is settled here (handOverStall), on the admission
+// and on the deferral, and no caller has to remember it.
+func (app *Application) enqueuePostProc(j *job.Job, hdr dispatch.Header, failMsg string, deferAtAssessing bool) {
 	admit := app.postProcAdmissions.admit
 	if deferAtAssessing {
 		admit = app.postProcAdmissions.admitUnlessAssessing
 	}
 	switch admit(j, failMsg) {
 	case admitted:
+		app.handOverStall(j, false)
 	case deferredToAssessing:
+		app.handOverStall(j, true)
 		app.log.Info("postproc: job is at Assessing; its Assessing worker hands it over",
 			"job", j.ID(), "fail_msg", failMsg)
-		return true
+		return
 	case refused:
 		// Debug: a refusal that brings no reason loses nothing.
 		app.log.Debug("postproc: job already admitted; not enqueuing it again", "job", j.ID())
-		return false
+		return
 	case refusedReasonKept:
 		app.log.Info("postproc: job already admitted; its failure reason becomes the admitted run's",
 			"job", j.ID(), "fail_msg", failMsg)
-		return false
+		return
 	case refusedReasonNoted:
 		app.log.Warn("postproc: job already admitted with another failure reason or already handed over; this reason is noted in its history entry's stage log and does not change its status",
 			"job", j.ID(), "fail_msg", failMsg)
-		return false
+		return
 	case refusedEnded:
 		app.log.Warn("postproc: this job instance's post-processing has already ended; not running it again",
 			"job", j.ID(), "fail_msg", failMsg)
-		return false
+		return
 	}
 
 	// A job handed over while still at Fetching (Fail, a hopeless callback)
@@ -2509,10 +2516,9 @@ func (app *Application) enqueuePostProc(j *job.Job, hdr dispatch.Header, failMsg
 			}
 			enqueue(duResults, duFailures, duSkipped)
 		})
-		return false
+		return
 	}
 	enqueue(nil, nil, nil)
-	return false
 }
 
 // rebuildJobFromNZB reconstructs a *job.Job for a history entry by

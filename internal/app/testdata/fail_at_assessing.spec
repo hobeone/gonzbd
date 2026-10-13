@@ -28,9 +28,9 @@ run ^TestHopelessCallbacks_CarryTheirTrigger$
 [Fail's hand-over does not defer]
 file internal/app/durability.go
 --- anchor
-	if app.finalizeRegistered(j, reason, true) && parked {
+	app.finalizeRegistered(j, reason, true)
 --- replace
-	if app.finalizeRegistered(j, reason, false) && parked {
+	app.finalizeRegistered(j, reason, false)
 --- end
 
 [enqueuePostProc ignores the deferral]
@@ -143,25 +143,26 @@ run ^TestBeginAssess_AnEarlierVisitsEndTakesNothingDeferredToALaterOne$
 	case false:
 --- end
 
-# A job Stall paused, which Fail then defers, is resumed by Fail so the tick
-# launches the Assessing worker; a pause the user made is not.
+# A job Stall paused, which Fail then defers, is resumed by the hand-over
+# (handOverStall) so the tick launches the Assessing worker; a pause the user
+# made is not.
 
 [a deferred Fail leaves Stall's pause in place]
-file internal/app/durability.go
+file internal/app/stall.go
 run ^TestFail_OnAStalledCompleteJobAtFetching_ResumesItForAssessing$
 --- anchor
-	if app.finalizeRegistered(j, reason, true) && parked {
+	if !app.clearStall(j.ID()) || !deferred {
 --- replace
-	if app.finalizeRegistered(j, reason, true) && parked && false {
+	if !app.clearStall(j.ID()) || true {
 --- end
 
 [a deferred Fail resumes a pause the user made]
-file internal/app/durability.go
+file internal/app/stall.go
 run ^TestFail_OnAUserPausedJob_DefersWithoutResumingIt$
 --- anchor
-	if app.finalizeRegistered(j, reason, true) && parked {
+	if !app.clearStall(j.ID()) || !deferred {
 --- replace
-	if app.finalizeRegistered(j, reason, true) && (parked || true) {
+	if _ = app.clearStall(j.ID()); !deferred {
 --- end
 
 [a stall record Stall did not park counts as its pause]
@@ -175,17 +176,13 @@ run ^TestFail_OnAUserPausedJob_DefersWithoutResumingIt$
 	return ok && (rec.parked || true)
 --- end
 
-[a Fail that admits counts as deferred]
+[a deferred hand-over is settled as an admitted one]
 file internal/app/app.go
 run ^TestFail_OnAStalledCompleteJobAtFetching_ResumesItForAssessing$
 --- anchor
-		app.log.Info("postproc: job is at Assessing; its Assessing worker hands it over",
-			"job", j.ID(), "fail_msg", failMsg)
-		return true
+		app.handOverStall(j, true)
 --- replace
-		app.log.Info("postproc: job is at Assessing; its Assessing worker hands it over",
-			"job", j.ID(), "fail_msg", failMsg)
-		return false
+		app.handOverStall(j, false)
 --- end
 
 # "" is no reason, as admitLocked reads it: deferring it would have the

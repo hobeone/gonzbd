@@ -143,8 +143,9 @@ func TestFinalizeRegistered_AnEmptyReasonAtAssessing_IsNoFailure(t *testing.T) {
 	if err := f.d.AdvanceFrom(f.j, job.Fetching, job.Assessing); err != nil {
 		t.Fatalf("AdvanceFrom: %v", err)
 	}
-	if deferred := f.app.finalizeRegistered(f.j, "", true); !deferred {
-		t.Fatal("precondition: finalizeRegistered did not defer a job with Assessing pending")
+	f.app.finalizeRegistered(f.j, "", true)
+	if f.app.postProcAdmissions.has(f.j) {
+		t.Fatal("precondition: finalizeRegistered admitted a job with Assessing pending; it must defer")
 	}
 
 	f.d.Tick(t.Context())

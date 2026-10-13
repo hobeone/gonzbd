@@ -953,6 +953,22 @@ Closing the second needs an atomic prior-intent swap in the dispatcher.
 The claim is in memory and the intent is persisted. A job `Stall` paused before
 a restart comes back as a pause nobody owns.
 
+**A job handed to post-processing leaves the stalled list at once.**
+`enqueuePostProc`, the door every hand-over goes through
+(`git grep -n 'enqueuePostProc[(]' -- 'internal/*.go' ':!*_test.go'` returns
+its definition and three callers: `finalizeRegistered`, the body of `Fail`,
+`finalizeHopeless` and `maybeFinalizeJob`; `appRunner.runPostProc`; and
+`fileOwedUnwantedFailure`), clears the record when it admits the job or defers it to its
+Assessing worker (`handOverStall`). A job on its way to history is not
+reported stalled, and no re-evaluation resumes it, or a retry later
+registered under its ID. A deferred job `Stall` paused is resumed there, since
+the tick launches no Assessing worker for a paused job and the record that
+would have resumed it is gone; a pause the user made is kept
+(`TestFinalizeHopeless_ClearsTheStallOfTheJobItHandsOver`,
+`TestFinalizeHopeless_OnAStalledJobAwaitingAssessing_ResumesItForAssessing`).
+A job removed by `RemoveJob` keeps its record until the next re-evaluation
+finds it gone and forgets it.
+
 **A user Resume is outside the guarantee.** `mode=queue&name=resume` and
 `name=resume_all` unpause the job and then ask for a re-evaluation, because a
 user who has cleared the condition is entitled to have their job run. If it

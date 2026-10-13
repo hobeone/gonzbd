@@ -116,11 +116,12 @@ single worker goroutine (`run`).
   job complete before it reads the admission, so it finds that admission and
   makes no report. A reason waits for a worker the tick has yet to launch, and
   the tick launches none for a paused job. A job `Stall` paused is resumed by
-  `Fail` when it defers, since `Fail` clears the stall record the
-  re-evaluation would have resumed it from; a job the user paused keeps the
-  reason until the user resumes it
+  the deferring hand-over (`enqueuePostProc`'s `handOverStall`), since the
+  hand-over clears the stall record the re-evaluation would have resumed it
+  from; a job the user paused keeps the reason until the user resumes it
   (`TestFail_OnAStalledCompleteJobAtFetching_ResumesItForAssessing`,
-  `TestFail_OnAUserPausedJob_DefersWithoutResumingIt`). A reason `Fail`
+  `TestFail_OnAUserPausedJob_DefersWithoutResumingIt`,
+  `TestFinalizeHopeless_OnAStalledJobAwaitingAssessing_ResumesItForAssessing`). A reason `Fail`
   deferred shows meanwhile as `Header.FailReason`, which `Fail` sets before
   it hands off; a hopeless callback sets no such field. It is held in memory, as an
   admission is, and dies with the process
