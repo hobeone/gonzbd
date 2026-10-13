@@ -14,7 +14,6 @@ import (
 
 	"github.com/hobeone/gonzbd/internal/fsutil"
 	"github.com/hobeone/gonzbd/internal/par2"
-	"github.com/hobeone/gonzbd/internal/unpack"
 )
 
 // RepairStage verifies and repairs the downloaded files using par2 recovery
@@ -93,23 +92,11 @@ func (s *RepairStage) Run(ctx context.Context, job *Job) error {
 	}
 	log = log.With("component", "repair", "job", job.JobID())
 
-	// If Direct Unpack successfully extracted the archives during download,
-	// we can skip PAR2 repair entirely — but only when QuickCheck has no
-	// outstanding doubt. DirectUnpack only knows whether rarengine could
-	// mechanically walk the archive's entries, not whether the source data
-	// was complete and correct (see directunpack.DirectUnpacker.MarkCorrupt
-	// for the matching defense on the DirectUnpack side), so it may stand in
-	// for verification only where there is no verification to be had.
-	//
-	// QuickCheckInconclusive is the case this switch exists to keep separate
-	// from QuickCheckNotRun. Both mean QuickCheck reported no damage, and
-	// only one of them means QuickCheck looked (#294).
+	// This switch skips repair for two quickcheck outcomes, Clean and
+	// Unidentified. DirectUnpack's success is not a reason to skip it: it
+	// shows that the RAR sets DirectUnpack extracted are intact, and says
+	// nothing of a loose file or an archive it never fed.
 	switch job.quickCheck {
-	case QuickCheckNotRun:
-		if directUnpackExtractedAll(ctx, log, job) {
-			logf(ctx, log, job, slog.LevelInfo, "[repair] Skipped: Direct Unpack successfully extracted all archives during download")
-			return nil
-		}
 	case QuickCheckClean:
 		// Verification already confirmed every par2-tracked CRC, so the
 		// expensive par2 verify+repair subprocess buys nothing. Saves 10-30s
@@ -126,9 +113,10 @@ func (s *RepairStage) Run(ctx context.Context, job *Job) error {
 		logf(ctx, log, job, slog.LevelInfo,
 			"[repair] Skipped: QuickCheck judged every par2 set to protect the archive's extracted contents; they are verified after unpack")
 		return nil
-	case QuickCheckDamaged, QuickCheckInconclusive:
-		// Repair runs. Damaged has a verdict to act on; Inconclusive has
-		// none, which is the reason to look rather than a reason not to.
+	case QuickCheckNotRun, QuickCheckDamaged, QuickCheckInconclusive:
+		// Repair runs. Damaged has a verdict to act on; NotRun and
+		// Inconclusive have none, which is the reason to look rather than a
+		// reason not to. With no par2 sets, repairSets returns at once.
 		logf(ctx, log, job, slog.LevelInfo, "[repair] Running: QuickCheck reported %s", job.quickCheck)
 	default:
 		// An outcome added to the enum and not handled above. Running repair
@@ -141,42 +129,6 @@ func (s *RepairStage) Run(ctx context.Context, job *Job) error {
 
 	_, err := s.repairSets(ctx, log, job, false)
 	return err
-}
-
-// directUnpackExtractedAll reports whether DirectUnpack extracted every
-// archive in job.DownloadDir: it extracted at least one set, none failed or
-// was skipped, and each archive unpack.Scan finds there, of any type, is one
-// of its sets (its main volume is among a set's RarParts, matched by base
-// name as UnpackStage.handleDirectUnpack marks them) or a file a set
-// extracted. An archive DirectUnpack has no outcome for, a RAR set it was
-// never fed or a 7z, tar or split archive it never handles, matches neither,
-// so it keeps the job from counting as clean. A scan that fails counts as not
-// clean.
-func directUnpackExtractedAll(ctx context.Context, log *slog.Logger, job *Job) bool {
-	if len(job.DirectUnpackSets) == 0 || len(job.DirectUnpackFailures) > 0 || len(job.DirectUnpackSkipped) > 0 {
-		return false
-	}
-	archives, err := unpack.Scan(job.DownloadDir)
-	if err != nil {
-		logf(ctx, log, job, slog.LevelWarn, "[repair] Archive scan failed: %v — repair will run", err)
-		return false
-	}
-	covered := make(map[string]bool)
-	for _, set := range job.DirectUnpackSets {
-		for _, part := range set.RarParts {
-			covered[filepath.Base(part)] = true
-		}
-		for _, f := range set.ExtractedFiles {
-			covered[filepath.Clean(f)] = true
-		}
-	}
-	for _, a := range archives {
-		if !covered[filepath.Base(a.MainFile)] && !covered[filepath.Clean(a.MainFile)] {
-			logf(ctx, log, job, slog.LevelInfo, "[repair] Direct Unpack did not extract %s", filepath.Base(a.MainFile))
-			return false
-		}
-	}
-	return true
 }
 
 // repairSets runs par2 verify+repair on the par2 sets in job.DownloadDir whose
@@ -254,9 +206,9 @@ func (s *RepairStage) repairSets(ctx context.Context, log *slog.Logger, job *Job
 // No set's verdict is read from a record an earlier run wrote. That is the
 // property #533 restored, and it is narrower than "everything is always
 // verified": a set reaching here is verified without consulting stored state,
-// but five branches decide it never reaches here at all. Run returns early for
-// QuickCheckClean, for QuickCheckUnidentified, and for QuickCheckNotRun with a
-// clean DirectUnpack; repairSets passes over a set on the other side of
+// but four branches decide it never reaches here at all. Run returns early for
+// QuickCheckClean and for QuickCheckUnidentified (its switch's two arms that
+// return); repairSets passes over a set on the other side of
 // quickcheck's deferral from the one it was asked for; and this function skips
 // a set whose ParseFile is empty. Each of those is computed from THIS run's
 // state, which is what makes it a different thing from trusting the last

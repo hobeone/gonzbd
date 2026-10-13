@@ -25,18 +25,17 @@ import (
 // unrelated states into one.
 //
 // The distinction that matters is between "I found nothing wrong" and "I have
-// nothing to say". Both used to read as !QuickCheckRan, and the repair
-// stage's DirectUnpack shortcut treats a silent quickcheck as consent —
-// skipping par2 entirely for a job whose CRCs nothing had verified. Making
-// the states exhaustive means a reader has to name which one it means, so
-// that collapse cannot be rebuilt by accident.
+// nothing to say". Both used to read as !QuickCheckRan. Making the states
+// exhaustive means a reader has to name which one it means, so that collapse
+// cannot be rebuilt by accident. RepairStage.Run skips par2 for Clean and
+// Unidentified and runs it for every other outcome.
 type QuickCheckOutcome int
 
 const (
 	// QuickCheckNotRun means nothing was attempted, because the stage was
-	// disabled or found no par2 sets to check against. There is nothing to
-	// verify, so DirectUnpack's own signal is the only one available and
-	// the repair shortcut may rely on it.
+	// disabled or found no par2 sets to check against. It is no verdict, so
+	// repair runs. A DirectUnpack success does not stand in for one: it
+	// covers only the RAR sets DirectUnpack extracted.
 	QuickCheckNotRun QuickCheckOutcome = iota
 
 	// QuickCheckClean means every par2-tracked file's CRC32 matched. Repair can
@@ -45,15 +44,14 @@ const (
 	QuickCheckClean
 
 	// QuickCheckDamaged means verification ran and found unverifiable or
-	// mismatched files. Repair must run regardless of what DirectUnpack
-	// reported, which only knows that rarengine could mechanically walk the
-	// archive's entries.
+	// mismatched files. Repair runs.
 	QuickCheckDamaged
 
 	// QuickCheckInconclusive means verification was attempted and could not
-	// complete. No claim is being made about the data either way, which is
-	// precisely why this must not be treated as QuickCheckNotRun: par2 sets
-	// may well exist and nothing has checked them.
+	// complete. No claim is being made about the data either way, and repair
+	// runs, as it does for QuickCheckNotRun. The two stay separate because
+	// they report different things: here par2 sets may well exist and nothing
+	// has checked them.
 	//
 	// It is also the default the stage adopts the moment it knows par2 sets
 	// exist, narrowing to Clean, Damaged or Unidentified only where

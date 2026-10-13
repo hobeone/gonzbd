@@ -53,9 +53,8 @@ func (q *QuickCheckStage) Run(ctx context.Context, job *Job) error {
 	sets, err := par2.FindPar2Files(job.DownloadDir, q.ParseOpts)
 	if err != nil {
 		// Inconclusive, not NotRun: the scan failed, so whether this job has
-		// par2 sets is unknown. Claiming there was nothing to check would let
-		// the repair stage's DirectUnpack shortcut skip par2 on the strength
-		// of a question that was never answered.
+		// par2 sets is unknown, and claiming there was nothing to check would
+		// report an answer the scan never gave.
 		job.quickCheck = QuickCheckInconclusive
 		logf(ctx, log, job, slog.LevelWarn, "[quickcheck] Failed to find par2 files: %v", err)
 		return nil // non-fatal
@@ -70,13 +69,10 @@ func (q *QuickCheckStage) Run(ctx context.Context, job *Job) error {
 	// nothing by default and narrow to Clean, Damaged or Unidentified only
 	// where the work was actually done (#314).
 	//
-	// This inverts which state is free. The zero value used to be the
-	// permissive one, so every early return that forgot to assign handed the
-	// repair stage consent to skip par2 — and one did: recordVerdict's opening
-	// guard, reachable only from here, so only ever for a job that has par2
-	// sets. Now the conservative state is the one you get for free and the
-	// permissive ones require saying so, which makes the next early return
-	// added below fail safe by construction rather than by review.
+	// This inverts which state is free: the conservative state is the one you
+	// get for free and the ones that claim a verdict require saying so, which
+	// makes the next early return added below fail safe by construction
+	// rather than by review.
 	job.quickCheck = QuickCheckInconclusive
 
 	logf(ctx, log, job, slog.LevelInfo, "[quickcheck] Found %d par2 set(s), checking for subdirectory entries", len(sets))
@@ -146,9 +142,8 @@ func (q *QuickCheckStage) recordVerdict(ctx context.Context, log *slog.Logger, j
 	// No manifest, or one describing no files, so there are no expected CRCs
 	// to compare the par2 sets against. The caller has already established
 	// that sets is non-empty — it returns at len(sets) == 0 — so this leaves
-	// QuickCheckInconclusive, set there. It used to leave the zero value,
-	// which told the repair stage this job had nothing worth verifying while
-	// its par2 sets went unchecked (#314).
+	// QuickCheckInconclusive, set there, rather than the zero value, which
+	// would report that this job had nothing worth verifying (#314).
 	if !job.HasRecord() || job.NumFiles() == 0 {
 		logf(ctx, log, job, slog.LevelWarn,
 			"[quickcheck] No manifest files to verify against, though %d par2 set(s) are present — par2 repair will run", len(sets))
@@ -160,14 +155,8 @@ func (q *QuickCheckStage) recordVerdict(ctx context.Context, log *slog.Logger, j
 	// having been checked against nothing. Returning an error records the
 	// failure in the stage log and surfaces it in the history entry; the
 	// runner deliberately does not abort the pipeline on a stage error, so
-	// par2 repair still gets its turn.
-	//
-	// Leaving Inconclusive in place is what makes that last clause true. The
-	// error return alone protects this stage's own claim, but the repair stage
-	// reads the outcome, not the error — and under the old boolean pair
-	// "could not verify" was indistinguishable from "had nothing to verify",
-	// so DirectUnpack's success would skip par2 for a job nothing had
-	// checked (#294).
+	// par2 repair still gets its turn. The repair stage reads the outcome,
+	// not the error, and Inconclusive is an outcome it runs for.
 	if _, mErr := job.Manifest(); mErr != nil {
 		return fmt.Errorf("quickcheck: cannot verify CRCs without the manifest: %w", mErr)
 	}

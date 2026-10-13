@@ -4,7 +4,6 @@ import (
 	"log/slog"
 	"testing"
 
-	"github.com/hobeone/gonzbd/internal/directunpack"
 	"github.com/hobeone/gonzbd/internal/par2"
 )
 
@@ -43,16 +42,12 @@ func TestVerifyJobCRCs_EmptyManifestWithPar2SetsIsNotConsent(t *testing.T) {
 	}
 }
 
-// The consequence, stated where a user would feel it: such a job must not take
-// the DirectUnpack shortcut.
+// The consequence, stated where a user would feel it: such a job is repaired.
 func TestQuickCheckStage_EmptyManifestJobStillGetsPar2(t *testing.T) {
 	t.Parallel()
 
 	job, dir := stageJob(t)
 	copyPar2Fixtures(t, dir)
-	job.DirectUnpackSets = map[string]directunpack.SuccessSet{
-		"ok": {RarParts: []string{"data.bin"}, ExtractedFiles: []string{"data.out"}},
-	}
 
 	qc := &QuickCheckStage{Log: slog.New(slog.DiscardHandler)}
 	qc.SetEnabled(true)
@@ -64,10 +59,8 @@ func TestQuickCheckStage_EmptyManifestJobStillGetsPar2(t *testing.T) {
 	if err := repair.Run(t.Context(), job); err != nil {
 		t.Fatalf("RepairStage.Run: %v", err)
 	}
-	for _, line := range job.OutputLines {
-		if line == "[repair] Skipped: Direct Unpack successfully extracted all archives during download" {
-			t.Fatalf("par2 was skipped for a job whose CRCs nothing verified; QuickCheck recorded %s. output: %v", job.quickCheck, job.OutputLines)
-		}
+	if !repairScanned(job) {
+		t.Fatalf("par2 was skipped for a job whose CRCs nothing verified; QuickCheck recorded %s. output: %v", job.quickCheck, job.OutputLines)
 	}
 }
 

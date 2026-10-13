@@ -417,8 +417,7 @@ func TestHeldArchiveMembers_ListingErrorIsNotHeld(t *testing.T) {
 }
 
 // Unidentified tells repair that par2 has nothing here it could verify, so it
-// must not run — and must not leave ParError behind for unpack to read. The
-// DirectUnpack shortcut is not what spares it: nothing here extracted.
+// must not run — and must not leave ParError behind for unpack to read.
 func TestRepairStage_DeclinesWhenQuickCheckUnidentified(t *testing.T) {
 	t.Parallel()
 

@@ -51,8 +51,7 @@ func TestBuildDownloadFileList_AbsentManifestExplainsItself(t *testing.T) {
 //
 // The outcome is the load-bearing part. The error goes into the stage log and
 // the history entry, but the repair stage never sees it — it reads
-// job.quickCheck. Reporting "nothing to check here" is what let DirectUnpack's
-// success skip par2 for a job nothing had verified (#294).
+// job.quickCheck.
 //
 // Run sets Inconclusive before calling this, once it knows par2 sets exist
 // (#314), so what this asserts is that the unreadable-manifest path leaves

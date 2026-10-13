@@ -42,150 +42,73 @@ func copyPar2Fixtures(t *testing.T, dir string) string {
 
 // ---------- RepairStage gate tests ----------
 
-// TestRepairStage_DirectUnpackWithFailuresDontSkip verifies that when
-// DirectUnpack had failures, the repair stage is not skipped — it should
-// attempt PAR2 repair on the remaining sets.
-func TestRepairStage_DirectUnpackWithFailuresDontSkip(t *testing.T) {
+// A DirectUnpack success says nothing about a file beside the RAR sets it
+// extracted, so with quickcheck disabled it must not stand in for par2: a
+// damaged file par2 protects beside such a set is repaired, or fails the job,
+// and is never passed as clean (#953).
+func TestRepairStage_QuickCheckDisabledRepairsBesideDirectUnpackSuccess(t *testing.T) {
 	t.Parallel()
-
-	job, _ := stageJob(t)
-
-	// One set succeeded and one failed — stage must not skip.
-	job.DirectUnpackSets = map[string]directunpack.SuccessSet{
-		"ok": {RarParts: []string{"ok.part01.rar"}, ExtractedFiles: []string{"ok.mkv"}},
-	}
-	job.DirectUnpackFailures = map[string]directunpack.FailedSet{
-		"bad": {Reason: "corrupt volume"},
-	}
-
-	// No par2 files in the empty dir → stage runs but finds nothing.
-	stage := NewRepairStage()
-	if err := stage.Run(t.Context(), job); err != nil {
-		t.Fatalf("Run: %v", err)
-	}
-	if job.ParError {
-		t.Error("ParError = true; want false (no par2 sets in empty dir)")
-	}
-}
-
-// A RAR set in the download directory that DirectUnpack has no outcome for
-// keeps repair from being skipped on DirectUnpack's say, though every set it
-// did report was extracted. A file a set extracted is not such a set.
-func TestRepairStage_ARarSetDirectUnpackDidNotSettleDoesNotSkip(t *testing.T) {
-	t.Parallel()
-	const skipped = "[repair] Skipped: Direct Unpack successfully extracted all archives during download"
-
 	for _, tc := range []struct {
-		name     string
-		files    []string
-		wantSkip bool
+		name  string
+		duSet bool
 	}{
-		{"every set extracted", []string{"movie.part01.rar", "movie.part02.rar"}, true},
-		{"an extracted archive", []string{"movie.part01.rar", "inner.rar"}, true},
-		{"a set with no outcome", []string{"movie.part01.rar", "extra.part01.rar"}, false},
-		{"a 7z archive beside the set", []string{"movie.part01.rar", "extra.7z"}, false},
-		{"a split archive beside the set", []string{"movie.part01.rar", "extra.bin.001"}, false},
+		{"DirectUnpack extracted a sibling RAR set", true},
+		{"no DirectUnpack", false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			job, dir := stageJob(t)
-			for _, name := range tc.files {
-				if err := os.WriteFile(filepath.Join(dir, name), []byte("x"), 0o600); err != nil {
+			copyPar2Fixtures(t, dir)
+			payload := filepath.Join(dir, "data.bin")
+			orig, err := os.ReadFile(payload)
+			if err != nil {
+				t.Fatal(err)
+			}
+			damaged := slices.Clone(orig)
+			for i := 1000; i < 1100; i++ {
+				damaged[i] ^= 0xFF
+			}
+			if err := os.WriteFile(payload, damaged, 0o644); err != nil {
+				t.Fatal(err)
+			}
+			for _, n := range []string{"Subs.part01.rar", "Subs.part02.rar", "Subs.srt"} {
+				if err := os.WriteFile(filepath.Join(dir, n), []byte("x"), 0o600); err != nil {
 					t.Fatal(err)
 				}
 			}
-			job.DirectUnpackSets = map[string]directunpack.SuccessSet{
-				"movie": {
-					RarParts:       []string{filepath.Join(dir, "movie.part01.rar"), filepath.Join(dir, "movie.part02.rar")},
-					ExtractedFiles: []string{filepath.Join(dir, "inner.rar")},
-				},
-			}
-
-			if err := NewRepairStage().Run(t.Context(), job); err != nil {
-				t.Fatalf("Run: %v", err)
-			}
-
-			didSkip := slices.Contains(job.OutputLines, skipped)
-			if didSkip != tc.wantSkip {
-				t.Errorf("repair skipped = %v, want %v; output %v", didSkip, tc.wantSkip, job.OutputLines)
-			}
-		})
-	}
-}
-
-func TestDirectUnpackExtractedAll(t *testing.T) {
-	t.Parallel()
-	ok := map[string]directunpack.SuccessSet{"movie": {RarParts: []string{"/elsewhere/movie.part01.rar"}}}
-	for _, tc := range []struct {
-		name    string
-		files   []string
-		sets    map[string]directunpack.SuccessSet
-		failed  map[string]directunpack.FailedSet
-		skipped map[string]directunpack.SkippedSet
-		noDir   bool
-		want    bool
-	}{
-		{name: "no set extracted", want: false},
-		{name: "a set failed", sets: ok, failed: map[string]directunpack.FailedSet{"x": {}}, want: false},
-		{name: "a set skipped", sets: ok, skipped: map[string]directunpack.SkippedSet{"x": {}}, want: false},
-		{name: "the scan fails", sets: ok, noDir: true, want: false},
-		{name: "a volume matched by base name", sets: ok, files: []string{"movie.part01.rar"}, want: true},
-		{name: "a 7z archive it never handles", sets: ok, files: []string{"movie.part01.rar", "other.7z"}, want: false},
-		{name: "a split archive it never handles", sets: ok, files: []string{"movie.part01.rar", "other.bin.001"}, want: false},
-		{name: "a RAR set it has no outcome for", sets: ok, files: []string{"movie.part01.rar", "other.rar"}, want: false},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			t.Parallel()
-			job, dir := stageJob(t)
-			for _, name := range tc.files {
-				if err := os.WriteFile(filepath.Join(dir, name), []byte("x"), 0o600); err != nil {
-					t.Fatal(err)
+			if tc.duSet {
+				job.DirectUnpackSets = map[string]directunpack.SuccessSet{
+					"Subs": {
+						RarParts:       []string{filepath.Join(dir, "Subs.part01.rar"), filepath.Join(dir, "Subs.part02.rar")},
+						ExtractedFiles: []string{filepath.Join(dir, "Subs.srt")},
+					},
 				}
 			}
-			if tc.noDir {
-				job.DownloadDir = filepath.Join(dir, "missing")
-			}
-			job.DirectUnpackSets, job.DirectUnpackFailures, job.DirectUnpackSkipped = tc.sets, tc.failed, tc.skipped
 
-			if got := directUnpackExtractedAll(t.Context(), slog.New(slog.DiscardHandler), job); got != tc.want {
-				t.Errorf("directUnpackExtractedAll = %v, want %v", got, tc.want)
+			qc := NewQuickCheckStage()
+			qc.Log = slog.New(slog.DiscardHandler)
+			qc.SetEnabled(false)
+			if err := qc.Run(t.Context(), job); err != nil {
+				t.Fatalf("QuickCheckStage.Run: %v", err)
+			}
+			if job.quickCheck != QuickCheckNotRun {
+				t.Fatalf("fixture guard: quickcheck recorded %s, want %s", job.quickCheck, QuickCheckNotRun)
+			}
+
+			repair := appliedRepairStage(RepairConfig{UseGoPar2: true}, slog.New(slog.DiscardHandler))
+			// Whether the engine repairs the file or fails the set is not this
+			// test's question; either one keeps the damage from shipping.
+			runErr := repair.Run(t.Context(), job)
+
+			got, err := os.ReadFile(payload)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if intact := slices.Equal(got, orig); !intact && !job.ParError {
+				t.Errorf("data.bin is damaged and ParError=false (Run: %v): repair let the damage through; output: %v",
+					runErr, job.OutputLines)
 			}
 		})
-	}
-}
-
-// TestRepairStage_QuickCheckProblemOverridesDirectUnpackSuccess guards against
-// the reported regression where DirectUnpack reporting a set as successfully
-// extracted caused the repair stage to skip par2 verification entirely, even
-// though the QuickCheck stage (which runs first) had already determined that
-// repair was needed (e.g. a downloaded RAR volume had failed/missing
-// articles, so its CRC could not be verified). DirectUnpack only knows
-// whether rarengine could mechanically read the archive's entries — not
-// whether the underlying download was complete — so its "success" must never
-// override an explicit "needs repair" verdict from QuickCheck.
-func TestRepairStage_QuickCheckProblemOverridesDirectUnpackSuccess(t *testing.T) {
-	t.Parallel()
-
-	job, dir := stageJob(t)
-	copyPar2Fixtures(t, dir)
-
-	// DirectUnpack reports a clean success with no failures/skips...
-	job.DirectUnpackSets = map[string]directunpack.SuccessSet{
-		"ok": {RarParts: []string{"data.bin"}, ExtractedFiles: []string{"data.out"}},
-	}
-	// ...but QuickCheck ran and found a problem (unverifiable/mismatched CRC).
-	job.quickCheck = QuickCheckDamaged
-
-	stage := appliedRepairStage(RepairConfig{UseGoPar2: true}, slog.New(slog.DiscardHandler))
-
-	if err := stage.Run(t.Context(), job); err != nil {
-		t.Fatalf("Run: %v", err)
-	}
-
-	for _, line := range job.OutputLines {
-		if line == "[repair] Skipped: Direct Unpack successfully extracted all archives during download" {
-			t.Fatalf("repair was skipped on DirectUnpack's say despite QuickCheck flagging a problem; output: %v", job.OutputLines)
-		}
 	}
 }
 

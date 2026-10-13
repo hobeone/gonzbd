@@ -1956,8 +1956,8 @@ Named here so they are decisions rather than omissions.
 - **Per-intent timestamps.** A history question.
 - **A speculative extraction area with promote/discard.** DirectUnpack extracts
   in place, and the bet that makes that safe is sound: a permanently failed
-  article marks the whole set corrupt before extraction is admitted, and the
-  repair skip fires only where there is no par2 to repair with. What is not
+  article marks the whole set corrupt before extraction is admitted, and a
+  DirectUnpack success never stands in for par2 repair (#953). What is not
   claimed is that in-place extraction is free of consequence — a set that *is*
   marked corrupt leaves partial output in the download directory before
   re-extraction, and whether that collides or is harmlessly overwritten turns

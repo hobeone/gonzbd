@@ -260,7 +260,7 @@ directory is left for a retry (#907):
 | Stage Name | Responsibilities | Skip / Gating Condition | Key Flags Updated |
 |---|---|---|---|
 | **`quickcheck`** | Relocates flat files into expected subdirs; verifies file CRC32s against par2 headers without executing `par2`; defers each par2 set that protects what an archive extracts to until after unpack. | Skipped if disabled or `PP < 1`. | Sets `quickCheck` to one of `NotRun` / `Clean` / `Damaged` / `Inconclusive` / `Unidentified`, and `deferredPar2Sets`. |
-| **`repair`** | Executes native Go `go_par2` engine or external `par2` verify/repair if files are missing or corrupted, for every par2 set not in `deferredPar2Sets`. | Skipped if `PP < 1`, `quickCheck == Clean`, `quickCheck == Unidentified`, OR DirectUnpack extracted all archives without errors (every archive `unpack.Scan` finds in the download directory, of any type, is one of `DirectUnpackSets` or a file one extracted: `directUnpackExtractedAll`) **and** `quickCheck == NotRun`. | Sets `ParError` and `Par2Renames`. |
+| **`repair`** | Executes native Go `go_par2` engine or external `par2` verify/repair if files are missing or corrupted, for every par2 set not in `deferredPar2Sets`. | Skipped if `PP < 1`, `quickCheck == Clean`, or `quickCheck == Unidentified`. Runs for every other outcome, `NotRun` included, whatever DirectUnpack extracted (#953). | Sets `ParError` and `Par2Renames`. |
 | **`rar_volume_recovery`** | Renames obfuscated volume files (e.g. `abc.001` → `abc.part001.rar`) using RAR5 header volume sequencing if standard filename parsing found no RAR sets. | Skipped if disabled, standard RAR sets already detected, or volume indexing is ambiguous. | Renames volume files in `DownloadDir`. |
 | **`unpack`** | Decompresses archives (`RAR`, `7z`, `TAR`, `split join`) up to `maxUnpackDepth = 3` recursive passes using native pure-Go engines (`go_rar`, `go_7z`, `go_tar`, `filejoin`) with optional external CLI fallbacks (`unrar`, `7z`). Respects `DirectUnpackSets` to skip already-extracted archives. When archive cleanup is enabled, records extracted archive parts in `Job.pendingDeletions` for deletion at `finalize` (#768). An archive whose type is disabled (`enable_unrar`, `enable_7zip`, `enable_filejoin` or `enable_tar` off) is skipped, not extracted: `extractArchive` asks `archiveTypes.allows`, reports the archive as not attempted, and unpack neither records its parts for deletion nor counts it as an extraction, so `finalize` delivers it as it is (#943, #947). | Skipped if `PP < 2` OR `ParError == true` (skips extraction unconditionally on repair failure), or when all four `enable_*` archive toggles are off (the stage is disabled). | Sets `UnpackError`; appends extracted archive parts to `pendingDeletions`. |
 | **`extracted_repair`** | Runs `repair`'s per-set verify/repair, with `repair`'s configuration, on the sets in `deferredPar2Sets`, against the files unpack extracted. | Does nothing when `deferredPar2Sets` is empty; skipped if `ParError` or `UnpackError` is set. | Sets `ParError` when a deferred set cannot be verified or repaired, or is gone; otherwise sets `deferredPar2Verified`. |
@@ -287,9 +287,9 @@ directory is left for a retry (#907):
 > The two responsibilities in the row above are the ones that make it
 > permanent, and neither is a verification decision:
 > `par2.ApplyRenames` has exactly one caller in the tree
-> (`stage_quickcheck.go:100`); and `QuickCheckClean` is the only
+> (`stage_quickcheck.go:96`); and `QuickCheckClean` is the only
 > verdict that lets `repair` skip spawning par2 on a set it has checked
-> (`stage_repair.go:108`). The
+> (`stage_repair.go:100`). The
 > download path cannot host either — it *"decides; it never renames"*
 > (`docs/ARCHITECTURE.md`) and performs no I/O by design.
 >
@@ -466,11 +466,10 @@ Both par2 engines are handed one candidate list, which `RepairStage.repairSets` 
    is also treated as delivered.
 3. **Verification bypass guarantees**: `repair` bypasses `par2` execution when
    `quickCheck == Clean` (verification already confirmed every CRC), or when
-   DirectUnpack extracted all archives without errors **and** `quickCheck ==
-   NotRun`, or when `quickCheck == Unidentified`. The first two eliminate
-   multi-minute disk reads for healthy downloads.
+   `quickCheck == Unidentified`. The first eliminates multi-minute disk reads
+   for healthy downloads.
 
-   The third is not a verdict that the data is intact. It is reached when
+   The second is not a verdict that the data is intact. It is reached when
    every par2 set that describes any file is **deferred**: judged a Layout B
    set — par2 protecting what an archive extracts to, which does not exist
    until `unpack` runs — so that a repair here has nothing to verify, and the
@@ -532,15 +531,19 @@ Both par2 engines are handed one candidate list, which `RepairStage.repairSets` 
    the job with it, unless the recovery volumes on disk can rebuild the file
    where par2 expects it.
 
-   The second clause requires exactly `NotRun` — the stage was disabled or
-   found no par2 sets, so there is no verification to be had and DirectUnpack's
-   signal is the only one available. `Inconclusive` (quickcheck was attempted
-   and could not complete, e.g. the job's manifest was unreadable) must not
-   bypass: par2 sets exist and nothing has checked them. Both states were
-   encoded as `!QuickCheckRan` until #294, so a job whose manifest could not be
-   read had its CRCs verified by nothing at all — quickcheck bailed, and repair
-   skipped on DirectUnpack's say-so. `QuickCheckOutcome` makes the two
-   nameable and the switch in `stage_repair.go` exhaustive.
+   Every other outcome runs `repair`: `Damaged`, `Inconclusive` (quickcheck
+   was attempted and could not complete, e.g. the job's manifest was
+   unreadable), and `NotRun` (the stage was disabled or found no par2 sets).
+   A DirectUnpack success does not bypass it. It shows only that the RAR sets
+   DirectUnpack extracted are intact, and says nothing of a loose file beside
+   them — a payload `.mkv`, a sample, a `.zip` — or of an archive set
+   `unpack.Scan` cannot see by name. Until #953 a `NotRun` job whose archives
+   DirectUnpack had all extracted skipped par2, so with quickcheck disabled a
+   damaged loose file was delivered unchecked; with no par2 sets, `repair`
+   returns at once, so the bypass saved nothing there either.
+   `QuickCheckOutcome` keeps `NotRun` and `Inconclusive` nameable (they were
+   one `!QuickCheckRan` state until #294) and the switch in `stage_repair.go`
+   exhaustive.
 
    **Where QuickCheck's CRCs come from.**
    The stage compares the par2 index's per-file checksums against
@@ -601,11 +604,12 @@ Both par2 engines are handed one candidate list, which `RepairStage.repairSets` 
    as it knows par2 sets exist, narrowing to `Clean`, `Damaged` or
    `Unidentified` only on paths that actually identified or verified
    something (#314). This inverts which state is
-   free: the zero value used to be the permissive one, so any early `return`
-   that forgot to assign handed repair consent to skip par2 — and one did, the
-   guard in `recordVerdict` for a job whose manifest describes no files. With
-   the default inverted, a future early return fails safe by construction
-   rather than by review catching it.
+   free: the zero value used to be the permissive one, so while `NotRun` still
+   let a DirectUnpack success skip par2 (until #953), any early `return` that
+   forgot to assign handed repair consent to skip it — and one did, the guard
+   in `recordVerdict` for a job whose manifest describes no files. With the
+   default inverted, a future early return reports what it did not verify by
+   construction rather than by review catching it.
 4. **Per-job `DownloadDir` isolation**: Every cleanup stage (`sample_cleanup`,
    `extension_cleanup`, `unwanted_cleanup`) operates directly on the files under
    `DownloadDir`, which is exclusive to the job for its entire lifetime.
@@ -961,7 +965,7 @@ recorded entirely through the fetch-policy discard, not through this field.
 - At most one post-processing run of a job instance, including after that run has ended (`postProcAdmissions`); a failure reason reported before the run is handed over fails it, and a later one is recorded as a stage-log warning.
 - A failure reason reported by job ID for a job at `Assessing` is handed over by the job's Assessing worker, so post-processing does not run beside `runAssess` (`postProcAdmissions.admitUnlessAssessing`).
 - Complete 13-stage pipeline with strict stage self-gating and cumulative PP-level enforcement (`shouldSkipForPP`).
-- `QuickCheckOutcome` (`NotRun`/`Clean`/`Damaged`/`Inconclusive`/`Unidentified`) bypass logic & DirectUnpack zero-failure verification bypass.
+- `QuickCheckOutcome` (`NotRun`/`Clean`/`Damaged`/`Inconclusive`/`Unidentified`) bypass logic; a DirectUnpack success never bypasses `repair` (#953).
 - Per-set deferral of Layout B par2 sets (`deferredPar2Sets`) and their par2 verify+repair after unpack (`extracted_repair`).
 - A par2 failure with recovery volumes held back retries the job once with them released (`jobFinalizer.retryWithHeldVolumes`, #651).
 - Per-job `DownloadDir` isolation across cleanup stages (`Dispatcher.admitNameLocked`, `ReserveName`).
