@@ -70,7 +70,7 @@ func TestLayoutB_RetryWithTheHeldVolumeRepairsTheExtraction(t *testing.T) {
 
 			if retry.ParError || retry.UnpackError {
 				t.Fatalf("retry: ParError=%v UnpackError=%v (QuickCheck=%s); stage errors: %v",
-					retry.ParError, retry.UnpackError, retry.QuickCheck, errs)
+					retry.ParError, retry.UnpackError, retry.quickCheck, errs)
 			}
 			assertFeatureExtracted(t, dir)
 			if _, err := os.Stat(filepath.Join(dir, "release.rar")); (err == nil) != tc.archiveKept {

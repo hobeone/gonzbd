@@ -30,7 +30,7 @@ func TestVerifyJobCRCs_EmptyManifestWithPar2SetsIsNotConsent(t *testing.T) {
 		t.Fatalf("fixture guard: expected a job with no manifest files, got %d", job.NumFiles())
 	}
 	// The precondition Run establishes before it ever calls this.
-	job.QuickCheck = QuickCheckInconclusive
+	job.quickCheck = QuickCheckInconclusive
 
 	q := &QuickCheckStage{Log: slog.New(slog.DiscardHandler)}
 	// Non-empty sets, matching the only way Run reaches this call.
@@ -38,8 +38,8 @@ func TestVerifyJobCRCs_EmptyManifestWithPar2SetsIsNotConsent(t *testing.T) {
 		t.Fatalf("recordVerdict: %v", err)
 	}
 
-	if job.QuickCheck != QuickCheckInconclusive {
-		t.Errorf("QuickCheck = %s for a job with par2 sets and no manifest to check them against; anything but inconclusive claims a verification that did not happen", job.QuickCheck)
+	if job.quickCheck != QuickCheckInconclusive {
+		t.Errorf("QuickCheck = %s for a job with par2 sets and no manifest to check them against; anything but inconclusive claims a verification that did not happen", job.quickCheck)
 	}
 }
 
@@ -66,7 +66,7 @@ func TestQuickCheckStage_EmptyManifestJobStillGetsPar2(t *testing.T) {
 	}
 	for _, line := range job.OutputLines {
 		if line == "[repair] Skipped: Direct Unpack successfully extracted all archives during download" {
-			t.Fatalf("par2 was skipped for a job whose CRCs nothing verified; QuickCheck recorded %s. output: %v", job.QuickCheck, job.OutputLines)
+			t.Fatalf("par2 was skipped for a job whose CRCs nothing verified; QuickCheck recorded %s. output: %v", job.quickCheck, job.OutputLines)
 		}
 	}
 }
@@ -90,7 +90,7 @@ func TestQuickCheckStage_Par2SetsPresentNeverLeavesNotRun(t *testing.T) {
 	if err := q.Run(t.Context(), job); err != nil {
 		t.Fatalf("Run: %v", err)
 	}
-	if job.QuickCheck == QuickCheckNotRun {
+	if job.quickCheck == QuickCheckNotRun {
 		t.Errorf("QuickCheck = not-run after the stage found par2 sets in %s; not-run must mean the stage was disabled or found nothing", dir)
 	}
 }

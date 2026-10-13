@@ -77,7 +77,7 @@ func NewRepairStageWith(par2Opts par2.RunOptions) *RepairStage {
 func (*RepairStage) Name() string { return "repair" }
 
 // Run finds par2 sets in job.DownloadDir and repairs each one quickcheck did
-// not defer until after unpack (Job.DeferredPar2Sets). No-op when the job has
+// not defer until after unpack (Job.deferredPar2Sets). No-op when the job has
 // no par2 files.
 func (s *RepairStage) Run(ctx context.Context, job *Job) error {
 	log := s.Log
@@ -99,7 +99,7 @@ func (s *RepairStage) Run(ctx context.Context, job *Job) error {
 	// only one of them means QuickCheck looked (#294).
 	directUnpackClean := len(job.DirectUnpackSets) > 0 &&
 		len(job.DirectUnpackFailures) == 0 && len(job.DirectUnpackSkipped) == 0
-	switch job.QuickCheck {
+	switch job.quickCheck {
 	case QuickCheckNotRun:
 		if directUnpackClean {
 			logf(ctx, log, job, slog.LevelInfo, "[repair] Skipped: Direct Unpack successfully extracted all archives during download")
@@ -124,14 +124,14 @@ func (s *RepairStage) Run(ctx context.Context, job *Job) error {
 	case QuickCheckDamaged, QuickCheckInconclusive:
 		// Repair runs. Damaged has a verdict to act on; Inconclusive has
 		// none, which is the reason to look rather than a reason not to.
-		logf(ctx, log, job, slog.LevelInfo, "[repair] Running: QuickCheck reported %s", job.QuickCheck)
+		logf(ctx, log, job, slog.LevelInfo, "[repair] Running: QuickCheck reported %s", job.quickCheck)
 	default:
 		// An outcome added to the enum and not handled above. Running repair
 		// is the fail-safe reading, and saying so is the point: a silent
 		// fall-through would look identical to a deliberate decision.
 		// TestRepairStage_HandlesEveryQuickCheckOutcome is what makes this
 		// arm unreachable in practice.
-		logf(ctx, log, job, slog.LevelWarn, "[repair] Running: unhandled QuickCheck outcome %s", job.QuickCheck)
+		logf(ctx, log, job, slog.LevelWarn, "[repair] Running: unhandled QuickCheck outcome %s", job.quickCheck)
 	}
 
 	_, err := s.repairSets(ctx, log, job, false)

@@ -112,7 +112,7 @@ func TestRepairStage_HandlesEveryQuickCheckOutcome(t *testing.T) {
 			job.DirectUnpackSets = map[string]directunpack.SuccessSet{
 				"ok": {RarParts: []string{"data.bin"}, ExtractedFiles: []string{"data.out"}},
 			}
-			job.QuickCheck = outcome
+			job.quickCheck = outcome
 
 			stage := &RepairStage{UseGoPar2: true, Log: slog.New(slog.DiscardHandler)}
 			if err := stage.Run(t.Context(), job); err != nil {
@@ -139,7 +139,7 @@ func TestRepairStage_UnhandledQuickCheckOutcomeSaysSo(t *testing.T) {
 		"ok": {RarParts: []string{"data.bin"}, ExtractedFiles: []string{"data.out"}},
 	}
 	// A value no case names, standing in for one added to the enum later.
-	job.QuickCheck = QuickCheckOutcome(99)
+	job.quickCheck = QuickCheckOutcome(99)
 
 	stage := &RepairStage{UseGoPar2: true, Log: slog.New(slog.DiscardHandler)}
 	if err := stage.Run(t.Context(), job); err != nil {

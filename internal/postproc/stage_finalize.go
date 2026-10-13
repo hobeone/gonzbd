@@ -72,7 +72,7 @@ func (f *FinalizeStage) Run(ctx context.Context, job *Job) error {
 	// folderRename is enabled or when pending deletions must be unlinked
 	// before publishing a fresh job.FinalDir (#768).
 	stageViaUnpackPrefix := folderRename
-	if !stageViaUnpackPrefix && len(job.PendingDeletions) > 0 {
+	if !stageViaUnpackPrefix && len(job.pendingDeletions) > 0 {
 		if _, err := os.Lstat(job.FinalDir); errors.Is(err, os.ErrNotExist) {
 			stageViaUnpackPrefix = true
 		}
@@ -107,15 +107,15 @@ func removePendingSidecar(log *slog.Logger, dir string) {
 }
 
 // deletePending removes the extracted archives and par2/backup files recorded
-// in job.PendingDeletions under job.DownloadDir (#768). When a top-level
+// in job.pendingDeletions under job.DownloadDir (#768). When a top-level
 // entry name was sanitized via job.Sanitize, it also checks the path with the
 // first component sanitized.
 func (f *FinalizeStage) deletePending(ctx context.Context, log *slog.Logger, job *Job) {
-	if len(job.PendingDeletions) == 0 || job.DownloadDir == "" {
+	if len(job.pendingDeletions) == 0 || job.DownloadDir == "" {
 		return
 	}
 	var deleted int
-	for _, rel := range job.PendingDeletions {
+	for _, rel := range job.pendingDeletions {
 		target := filepath.Join(job.DownloadDir, rel)
 		if !fsutil.PathWithin(job.DownloadDir, target) {
 			continue
@@ -144,7 +144,7 @@ func (f *FinalizeStage) deletePending(ctx context.Context, log *slog.Logger, job
 		logf(ctx, log, job, slog.LevelInfo, "Cleaned up %d pending file(s)", deleted)
 	}
 	removePendingSidecar(log, job.DownloadDir)
-	job.PendingDeletions = nil
+	job.clearPendingDeletions()
 }
 
 func (f *FinalizeStage) handleFailure(ctx context.Context, log *slog.Logger, job *Job, folderRename bool) error {
@@ -185,8 +185,8 @@ func (f *FinalizeStage) moveToDest(ctx context.Context, log *slog.Logger, job *J
 	}
 
 	sidecar := filepath.Join(job.DownloadDir, pendingDeletionsFile)
-	if len(job.PendingDeletions) > 0 {
-		if data, err := json.Marshal(job.PendingDeletions); err == nil {
+	if len(job.pendingDeletions) > 0 {
+		if data, err := json.Marshal(job.pendingDeletions); err == nil {
 			if err := fsutil.WriteAtomicBytesPerm(sidecar, data, 0o600); err != nil {
 				logf(ctx, log, job, slog.LevelWarn, "Failed to write pending deletions sidecar: %v", err)
 			}

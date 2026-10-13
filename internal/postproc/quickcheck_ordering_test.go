@@ -76,8 +76,8 @@ func TestQuickCheckStage_VerifiesBeforeRenaming(t *testing.T) {
 		t.Fatalf("fixture guard: the file was not renamed, so this test proves nothing: %v", err)
 	}
 
-	if job.QuickCheck != QuickCheckClean {
+	if job.quickCheck != QuickCheckClean {
 		t.Errorf("QuickCheck = %s, want clean: the file is intact and was identified under the name the queue "+
-			"knows it by, so anything else means the verdict was taken after the rename moved it", job.QuickCheck)
+			"knows it by, so anything else means the verdict was taken after the rename moved it", job.quickCheck)
 	}
 }

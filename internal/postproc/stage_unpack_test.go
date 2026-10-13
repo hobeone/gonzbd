@@ -132,7 +132,7 @@ func TestUnpackStage_CleanupDeletesArchiveParts(t *testing.T) {
 		t.Errorf("archive removed before finalize: %v", err)
 	}
 	if !job.isPendingDeletion(rarPath) {
-		t.Errorf("archive %s not recorded in PendingDeletions: %v", rarPath, job.PendingDeletions)
+		t.Errorf("archive %s not recorded in pendingDeletions: %v", rarPath, job.pendingDeletions)
 	}
 	job.FinalDir = dir
 	if err := NewFinalizeStage().Run(t.Context(), job); err != nil {
@@ -206,7 +206,7 @@ func TestUnpackStage_DirectUnpackPrePopulated(t *testing.T) {
 		t.Fatalf("Run: %v", err)
 	}
 	if !job.isPendingDeletion(fakePart) {
-		t.Errorf("DirectUnpack part %s not recorded in PendingDeletions", fakePart)
+		t.Errorf("DirectUnpack part %s not recorded in pendingDeletions", fakePart)
 	}
 	job.FinalDir = dir
 	if err := NewFinalizeStage().Run(t.Context(), job); err != nil {
@@ -1582,7 +1582,7 @@ func TestUnpackStage_CleanupArchives(t *testing.T) {
 	u.cleanupArchives(t.Context(), slog.Default(), job, allSuccessful)
 
 	if !job.isPendingDeletion(archiveFile) {
-		t.Errorf("cleanupArchives did not record %s in PendingDeletions", archiveFile)
+		t.Errorf("cleanupArchives did not record %s in pendingDeletions", archiveFile)
 	}
 	job.FinalDir = dir
 	if err := NewFinalizeStage().Run(t.Context(), job); err != nil {

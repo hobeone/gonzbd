@@ -8,7 +8,7 @@ import (
 
 // ExtractedRepairStage runs par2 verify+repair, once unpack has finished, on
 // the par2 sets quickcheck deferred because they protect what an archive
-// extracts to (Job.DeferredPar2Sets). It is the check on those files that the
+// extracts to (Job.deferredPar2Sets). It is the check on those files that the
 // archive's own checksums cannot give: go_rar cannot check a key-derived MAC
 // digest, an encrypted member's BLAKE2sp digest (rarengine hashes only a member
 // that is not encrypted and not MAC-keyed), or a header that records no
@@ -40,7 +40,7 @@ func (*ExtractedRepairStage) Name() string { return "extracted_repair" }
 // and skips one whose repair or unpack failed: the files it would check were
 // then not extracted, and par2_cleanup keeps the par2 set.
 func (s *ExtractedRepairStage) Run(ctx context.Context, job *Job) error {
-	if len(job.DeferredPar2Sets) == 0 {
+	if len(job.deferredPar2Sets) == 0 {
 		return nil
 	}
 	log := s.Log
@@ -58,17 +58,17 @@ func (s *ExtractedRepairStage) Run(ctx context.Context, job *Job) error {
 		return nil
 	}
 
-	logf(ctx, log, job, slog.LevelInfo, "[extracted_repair] Verifying %d par2 set(s) against the extracted files", len(job.DeferredPar2Sets))
+	logf(ctx, log, job, slog.LevelInfo, "[extracted_repair] Verifying %d par2 set(s) against the extracted files", len(job.deferredPar2Sets))
 	ran, err := s.Repair.repairSets(ctx, log, job, true)
 	if err != nil {
 		return err
 	}
-	if ran < len(job.DeferredPar2Sets) {
+	if ran < len(job.deferredPar2Sets) {
 		// A deferred set no longer in the directory has checked nothing, and
 		// the files it protects are exactly the ones nothing else checks.
 		job.ParError = true
-		return fmt.Errorf("extracted_repair: found %d of %d deferred par2 set(s)", ran, len(job.DeferredPar2Sets))
+		return fmt.Errorf("extracted_repair: found %d of %d deferred par2 set(s)", ran, len(job.deferredPar2Sets))
 	}
-	job.DeferredPar2Verified = true
+	job.deferredPar2Verified = true
 	return nil
 }

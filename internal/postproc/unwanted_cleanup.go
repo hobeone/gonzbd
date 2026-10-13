@@ -19,7 +19,7 @@ import (
 // It is the backstop for what the ingest check cannot see: a file inside an
 // archive, a file whose NZB subject was obfuscated, a file par2 rebuilt or
 // renamed. It judges every file under DownloadDir except files recorded in
-// Job.PendingDeletions (#768; skipped by moveFileByFile and unlinked by
+// Job.pendingDeletions (#768; skipped by moveFileByFile and unlinked by
 // FinalizeStage.deletePending). DownloadDir is the download directory joined
 // with the job's
 // name, and no two registered jobs share a name: the dispatcher refuses one

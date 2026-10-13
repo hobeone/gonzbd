@@ -2,7 +2,6 @@ package postproc
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io/fs"
@@ -697,7 +696,7 @@ func (p *PostProcessor) recoverUnpackFinalDir(ctx context.Context, job *Job) err
 		return nil //nolint:nilerr // no _UNPACK_ directory to recover
 	}
 	if data, err := os.ReadFile(filepath.Join(unpackDir, pendingDeletionsFile)); err == nil { //nolint:gosec // sidecar is pendingDeletionsFile inside unpackDir
-		if err := json.Unmarshal(data, &job.PendingDeletions); err == nil {
+		if err := job.loadPendingDeletions(data); err == nil {
 			prevDir := job.DownloadDir
 			job.DownloadDir = unpackDir
 			(&FinalizeStage{Log: p.log}).deletePending(ctx, p.log, job)

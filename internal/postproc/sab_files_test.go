@@ -109,7 +109,7 @@ func TestSABFiles_SkipsPendingDeletions(t *testing.T) {
 	t.Parallel()
 	final := filepath.Join(t.TempDir(), "complete", "Rel")
 	j := filesJob(t, final, "movie.mkv", "movie.rar")
-	j.PendingDeletions = []string{"movie.rar"}
+	j.pendingDeletions = []string{"movie.rar"}
 
 	raw, err := runFinalizeThenScript(t, j)
 	if err != nil {

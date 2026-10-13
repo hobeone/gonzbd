@@ -87,7 +87,7 @@ func TestRepairStage_QuickCheckProblemOverridesDirectUnpackSuccess(t *testing.T)
 		"ok": {RarParts: []string{"data.bin"}, ExtractedFiles: []string{"data.out"}},
 	}
 	// ...but QuickCheck ran and found a problem (unverifiable/mismatched CRC).
-	job.QuickCheck = QuickCheckDamaged
+	job.quickCheck = QuickCheckDamaged
 
 	stage := &RepairStage{
 		UseGoPar2: true,

@@ -140,8 +140,8 @@ func TestLayoutB_ExtractedFileIsVerifiedAgainstPar2(t *testing.T) {
 
 	stageErrs := runStages(t, job, par2Stages()...)
 
-	if job.QuickCheck != QuickCheckUnidentified {
-		t.Fatalf("QuickCheck = %s, want unidentified", job.QuickCheck)
+	if job.quickCheck != QuickCheckUnidentified {
+		t.Fatalf("QuickCheck = %s, want unidentified", job.quickCheck)
 	}
 	if job.UnpackError {
 		t.Fatalf("UnpackError = true: the archive caught its own damage, so this test no longer shows what par2 adds; stage errors: %v", stageErrs)
@@ -150,8 +150,8 @@ func TestLayoutB_ExtractedFileIsVerifiedAgainstPar2(t *testing.T) {
 		t.Errorf("ParError = true; the recovery block covers the damage. stage errors: %v", stageErrs)
 	}
 	assertFeatureExtracted(t, dir)
-	if !job.DeferredPar2Verified {
-		t.Error("DeferredPar2Verified = false after extracted_repair repaired the set")
+	if !job.deferredPar2Verified {
+		t.Error("deferredPar2Verified = false after extracted_repair repaired the set")
 	}
 	assertAbsent(t, dir, layoutBPar2...)
 }
@@ -170,10 +170,10 @@ func TestLayoutB_UnrepairableExtractionFailsTheJob(t *testing.T) {
 	}
 	if !job.ParError {
 		t.Fatalf("ParError = false with a damaged extraction and no recovery block (QuickCheck=%s); stage errors: %v",
-			job.QuickCheck, stageErrs)
+			job.quickCheck, stageErrs)
 	}
-	if job.DeferredPar2Verified {
-		t.Error("DeferredPar2Verified = true for a set that failed")
+	if job.deferredPar2Verified {
+		t.Error("deferredPar2Verified = true for a set that failed")
 	}
 	if summary := buildSummaryEntry(job); !strings.HasPrefix(summary.Lines[0], "Pipeline Failed") {
 		t.Errorf("summary = %q, want the job Failed", summary.Lines[0])
@@ -198,14 +198,14 @@ func TestLayoutB_IdentifiedSidecarStillDefersToUnpack(t *testing.T) {
 
 	if job.ParError || job.UnpackError {
 		t.Fatalf("ParError = %v, UnpackError = %v (QuickCheck=%s): a repair ran before the files it checks were extracted; stage errors: %v",
-			job.ParError, job.UnpackError, job.QuickCheck, stageErrs)
+			job.ParError, job.UnpackError, job.quickCheck, stageErrs)
 	}
-	if job.QuickCheck != QuickCheckUnidentified {
-		t.Errorf("QuickCheck = %s, want unidentified: the job's one set is deferred", job.QuickCheck)
+	if job.quickCheck != QuickCheckUnidentified {
+		t.Errorf("QuickCheck = %s, want unidentified: the job's one set is deferred", job.quickCheck)
 	}
 	assertFeatureExtracted(t, dir)
-	if !job.DeferredPar2Verified {
-		t.Error("DeferredPar2Verified = false: the deferred set was not verified after unpack")
+	if !job.deferredPar2Verified {
+		t.Error("deferredPar2Verified = false: the deferred set was not verified after unpack")
 	}
 }
 
@@ -233,11 +233,11 @@ func TestLayoutB_SetBesideAnOrdinarySetDefersOnlyItself(t *testing.T) {
 	// quickcheck and repair alone: the ordinary set is repaired now, and the
 	// Layout B set is left for after unpack.
 	stageErrs := runStages(t, job, stages[:2]...)
-	if job.QuickCheck != QuickCheckDamaged {
-		t.Errorf("QuickCheck = %s, want damaged: the verdict is the ordinary set's", job.QuickCheck)
+	if job.quickCheck != QuickCheckDamaged {
+		t.Errorf("QuickCheck = %s, want damaged: the verdict is the ordinary set's", job.quickCheck)
 	}
-	if !slices.Equal(job.DeferredPar2Sets, []string{"feature"}) {
-		t.Errorf("DeferredPar2Sets = %v, want [feature]", job.DeferredPar2Sets)
+	if !slices.Equal(job.deferredPar2Sets, []string{"feature"}) {
+		t.Errorf("deferredPar2Sets = %v, want [feature]", job.deferredPar2Sets)
 	}
 	got, err := os.ReadFile(filepath.Join(dir, "extras.txt"))
 	if err != nil || string(got) != string(extras) {
@@ -247,11 +247,11 @@ func TestLayoutB_SetBesideAnOrdinarySetDefersOnlyItself(t *testing.T) {
 	stageErrs = append(stageErrs, runStages(t, job, stages[2:]...)...)
 	if job.ParError || job.UnpackError {
 		t.Fatalf("ParError = %v, UnpackError = %v (QuickCheck=%s); stage errors: %v",
-			job.ParError, job.UnpackError, job.QuickCheck, stageErrs)
+			job.ParError, job.UnpackError, job.quickCheck, stageErrs)
 	}
 	assertFeatureExtracted(t, dir)
-	if !job.DeferredPar2Verified {
-		t.Error("DeferredPar2Verified = false: the deferred set was not verified after unpack")
+	if !job.deferredPar2Verified {
+		t.Error("deferredPar2Verified = false: the deferred set was not verified after unpack")
 	}
 }
 
@@ -265,7 +265,7 @@ func TestExtractedRepairStage_Skips(t *testing.T) {
 		name   string
 		mutate func(*Job)
 	}{
-		{"no deferred set", func(j *Job) { j.DeferredPar2Sets = nil }},
+		{"no deferred set", func(j *Job) { j.deferredPar2Sets = nil }},
 		{"repair failed", func(j *Job) { j.ParError = true }},
 		{"unpack failed", func(j *Job) { j.UnpackError = true }},
 	} {
@@ -273,15 +273,15 @@ func TestExtractedRepairStage_Skips(t *testing.T) {
 			t.Parallel()
 
 			job, _ := deliveredJob(t, "layout_b", layoutBPar2, []deliveredFile{damagedNoDigest(t)})
-			job.DeferredPar2Sets = []string{"feature"}
+			job.deferredPar2Sets = []string{"feature"}
 			tc.mutate(job)
 			parErr := job.ParError
 			_, repair, _ := layoutStages()
 			if err := NewExtractedRepairStage(repair).Run(t.Context(), job); err != nil {
 				t.Fatalf("Run: %v", err)
 			}
-			if job.DeferredPar2Verified {
-				t.Error("DeferredPar2Verified = true for a job it skipped")
+			if job.deferredPar2Verified {
+				t.Error("deferredPar2Verified = true for a job it skipped")
 			}
 			if job.ParError != parErr {
 				t.Errorf("ParError = %v, want it left at %v", job.ParError, parErr)
@@ -312,7 +312,7 @@ func TestExtractedRepairStage_NativeEngineSkipsPendingDeletions(t *testing.T) {
 		t.Fatalf("stages before extracted_repair: %v", errs)
 	}
 	if !job.isPendingDeletion("release.rar") {
-		t.Fatalf("release.rar is not pending deletion (PendingDeletions=%v); the test no longer sets up what it checks", job.PendingDeletions)
+		t.Fatalf("release.rar is not pending deletion (pendingDeletions=%v); the test no longer sets up what it checks", job.pendingDeletions)
 	}
 	assertFeatureExtracted(t, dir)
 
@@ -322,8 +322,8 @@ func TestExtractedRepairStage_NativeEngineSkipsPendingDeletions(t *testing.T) {
 		t.Fatalf("extracted_repair: %v", err)
 	}
 
-	if !job.DeferredPar2Verified {
-		t.Errorf("DeferredPar2Verified = false; output: %v", job.OutputLines)
+	if !job.deferredPar2Verified {
+		t.Errorf("deferredPar2Verified = false; output: %v", job.OutputLines)
 	}
 	for _, line := range engineLines {
 		if strings.Contains(line, "release.rar") {
@@ -338,7 +338,7 @@ func TestExtractedRepairStage_MissingDeferredSetFailsTheJob(t *testing.T) {
 	t.Parallel()
 
 	job, _ := deliveredJob(t, "layout_b", layoutBPar2, []deliveredFile{damagedNoDigest(t)})
-	job.DeferredPar2Sets = []string{"feature", "vanished"}
+	job.deferredPar2Sets = []string{"feature", "vanished"}
 	_, repair, _ := layoutStages()
 
 	err := NewExtractedRepairStage(repair).Run(t.Context(), job)
@@ -346,8 +346,8 @@ func TestExtractedRepairStage_MissingDeferredSetFailsTheJob(t *testing.T) {
 	if err == nil || !job.ParError {
 		t.Errorf("Run = %v, ParError = %v; want an error and ParError for a deferred set that is not there", err, job.ParError)
 	}
-	if job.DeferredPar2Verified {
-		t.Error("DeferredPar2Verified = true with a deferred set unverified")
+	if job.deferredPar2Verified {
+		t.Error("deferredPar2Verified = true with a deferred set unverified")
 	}
 }
 
@@ -370,11 +370,11 @@ func TestQuickCheckStage_VerdictExcludesDeferredSets(t *testing.T) {
 
 	runQuickCheck(t, qc, job)
 
-	if job.QuickCheck != QuickCheckClean {
-		t.Errorf("QuickCheck = %s, want clean: the one set not deferred verified", job.QuickCheck)
+	if job.quickCheck != QuickCheckClean {
+		t.Errorf("QuickCheck = %s, want clean: the one set not deferred verified", job.quickCheck)
 	}
-	if !slices.Equal(job.DeferredPar2Sets, []string{"feature"}) {
-		t.Errorf("DeferredPar2Sets = %v, want [feature]", job.DeferredPar2Sets)
+	if !slices.Equal(job.deferredPar2Sets, []string{"feature"}) {
+		t.Errorf("deferredPar2Sets = %v, want [feature]", job.deferredPar2Sets)
 	}
 }
 
@@ -383,8 +383,8 @@ func TestRepairStage_SkipsDeferredSets(t *testing.T) {
 	t.Parallel()
 
 	job, _ := deliveredJob(t, "layout_b", layoutBPar2, []deliveredFile{damagedNoDigest(t)})
-	job.QuickCheck = QuickCheckDamaged
-	job.DeferredPar2Sets = []string{"feature"}
+	job.quickCheck = QuickCheckDamaged
+	job.deferredPar2Sets = []string{"feature"}
 	_, repair, _ := layoutStages()
 
 	if err := repair.Run(t.Context(), job); err != nil {
@@ -413,7 +413,7 @@ func TestRepairStage_RepairSets(t *testing.T) {
 		for _, name := range layoutBPar2 {
 			copyToDir(t, par2LayoutFixture("layout_b", name), dir)
 		}
-		job.DeferredPar2Sets = []string{"feature"}
+		job.deferredPar2Sets = []string{"feature"}
 		return job
 	}
 	ranSets := func(job *Job) []string {
@@ -485,7 +485,7 @@ func TestSetsWithEntries(t *testing.T) {
 func TestJob_Par2Deferred(t *testing.T) {
 	t.Parallel()
 
-	job := &Job{DeferredPar2Sets: []string{"feature"}}
+	job := &Job{deferredPar2Sets: []string{"feature"}}
 	if !job.par2Deferred("feature") || job.par2Deferred("extras") {
 		t.Errorf("par2Deferred(feature, extras) = %v, %v; want true, false",
 			job.par2Deferred("feature"), job.par2Deferred("extras"))
