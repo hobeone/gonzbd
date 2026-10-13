@@ -1,5 +1,5 @@
 #!/bin/bash
-# run_tests.sh - Comprehensive test suite for sabnzbd-go
+# run_tests.sh - Comprehensive test suite for gonzbd
 # Includes Go static analysis, linters, unit tests (-race), Go integration tests,
 # the crash-consistency suite, Svelte UI checks/tests, parallel mutation tests,
 # and Playwright E2E tests (skippable via SKIP_PLAYWRIGHT=1 / SKIP_UITEST=1).
@@ -13,7 +13,7 @@ YELLOW='\033[0;33m'
 NC='\033[0m' # No Color
 
 echo "===================================================="
-echo "Starting Full Test Suite: sabnzbd-go"
+echo "Starting Full Test Suite: gonzbd
 echo "===================================================="
 
 # Check prerequisites
