@@ -236,14 +236,15 @@ func (d *DirectUnpacker) SetAllFilenames(names []string) {
 // MarkCorrupt records that a volume belonging to setname was assembled from
 // a download with missing or failed articles. The on-disk RAR file may still
 // be structurally readable (rarengine can walk its entries), but its content
-// is wrong since the source data never fully arrived. Once marked, the set
-// can never be reported as successfully extracted: extraction either aborts
-// early (if still waiting on volumes) or is downgraded to a failure after
-// the fact (if extraction had already consumed the volume in question).
+// is wrong since the source data never fully arrived. Once marked, a set not
+// yet published is never reported as successfully extracted: waitForVolume
+// fails it while it still waits for a volume, and extractSet checks the mark
+// again before publishing. A set already published keeps its success: a set
+// gets at most one outcome (setAdmitted), and a mark does not record one.
 //
 // The caller must call MarkCorrupt before the corresponding Add() for the
 // affected volume, so the corrupt flag is visible before extraction can
-// possibly consume that volume's data.
+// possibly consume that volume's data, and so before the set can be published.
 func (d *DirectUnpacker) MarkCorrupt(setname, reason string) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
