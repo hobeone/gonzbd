@@ -57,11 +57,24 @@ import (
 // run's FailMsg. Any other reason is kept as a note, which finalize adds to
 // the history entry's stage log without changing its status.
 //
-// enqueuePostProc's own close-time CloseJobHandles fault offers its reason
-// through this same admit call, on the instance its own earlier call already
-// admitted — so that second call is itself a refused call by this rule, and
-// contributes only the fault's reason string: `git grep -n
-// 'postProcAdmissions\.admit(' internal/app/app.go` finds 1 line, this one.
+// An admission is over for new reasons in two states, which differ in what
+// else they mean. Notes closed: finalize has read the notes
+// (closeAndTakeNotes) to write the history entry, so a later reason reaches
+// neither the run nor the entry, and admit refuses it as refusedNotesClosed;
+// the instance is still admitted, so has, withdraw and unlessHandedOff still
+// treat it as handed off. Ended: release has run, the instance is no longer
+// in jobs, and admit refuses any call as refusedEnded.
+//
+// A storage fault raised after the admission offers its reason through this
+// same admit call, on the instance already admitted, so that call is itself a
+// refused call by this rule and contributes only the fault's reason string.
+// offerFaultToAdmission makes it, for enqueuePostProc's close-time
+// CloseJobHandles fault and for a fault stall routes to the run:
+// `git grep -n 'postProcAdmissions\.admit(' internal/app/app.go` finds 1
+// line, in offerFaultToAdmission, and `git grep -n 'offerFaultToAdmission('
+// -- 'internal/app/*.go' ':!*_test.go'` finds 4 lines: its definition, the
+// close arm's call, stall's call and this citation.
+//
 // enqueuePostProc's entry admission takes admit, or admitUnlessAssessing, as a
 // value rather than calling it there.
 //
@@ -94,6 +107,8 @@ type postProcAdmission struct {
 	sealed bool
 	// notes are the reasons that did not become the run's FailMsg.
 	notes []string
+	// notesTaken is set by closeAndTakeNotes: the notes are closed.
+	notesTaken bool
 	// removed is closed by withdraw.
 	removed chan struct{}
 	// busy is the token of the step in progress, from beginWait or
@@ -115,18 +130,22 @@ const (
 	// refusedReasonNoted: already admitted; the caller's reason is kept as a
 	// note, because the admission has a different reason or is sealed.
 	refusedReasonNoted
-	// refusedEnded: j's admission has ended. The caller's reason has no run
-	// left to reach.
+	// refusedEnded: j's admission has ended (release). The caller's reason has
+	// no run left to reach, and is recorded nowhere.
 	refusedEnded
 	// deferredToAssessing: j is at Assessing and not admitted. The caller's
 	// reason is kept for j's Assessing worker, which hands j over.
 	deferredToAssessing
+	// refusedNotesClosed: j is still admitted, but finalize has read its
+	// notes (closeAndTakeNotes) to write the history entry. The caller's new
+	// reason reaches neither the run nor the entry, and is recorded nowhere.
+	refusedNotesClosed
 )
 
 // admit admits j unless it is admitted or its admission has ended. A call
 // refused as already admitted has its failMsg become the admission's reason if
 // it has none and is not sealed, and otherwise kept as a note unless it
-// repeats the reason or a note.
+// repeats the reason or a note, or the notes are closed.
 func (a *postProcAdmissions) admit(j *job.Job, failMsg string) admitOutcome {
 	a.mu.Lock()
 	defer a.mu.Unlock()
@@ -151,8 +170,7 @@ func (a *postProcAdmissions) admit(j *job.Job, failMsg string) admitOutcome {
 func (a *postProcAdmissions) admitUnlessAssessing(j *job.Job, failMsg string) admitOutcome {
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	key := weak.Make(j)
-	if _, ended := a.ended[key]; ended {
+	if a.endedLocked(j) {
 		return refusedEnded
 	}
 	if _, admitted := a.jobs[j]; !admitted && awaitsAssessing(j) {
@@ -161,6 +179,7 @@ func (a *postProcAdmissions) admitUnlessAssessing(j *job.Job, failMsg string) ad
 			// Assessing worker's verdict makes anyway.
 			return deferredToAssessing
 		}
+		key := weak.Make(j)
 		v := a.assessing[key]
 		if v == nil {
 			v = a.newVisitLocked(j, key)
@@ -263,12 +282,15 @@ func (a *postProcAdmissions) forgetVisit(key weak.Pointer[job.Job]) {
 
 // admitLocked is admit's body; mu is held.
 func (a *postProcAdmissions) admitLocked(j *job.Job, failMsg string) admitOutcome {
-	if _, ok := a.ended[weak.Make(j)]; ok {
+	if a.endedLocked(j) {
 		return refusedEnded
 	}
 	if cur, ok := a.jobs[j]; ok {
 		if failMsg == "" || failMsg == cur.failMsg {
 			return refused
+		}
+		if cur.notesTaken {
+			return refusedNotesClosed
 		}
 		if cur.failMsg == "" && !cur.sealed {
 			cur.failMsg = failMsg
@@ -360,12 +382,18 @@ func (a *postProcAdmissions) withdraw(j *job.Job) {
 	}
 }
 
-// notes returns a copy of the reasons j's admission kept as notes.
-func (a *postProcAdmissions) notes(j *job.Job) []string {
+// closeAndTakeNotes closes j's admission's notes and returns a copy of them:
+// admit refuses a new reason as refusedNotesClosed from then on. j stays
+// admitted until release (postProcAdmissions).
+func (a *postProcAdmissions) closeAndTakeNotes(j *job.Job) []string {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	cur, ok := a.jobs[j]
-	if !ok || len(cur.notes) == 0 {
+	if !ok {
+		return nil
+	}
+	cur.notesTaken = true
+	if len(cur.notes) == 0 {
 		return nil
 	}
 	return append([]string(nil), cur.notes...)
@@ -381,17 +409,23 @@ func (a *postProcAdmissions) has(j *job.Job) bool {
 	return ok
 }
 
-// unlessAdmitted runs fn unless j is admitted, and reports whether it ran. mu is
-// held across fn, so no admission of j begins while fn runs: fn must not call
-// into a, and must not block.
-func (a *postProcAdmissions) unlessAdmitted(j *job.Job, fn func()) bool {
+// unlessHandedOff runs fn unless j is admitted or its admission has ended, and
+// reports whether it ran. mu is held across fn, so no admission of j begins
+// while fn runs: fn must not call into a, and must not block.
+func (a *postProcAdmissions) unlessHandedOff(j *job.Job, fn func()) bool {
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	if _, ok := a.jobs[j]; ok {
+	if _, ok := a.jobs[j]; ok || a.endedLocked(j) {
 		return false
 	}
 	fn()
 	return true
+}
+
+// endedLocked reports whether j's admission has ended; mu is held.
+func (a *postProcAdmissions) endedLocked(j *job.Job) bool {
+	_, ok := a.ended[weak.Make(j)]
+	return ok
 }
 
 // release ends j's admission, and records j in ended so admit refuses it from

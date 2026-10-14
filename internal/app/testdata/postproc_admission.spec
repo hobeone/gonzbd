@@ -35,10 +35,10 @@ file internal/app/job_finalizer.go
 [finalize drops the noted reasons]
 file internal/app/job_finalizer.go
 --- anchor
-	notes := app.postProcAdmissions.notes(ppJob.Job)
+	notes := app.postProcAdmissions.closeAndTakeNotes(ppJob.Job)
 --- replace
 	notes := []string(nil)
-	_ = app.postProcAdmissions.notes(ppJob.Job)
+	_ = app.postProcAdmissions.closeAndTakeNotes(ppJob.Job)
 --- end
 
 [a late reason overrides the status the stages decided]

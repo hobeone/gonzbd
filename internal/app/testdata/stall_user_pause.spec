@@ -2,11 +2,11 @@ pkg ./internal/app/
 run TestReevaluateStall_KeepsAUserPauseStallWasCalledOn|TestStall_OnAnUnparkedRecordOfAUserPausedJob|TestStall_ASecondFaultKeepsTheParkItOwns
 
 [Stall claims a pause the user already set]
-file internal/app/durability.go
+file internal/app/stall.go
 --- anchor
-	claimPause := j.Intent() != job.IntentPause
+		claimPause := j.Intent() != job.IntentPause
 --- replace
-	claimPause := true
+		claimPause := true
 --- end
 
 [a second fault releases the claim on a pause Stall made]

@@ -190,15 +190,16 @@ func (app *Application) ReloadDownloader(scs []config.Server) error {
 		app.log.Warn("the assembler did not quiesce before the reload; in-flight articles keep their "+ //lockio: reloadMu spans this whole function by design — see ReloadDownloader's doc
 			"emitted bits and are not re-dispatched until the next start", "err", qErr)
 	}
-	// A job admitted to post-processing is skipped. The downloader does not
-	// dispatch it, so the clear re-offers nothing, and its un-failing would
-	// rewrite the failed-byte figures its post-processing run and history entry
-	// read. unlessAdmitted holds the admission lock across the clear, so an
+	// A job admitted to post-processing, or whose admission has ended, is
+	// skipped: its un-failing would rewrite the failed-byte figures its
+	// post-processing run and history entry read. The downloader does not
+	// dispatch an admitted job, so for one the clear would re-offer nothing.
+	// unlessHandedOff holds the admission lock across the clear, so an
 	// admission cannot begin part-way through it.
 	if qErr == nil {
 		for _, row := range app.dispatcher.List() {
 			if j, ok := app.dispatcher.Job(row.ID); ok {
-				app.postProcAdmissions.unlessAdmitted(j, func() { j.ClearEmittedForReload(false) })
+				app.postProcAdmissions.unlessHandedOff(j, func() { j.ClearEmittedForReload(false) })
 			}
 		}
 	}

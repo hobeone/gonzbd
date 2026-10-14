@@ -2220,6 +2220,38 @@ func faultIn(err error) *storagefault.Fault {
 	return nil
 }
 
+// offerFaultToAdmission offers storage fault f, raised for j after j was
+// admitted to post-processing, to j's admission as a failure reason, and logs
+// where it went. source names what raised it: "close" for enqueuePostProc's
+// handle close, "write" (a write or finish) or "verify" for a fault stall
+// routed here (stallKind.source). Where the reason goes is the admitOutcome
+// admit returns; see its constants.
+func (app *Application) offerFaultToAdmission(j *job.Job, f *storagefault.Fault, source string) {
+	var msg string
+	switch outcome := app.postProcAdmissions.admit(j, faultReason(f)); outcome {
+	case refusedReasonKept:
+		msg = "storage fault after the hand-over to post-processing; the run fails with it"
+	case refusedReasonNoted:
+		msg = "storage fault after the hand-over to post-processing; the run already has a failure reason or is sealed, so this one is noted"
+	case refused:
+		msg = "storage fault after the hand-over to post-processing; the run already records this reason"
+	case refusedNotesClosed:
+		msg = "storage fault after the hand-over to post-processing; the run's history entry is already being written, so the fault is logged only"
+	case refusedEnded:
+		msg = "storage fault after the job's post-processing ended; it has no run left to reach and is logged only"
+	default:
+		// admitted and deferredToAssessing: unreachable from both callers.
+		// Each calls only for a j the admission refused as admitted or ended
+		// (enqueuePostProc's own admit, stall's unlessHandedOff gate), and an
+		// admission leaves jobs only through release, which records it in
+		// ended (`git grep -n 'delete[(]a[.]jobs' -- 'internal/app/*.go'
+		// ':!*_test.go'` returns 1 line, in release), so admit cannot admit
+		// or defer j again.
+		msg = "storage fault offered to an admission that was not held; outcome " + strconv.Itoa(int(outcome))
+	}
+	app.log.Error(msg, "job", j.ID(), "source", source, "fault", f.Error())
+}
+
 // enqueuePostProc hands j to the post-processor unless a post-processing run of
 // this instance is already admitted, or has been and ended
 // (postProcAdmissions). In the first case it does nothing but offer failMsg to
@@ -2259,6 +2291,10 @@ func (app *Application) enqueuePostProc(j *job.Job, hdr dispatch.Header, failMsg
 		return
 	case refusedEnded:
 		app.log.Warn("postproc: this job instance's post-processing has already ended; not running it again",
+			"job", j.ID(), "fail_msg", failMsg)
+		return
+	case refusedNotesClosed:
+		app.log.Warn("postproc: this job's history entry is already being written; this failure reason is not recorded",
 			"job", j.ID(), "fail_msg", failMsg)
 		return
 	}
@@ -2334,18 +2370,7 @@ func (app *Application) enqueuePostProc(j *job.Job, hdr dispatch.Header, failMsg
 	// or may reach it later, so the job's handles can still be open while
 	// the stages run, and may still flush.
 	if f := faultIn(closeErr); f != nil {
-		// This admit is itself a refused call on the instance the switch
-		// above already admitted (postproc_admission.go's doc comment), so
-		// it only becomes the run's FailMsg on refusedReasonKept; any other
-		// outcome means the admission already has a different reason, and
-		// this one is only noted in the history entry's stage log.
-		if app.postProcAdmissions.admit(j, faultReason(f)) == refusedReasonKept {
-			app.log.Error("enqueuePostProc: closing the job's file handles hit a storage fault; the post-processing run fails with it",
-				"job", j.ID(), "err", closeErr)
-		} else {
-			app.log.Error("enqueuePostProc: closing the job's file handles hit a storage fault; the run already has another failure reason, so this is only noted",
-				"job", j.ID(), "err", closeErr)
-		}
+		app.offerFaultToAdmission(j, f, "close")
 	} else if closeErr != nil {
 		app.log.Warn("enqueuePostProc: failed to close assembler job handles with no fault observed (likely a timeout); post-processing runs anyway, and the handles may still be open or still flush",
 			"job", j.ID(), "err", closeErr)

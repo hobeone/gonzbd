@@ -36,7 +36,7 @@ func TestHandOverStall_AJobGoneSinceIsForgottenNotResumed(t *testing.T) {
 	t.Parallel()
 	application, _, _ := newLifecycleTestApp(t)
 	gone := job.New("feedface00944a01", "gone", job.Policy{})
-	application.noteStall(gone.ID(), testFault("write"), stallRetryable, true)
+	application.noteStallUnlessHandedOff(gone, testFault("write"), stallRetryable)
 
 	application.handOverStall(gone, true)
 

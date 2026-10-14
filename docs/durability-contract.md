@@ -736,6 +736,7 @@ operation, the path, and whether the condition is `Permanent`:
 | completion fault (§2) | untrust (§4), then `OnWriteFault` → `Stall` / `Fail` | the file's articles return to **Outstanding** |
 | close-time fault at the hand-over | untrust, and the run fails with it (*Hand-over to post-processing*) | — |
 | verification fault (§3) | at a hydration, always `parkVerifyFault` (a `Stall` lifted only once the job is resumed), never `Fail`; on a retry, the retry is aborted | nothing attached |
+| a `Stall` or `parkVerifyFault` for an instance handed to post-processing | no record and no pause; the reason goes to `offerFaultToAdmission` (*Hand-over to post-processing*) | as the fault's own row |
 
 In no case is `Job.MarkArticleFailed` called, the failed-byte count touched, or
 the job's reported health degraded (R21). Attributing a full disk to the
@@ -846,7 +847,18 @@ exception**: no fault was observed, and the handles may still flush later
 
 The close-time fault is **reported, not routed**: the job is already admitted,
 so `Fail` cannot hand it over again and `Stall` would pause a job whose files
-post-processing is using.
+post-processing is using. **So is a fault routed after the admission.** A write
+in flight at the hand-over can raise a fault whose `Stall` runs after `admit`,
+and a hydration can raise a verification fault (`parkVerifyFault`). `stall`
+writes no record for an instance that is admitted or whose admission has ended,
+and passes the fault's reason to `offerFaultToAdmission`, the close arm's helper
+too, which offers it to the admission and logs where it went; the
+`admitOutcome` constants say where each outcome sends it
+(`TestStall_Admission`,
+`TestPostProcAdmissions_NoReasonAfterTheNotesAreTaken`). The reason is
+offered, not dropped, because of A2: the downloader skips an admitted job, so
+an article the fault rolled back is never fetched again, and the run's
+`FailMsg` or a note in its history entry is the fault's only disposition.
 
 **A job instance whose handles `CloseJobHandles` closed is not downloaded
 again.** The job-level tombstone drops any article still in flight, and the
@@ -887,7 +899,8 @@ one, and a restarted job keeps it until it leaves the queue.
 
 ## Stalls and their re-evaluation
 
-`Application.Stall` records a reason, then pauses the job (R19, R27). It
+`Application.Stall` records a reason, then pauses the job (R19, R27), unless
+the job is admitted to post-processing or past its admission (below). It
 releases only a `Fetching` job's lease; a job that has moved on keeps its
 worker, and the pause gates its next move. `reevaluateStall` runs on an
 interval (`stallRecheckInterval`, 30 s) and on user action
@@ -961,14 +974,20 @@ its definition and three callers: `finalizeRegistered`, the body of `Fail`,
 `fileOwedUnwantedFailure`), clears the record when it admits the job or defers it to its
 Assessing worker (`handOverStall`). So the record that was there at the
 hand-over does not go on reporting the job stalled, and no re-evaluation of
-it resumes the job, or a retry later registered under its ID. **That holds
-for the record the hand-over cleared, not for one made after it.**
-`Application.stall` checks only that the job is registered, not whether it
-has been admitted, and an admitted job stays registered until its finalizer
-removes it. A retryable fault on a write still in flight when a job is
-handed over from `Fetching` can therefore park it again, before
-`enqueuePostProc` closes its handles. That record reports the job stalled,
-and the next re-evaluation calls `ResumeJob` on it. A deferred job `Stall` paused is resumed there, since
+it resumes the job, or a retry later registered under its ID. **No record is
+made after an admission either.** The record's one writer,
+`noteStallUnlessHandedOff`, writes under the admission lock and refuses an
+instance that is admitted or whose admission has ended
+(`postProcAdmissions.unlessHandedOff`), so the clear, which follows the
+admission, sees the final record. Where the refused fault goes is
+§ "Hand-over to post-processing". A `PauseInstance` from a `Stall` that passed
+the gate just before the admission can still land after the clear, leaving an
+admitted job paused with no record: the post-processor runs it paused or not,
+and with no record nothing resumes the ID later. **A deferral is not an
+admission**, so a fault after `handOverStall` defers the job to its Assessing
+worker is recorded and pauses it, and a retryable one holds that worker until
+the next re-evaluation resumes it. A deferred job `Stall` paused before the
+deferral is resumed by the hand-over, since
 the tick launches no Assessing worker for a paused job and the record that
 would have resumed it is gone; a pause the user made is kept
 (`TestFinalizeHopeless_ClearsTheStallOfTheJobItHandsOver`,

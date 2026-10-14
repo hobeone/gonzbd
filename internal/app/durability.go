@@ -210,7 +210,8 @@ func (app *Application) handleArticleRejected(jobID string, fileIdx int, artIdx 
 //
 // j is the attempt the fault belongs to. A j no longer registered under its ID
 // parks nothing: the stall record is keyed by ID, and a later attempt
-// registered under it is not the one that faulted.
+// registered under it is not the one that faulted. For a j handed to
+// post-processing, see handOverStall.
 func (app *Application) Stall(j *job.Job, f *storagefault.Fault) {
 	app.stall(j, f, stallRetryable)
 }
@@ -237,7 +238,6 @@ func (app *Application) stall(j *job.Job, f *storagefault.Fault, kind stallKind)
 			"job", jobID, "fault", f.Error())
 		return
 	}
-	app.log.Warn("job stalled by a storage fault", "job", jobID, "fault", f.Error())
 	// Recorded BEFORE the pause. R19 requires the condition to be
 	// re-evaluated at all, which needs a list of what is parked — the
 	// dispatcher row carries no separate copy of this reason (StallReason,
@@ -249,12 +249,17 @@ func (app *Application) stall(j *job.Job, f *storagefault.Fault, kind stallKind)
 	// necessarily the user's: AddJob pauses a duplicate NZB and a
 	// paused-priority ingest, and a re-stall meets Stall's own earlier pause,
 	// which stays ours because setStallReasonLocked never clears parked.
-	// Read with no lock held, so two races are accepted: a user pause landing
-	// between the read and the pause is claimed by us and resumed once the
-	// fault clears, and a user resume in the same window leaves the pause
-	// on a job nobody owns (docs/durability-contract.md).
-	claimPause := j.Intent() != job.IntentPause
-	app.noteStall(jobID, f, kind, claimPause)
+	// The read holds the admission lock but no dispatcher lock, so two races
+	// with the user are accepted: a user pause landing between the read and
+	// the pause is claimed by us and resumed once the fault clears, and a
+	// user resume in the same window leaves the pause on a job nobody owns
+	// (docs/durability-contract.md).
+	if !app.noteStallUnlessHandedOff(j, f, kind) {
+		// Handed off: see handOverStall.
+		app.offerFaultToAdmission(j, f, kind.source())
+		return
+	}
+	app.log.Warn("job stalled by a storage fault", "job", jobID, "fault", f.Error())
 	// The pause is latched whatever the state, and PauseInstance releases only
 	// a Fetching job's lease, the worker whose writes the fault
 	// interrupts. A job that has moved on — Assessing, say — keeps its
@@ -273,8 +278,7 @@ func (app *Application) stall(j *job.Job, f *storagefault.Fault, kind stallKind)
 }
 
 // faultReason is the failure reason a storage fault gives the job it fails:
-// Fail's permanent fault (R20), and enqueuePostProc's close-time fault of
-// either kind.
+// Fail's permanent fault (R20), and every fault offerFaultToAdmission offers.
 func faultReason(f *storagefault.Fault) string {
 	return "Failed: " + f.Error()
 }

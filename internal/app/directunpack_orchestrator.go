@@ -104,10 +104,13 @@ func (o *directUnpackOrchestrator) maybeStart(fc FileComplete) {
 		// And o.mu, then postProcAdmissions.mu. Nothing holding
 		// postProcAdmissions.mu calls into the orchestrator: its file names
 		// it only in comments (`git grep -n 'duOrch' internal/app/postproc_admission.go`
-		// returns 2 lines, both comments), and unlessAdmitted, which runs a
-		// callback under that lock, has one caller, passing a job-only
-		// callback (`git grep -n 'unlessAdmitted(' -- 'internal/app/*.go' ':!*_test.go'`
-		// returns 3 lines: the definition, reloader.go's call, and this
+		// returns 2 lines, both comments), and unlessHandedOff, which runs a
+		// callback under that lock, has two callers, neither of whose
+		// callbacks calls into the orchestrator: reloader.go's touches only
+		// the job, and noteStallUnlessHandedOff's reads the job's intent and
+		// takes stallMu, a leaf
+		// (`git grep -n 'unlessHandedOff(' -- 'internal/app/*.go' ':!*_test.go'`
+		// returns 4 lines: the definition, the two calls, and this
 		// citation).
 		if app.postProcAdmissions.has(j) || app.transitions.wasRemoved(j) {
 			o.mu.Unlock()

@@ -149,8 +149,9 @@ single worker goroutine (`run`).
   retry. `TestFail_AJobInPostProcessingIsNotDispatched`,
   `TestCloseJobHandles_TombstonesTheWholeJob`, and (for the per-request check
   itself) `TestFetchArticle_HandedOffJobIsNotFetched` are the pins. A downloader
-  reload leaves an admitted job's progress alone: `ReloadDownloader` runs
-  `Job.ClearEmittedForReload` under `postProcAdmissions.unlessAdmitted`, so
+  reload leaves an admitted job's progress alone, and that of a job whose
+  admission has ended: `ReloadDownloader` runs
+  `Job.ClearEmittedForReload` under `postProcAdmissions.unlessHandedOff`, so
   it neither un-fails the articles whose failed bytes the run and its history
   entry read, nor overlaps an admission that begins during the reload
   (`TestReloadDownloader_LeavesAnAdmittedJobsProgressAlone`). Since no more

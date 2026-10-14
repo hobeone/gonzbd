@@ -290,28 +290,61 @@ func TestPostProcAdmissions_HasIsPerInstance(t *testing.T) {
 	}
 }
 
-// TestPostProcAdmissions_UnlessAdmitted: fn runs only for an instance that is
-// not admitted, and with the admission lock held, so that no admission of it
-// can begin while fn runs.
-func TestPostProcAdmissions_UnlessAdmitted(t *testing.T) {
+// TestPostProcAdmissions_UnlessHandedOff: fn runs only for an instance that is
+// neither admitted nor past its admission, and with the admission lock held,
+// so that no admission of it can begin while fn runs. An instance whose
+// admission ended can still be registered, when the finalizer's removal
+// failed, and fn would then park or un-fail a job already filed in history.
+func TestPostProcAdmissions_UnlessHandedOff(t *testing.T) {
 	t.Parallel()
 	var a postProcAdmissions
 	first := job.New("same-id", "first", job.Policy{})
 	retry := job.New("same-id", "retry", job.Policy{})
+	ended := job.New("ended", "ended", job.Policy{})
 	a.admit(first, "")
+	a.admit(ended, "")
+	a.release(ended)
 
-	if a.unlessAdmitted(first, func() { t.Error("fn ran for an admitted instance") }) {
-		t.Error("unlessAdmitted(first) = true for an admitted instance")
+	if a.unlessHandedOff(first, func() { t.Error("fn ran for an admitted instance") }) {
+		t.Error("unlessHandedOff(first) = true for an admitted instance")
+	}
+	if a.unlessHandedOff(ended, func() { t.Error("fn ran for an instance whose admission has ended") }) {
+		t.Error("unlessHandedOff(ended) = true for an instance whose admission has ended")
 	}
 	ran := false
-	if !a.unlessAdmitted(retry, func() {
+	if !a.unlessHandedOff(retry, func() {
 		ran = true
 		if a.mu.TryLock() {
 			a.mu.Unlock()
 			t.Error("fn ran without the admission lock held; an admission could begin part-way through it")
 		}
 	}) || !ran {
-		t.Errorf("unlessAdmitted(retry) did not run fn (ran = %v) for an instance that is not admitted", ran)
+		t.Errorf("unlessHandedOff(retry) did not run fn (ran = %v) for an instance that is not admitted", ran)
+	}
+}
+
+// TestPostProcAdmissions_NoReasonAfterTheNotesAreTaken: once the finalizer
+// has taken an admission's notes, a later reason reaches neither the run nor
+// its history entry: it is refused as refusedNotesClosed, not reported as
+// noted and then dropped. The instance stays admitted until release.
+func TestPostProcAdmissions_NoReasonAfterTheNotesAreTaken(t *testing.T) {
+	t.Parallel()
+	var a postProcAdmissions
+	j := job.New("taken", "taken", job.Policy{})
+	a.admit(j, "")
+	if got := a.admit(j, "Failed: before"); got != refusedReasonKept {
+		t.Fatalf("precondition: admit with a first reason = %v, want refusedReasonKept", got)
+	}
+	a.closeAndTakeNotes(j)
+
+	if got := a.admit(j, "Failed: after the notes were taken"); got != refusedNotesClosed {
+		t.Errorf("admit after the notes were taken = %v, want refusedNotesClosed: the reason would be reported noted and then dropped", got)
+	}
+	if !a.has(j) {
+		t.Error("has = false after the notes were taken; the instance is admitted until release")
+	}
+	if got := a.admit(j, ""); got != refused {
+		t.Errorf("admit with no reason after the notes were taken = %v, want refused", got)
 	}
 }
 
@@ -338,7 +371,7 @@ func TestPostProcAdmissions_KeepsTheFirstFailureReason(t *testing.T) {
 	if got := handOverReason(&a, j); got != "first" {
 		t.Errorf("hand-over reason = %q, want %q", got, "first")
 	}
-	if got := a.notes(j); len(got) != 1 || got[0] != "second" {
+	if got := a.closeAndTakeNotes(j); len(got) != 1 || got[0] != "second" {
 		t.Errorf("notes = %q, want [second]", got)
 	}
 
@@ -353,10 +386,10 @@ func TestPostProcAdmissions_KeepsTheFirstFailureReason(t *testing.T) {
 	if got := handOverReason(&a, sealed); got != "" {
 		t.Errorf("hand-over reason after a late reason = %q, want empty", got)
 	}
-	if got := a.notes(sealed); len(got) != 1 || got[0] != "late" {
+	if got := a.closeAndTakeNotes(sealed); len(got) != 1 || got[0] != "late" {
 		t.Errorf("notes after a late reason = %q, want [late]", got)
 	}
-	if got := a.notes(job.New("absent", "absent", job.Policy{})); got != nil {
+	if got := a.closeAndTakeNotes(job.New("absent", "absent", job.Policy{})); got != nil {
 		t.Errorf("notes of an unadmitted job = %q, want nil", got)
 	}
 }

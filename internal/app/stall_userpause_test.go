@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/hobeone/gonzbd/internal/constants"
+	"github.com/hobeone/gonzbd/internal/job"
 	"github.com/hobeone/gonzbd/internal/storagefault"
 )
 
@@ -23,7 +24,10 @@ func TestReevaluateStall_DoesNotUndoAUserPause(t *testing.T) {
 		t.Fatalf("Pause: %v", err)
 	}
 	// What Stall records on a job the user had paused: a reason, no pause.
-	application.noteStall(job.ID(), storagefault.Classify("write", "/mnt/dl/a.bin", syscall.EIO), stallRetryable, false)
+	application.noteStallUnlessHandedOff(job, storagefault.Classify("write", "/mnt/dl/a.bin", syscall.EIO), stallRetryable)
+	if application.weParked(job.ID()) {
+		t.Fatal("the record claimed the user's pause, so it cannot observe that pause being kept")
+	}
 
 	row, ok := application.dispatcher.Row(job.ID())
 	if !ok || row.Status() != constants.StatusPaused {
@@ -51,8 +55,12 @@ func TestReevaluateStall_StillResumesWhatItParked(t *testing.T) {
 	t.Parallel()
 	application, job := newDurabilityTestApp(t, 1, 2)
 
-	// What Application.Stall does: record the reason, then pause.
-	application.noteStall(job.ID(), storagefault.Classify("write", "/mnt/dl/a.bin", syscall.ENOSPC), stallRetryable, true)
+	// What Application.Stall does: record the reason, claiming the pause of a
+	// job not yet paused, then pause.
+	application.noteStallUnlessHandedOff(job, storagefault.Classify("write", "/mnt/dl/a.bin", syscall.ENOSPC), stallRetryable)
+	if !application.weParked(job.ID()) {
+		t.Fatal("the record claimed no pause, so it cannot observe the resume")
+	}
 	if err := application.dispatcher.PauseJob(job.ID()); err != nil {
 		t.Fatalf("Pause: %v", err)
 	}
@@ -143,7 +151,7 @@ func TestStall_OnAnUnparkedRecordOfAUserPausedJob(t *testing.T) {
 	if err := application.dispatcher.PauseJob(job.ID()); err != nil {
 		t.Fatalf("the user's pause: %v", err)
 	}
-	application.noteStall(job.ID(), storagefault.Classify("write", "/mnt/dl/a.bin", syscall.ENOSPC), stallRetryable, false)
+	application.noteStallUnlessHandedOff(job, storagefault.Classify("write", "/mnt/dl/a.bin", syscall.ENOSPC), stallRetryable)
 
 	application.Stall(job, storagefault.Classify("write", "/mnt/dl/a.bin", syscall.EIO))
 
@@ -164,14 +172,19 @@ func TestWeParked(t *testing.T) {
 
 	// A record that claims no pause — Stall on a job the user had paused.
 	// Reading it as our pause is what undid the user's.
-	application.noteStall("theirs", storagefault.Classify("write", "/mnt/dl/a.bin", syscall.EIO), stallRetryable, false)
+	theirs := stallTestJob("theirs")
+	if err := theirs.SetIntent(job.IntentPause); err != nil {
+		t.Fatalf("SetIntent: %v", err)
+	}
+	application.noteStallUnlessHandedOff(theirs, storagefault.Classify("write", "/mnt/dl/a.bin", syscall.EIO), stallRetryable)
 	if application.weParked("theirs") {
 		t.Error("a record that claimed no pause was reported as our pause; " +
 			"re-evaluating it resumes a job we never paused")
 	}
 
-	// The path that pauses (Stall, via noteStall with claimPause) sets it.
-	application.noteStall("ours", storagefault.Classify("write", "/mnt/dl/a.bin", syscall.ENOSPC), stallRetryable, true)
+	// The path that pauses (Stall, via noteStallUnlessHandedOff on a job not
+	// yet paused) sets it.
+	application.noteStallUnlessHandedOff(stallTestJob("ours"), storagefault.Classify("write", "/mnt/dl/a.bin", syscall.ENOSPC), stallRetryable)
 	if !application.weParked("ours") {
 		t.Error("a job this application parked was not recognised as ours, so a " +
 			"re-evaluation would leave it parked after the condition cleared (L2, R19)")
