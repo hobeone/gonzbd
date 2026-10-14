@@ -2275,12 +2275,19 @@ func (app *Application) enqueuePostProc(j *job.Job, hdr dispatch.Header, failMsg
 		app.log.Warn("postproc: could not record the download finish time", "job", j.ID(), "err", err)
 	}
 
-	// A job handed over before its download finished (Fail, a hopeless
-	// callback) gets no more files: the downloader skips an admitted job. Its
-	// unpacker is aborted rather than awaited, so extraction stops at once
-	// rather than finishing a set of a download that did not finish. Read
-	// after the admission, which is what stops the download, and before the
-	// pipeline.forgetJob and the duOrch.collect below. completeFinalizedFile
+	// A job handed over before this process finished its download (Fail, a
+	// hopeless callback, an unwanted-file failure) gets no more files, since
+	// the downloader skips an admitted job, and it carries a FailMsg, so
+	// post-processing runs no stage that would read its unpacker's output. Its
+	// unpacker is aborted rather than awaited, so the failure is not held for
+	// extraction nothing uses. A job that resumed past Fetching after a restart
+	// can also read incomplete here, without a FailMsg, but it has no
+	// unpacker: unpackers live only in duOrch, and maybeStart is not called
+	// for a Resumed completion (completeFinalizedFile's `!fc.Resumed` guard on
+	// its maybeStart call).
+	//
+	// Completeness is read after the admission, which is what stops the
+	// download, and before the pipeline.forgetJob and the duOrch.collect below. completeFinalizedFile
 	// feeds a volume before it marks the file complete, so a job that reads
 	// complete here has had every feed it will get, each feed having resolved
 	// its path before forgetJob drops the paths, and the collect takes the
