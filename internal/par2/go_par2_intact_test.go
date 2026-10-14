@@ -3,6 +3,7 @@ package par2
 import (
 	"bytes"
 	"context"
+	"math/rand/v2"
 	"os"
 	"path/filepath"
 	"slices"
@@ -238,14 +239,28 @@ func TestGoRepair_RenameOnly_RestoresTheName(t *testing.T) {
 	}
 }
 
+// noisePayload returns n deterministic pseudo-random bytes for seed, with no
+// repeating structure for the engine's block search to find.
+func noisePayload(seed uint64, n int) []byte {
+	r := rand.New(rand.NewPCG(seed, seed))
+	b := make([]byte, n)
+	for i := range b {
+		b[i] = byte(r.UintN(256))
+	}
+	return b
+}
+
 // TestGoRepair_ParityAndRebuildInOneSet covers a set where one file needs
 // recovery data and another needs only a rebuild. testdata/mixed holds a
 // par2cmdline 0.8.1 set made with
 //
 //	par2 create -s1024 -c2 -n1 set.par2 a.bin b.bin
 //
-// over a.bin = payload(0x10, 8192) and b.bin = payload(0x60, 4096). Here a.bin
-// has one byte flipped, so one block is missing and parity rebuilds it, and
+// over a.bin = noisePayload(0x10, 8192) and b.bin = noisePayload(0x60, 4096).
+// The payload is noise because a periodic one repeats each block's content
+// elsewhere in the file, which lets the engine rebuild a flipped block without
+// recovery data. Here a.bin has one mid-block byte flipped, so one block is
+// missing and parity rebuilds it, and
 // b.bin is missing while its bytes sit inside container.bin after a header,
 // so every block of it is located but not as a rename.
 func TestGoRepair_ParityAndRebuildInOneSet(t *testing.T) {
@@ -258,12 +273,9 @@ func TestGoRepair_ParityAndRebuildInOneSet(t *testing.T) {
 		}
 		writeFile(t, dir, name, body)
 	}
-	a, b := payload(0x10, 8192), payload(0x60, 4096)
+	a, b := noisePayload(0x10, 8192), noisePayload(0x60, 4096)
 	damaged := bytes.Clone(a)
-	// The flip is a block's first byte. A flip mid-block in this payload makes
-	// par2engine count the blocks after it missing too, which this set's two
-	// recovery blocks cannot cover.
-	damaged[2048] ^= 0xFF
+	damaged[2048+512] ^= 0xFF
 	writeFile(t, dir, "a.bin", damaged)
 	writeFile(t, dir, "container.bin", append([]byte("HEADER-NOT-PART-OF-PAYLOAD-"), b...))
 
