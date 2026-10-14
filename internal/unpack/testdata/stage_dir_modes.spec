@@ -19,21 +19,14 @@ file internal/unpack/snapshot.go
 	}
 --- end
 
-# The destination copies the staged directory's mode again. ownStageDirs has
-# already run, so the rename still succeeds; the test sees open, staged at
-# 0o711, published with that mode instead of 0o750. 0o711 has no group read,
-# so no umask masks it onto 0o750 (0o027 gives 0o710), where 0o755 or 0o777
-# would collapse to 0o750 under umask 0o027.
-[publish copies the staged directory's mode]
+# Destination directories are created with 0o711 instead of 0o750, so the
+# published directory's mode differs from the 0o750 the test compares it with.
+[destination directories are not created with 0o750]
 file internal/unpack/snapshot.go
 --- anchor
-			return root.MkdirAll(rel, 0o750)
+	err := root.MkdirAll(rel, 0o750)
 --- replace
-			info, err := d.Info()
-			if err != nil {
-				return err
-			}
-			return root.MkdirAll(rel, info.Mode().Perm())
+	err := root.MkdirAll(rel, 0o711)
 --- end
 
 # Removal no longer grants the owner bits before retrying, so both

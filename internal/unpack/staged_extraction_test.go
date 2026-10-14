@@ -30,6 +30,22 @@ func dirTree(t *testing.T, dir string) []string {
 	return names
 }
 
+// populate creates paths under dir: a trailing slash makes a directory (and
+// its parents), anything else an empty file.
+func populate(t *testing.T, dir string, paths []string) {
+	t.Helper()
+	for _, p := range paths {
+		full := filepath.Join(dir, p)
+		if strings.HasSuffix(p, "/") {
+			if err := os.MkdirAll(full, 0o750); err != nil {
+				t.Fatal(err)
+			}
+		} else if err := os.WriteFile(full, nil, 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
 // copyInto copies the file src into dir under its base name and returns the
 // copy's path.
 func copyInto(t *testing.T, src, dir string) string {

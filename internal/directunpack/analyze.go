@@ -12,8 +12,9 @@
 // into the job directory only when the whole set extracts without an error; a
 // set whose extraction fails or is aborted has its staging directory removed
 // and leaves nothing in the job directory for the post-processing unpack
-// stage, which extracts it again, to collide with. Members do remain in the
-// job directory after a publish that fails part way. A set that published is
+// stage, which extracts it again, to collide with. A publish that fails part
+// way is undone: what it created is removed, and a removal that fails is
+// reported in the error. A set that published is
 // reported in Results even when Abort follows, and the post-processing unpack
 // stage skips a set it is handed as extracted. A staging directory a crash
 // leaves behind is removed by unpack.CleanupStageDirs, which post-processing's

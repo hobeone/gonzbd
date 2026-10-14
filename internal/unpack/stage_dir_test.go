@@ -474,3 +474,150 @@ func TestExtractStaged(t *testing.T) {
 		}
 	})
 }
+
+func TestMkdirAllTracked(t *testing.T) {
+	t.Parallel()
+	// MkdirAll creates x, then fails on the over-long name: x is recorded
+	// although the call errors.
+	tooLong := strings.Repeat("a", 300)
+	for _, tc := range []struct {
+		name    string
+		before  []string // paths under the root; a trailing slash is a directory
+		known   []string
+		rel     string
+		want    []string // created, shallowest first
+		wantErr bool
+		// wantAbsent: rel does not exist on disk afterwards.
+		wantAbsent bool
+	}{
+		{name: "every level missing", rel: "a/b/c", want: []string{"a", "a/b", "a/b/c"}},
+		{name: "only the missing levels", before: []string{"a/", "a/b/"}, rel: "a/b/c/d", want: []string{"a/b/c", "a/b/c/d"}},
+		{name: "an existing directory records nothing", before: []string{"a/"}, rel: "a"},
+		// The directory is absent on disk, and a known one is not made again.
+		{name: "a known directory is left alone", known: []string{"a/b"}, rel: "a/b", wantAbsent: true},
+		{name: "a file where a directory is needed", before: []string{"f"}, rel: "f/a", wantErr: true},
+		{name: "levels made before a failure are recorded", rel: "x/" + tooLong, want: []string{"x", "x/" + tooLong}, wantErr: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			dir := t.TempDir()
+			populate(t, dir, tc.before)
+			root, err := os.OpenRoot(dir)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer func() { _ = root.Close() }()
+			known := map[string]struct{}{}
+			for _, k := range tc.known {
+				known[k] = struct{}{}
+			}
+			var created []string
+			err = mkdirAllTracked(root, tc.rel, known, &created)
+			if (err != nil) != tc.wantErr {
+				t.Fatalf("mkdirAllTracked(%q) error = %v, wantErr %v", tc.rel, err, tc.wantErr)
+			}
+			if !slices.Equal(created, tc.want) {
+				t.Errorf("created = %v, want %v", created, tc.want)
+			}
+			if _, statErr := os.Lstat(filepath.Join(dir, tc.rel)); !tc.wantErr && tc.wantAbsent != errors.Is(statErr, fs.ErrNotExist) {
+				t.Errorf("Lstat(%q) = %v; want absent %v", tc.rel, statErr, tc.wantAbsent)
+			}
+			if err == nil {
+				// A repeat call for the directory just ensured records nothing.
+				var more []string
+				if err := mkdirAllTracked(root, tc.rel, known, &more); err != nil || len(more) != 0 {
+					t.Errorf("second call = %v, %v; want no error and nothing recorded", more, err)
+				}
+			}
+		})
+	}
+}
+
+// TestUndoPublish pins that a removal that fails is reported and does not stop
+// the removals after it: the created directory d holds a file this publish did
+// not write, so it stays and is returned in the error, while the published
+// file and the empty created directory e are still removed.
+func TestUndoPublish(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	populate(t, dir, []string{"d/", "e/", "p.txt", "d/foreign"})
+	root, err := os.OpenRoot(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = root.Close() }()
+
+	// created is walked last to first, so d is attempted before e.
+	err = undoPublish(root, dir, []string{"p.txt"}, []string{"e", "d"})
+	var pe *fs.PathError
+	if !errors.As(err, &pe) || pe.Path != "d" {
+		t.Fatalf("undoPublish error = %v; want a PathError for the directory d that could not be removed", err)
+	}
+	if got, want := dirTree(t, dir), []string{"d", "d/foreign"}; !slices.Equal(got, want) {
+		t.Errorf("dir after undoPublish = %v, want %v", got, want)
+	}
+}
+
+// TestExtractStaged_APartialPublishLeavesNothing pins that a publish that
+// fails after renaming some members undoes them: it removes the files it
+// published and the directories it created, and keeps a directory that
+// existed before it.
+func TestExtractStaged_APartialPublishLeavesNothing(t *testing.T) {
+	t.Parallel()
+	log := slog.New(slog.DiscardHandler)
+	for _, tc := range []struct {
+		name   string
+		before []string // paths under outDir; a trailing slash is a directory
+		stage  []string // files written to the stage
+		after  []string // outDir once the publish has failed
+	}{
+		{
+			name:   "a blocked top-level member leaves the earlier one unpublished",
+			before: []string{"b.txt/", "b.txt/x"},
+			stage:  []string{"a.txt", "b.txt"},
+			after:  []string{"b.txt", "b.txt/x"},
+		},
+		{
+			name:   "a directory the publish created is removed",
+			before: []string{"z.txt/", "z.txt/x"},
+			stage:  []string{"new/a.txt", "z.txt"},
+			after:  []string{"z.txt", "z.txt/x"},
+		},
+		{
+			name:   "a directory that existed before stays with its contents",
+			before: []string{"old/", "old/keep.txt", "z.txt/", "z.txt/x"},
+			stage:  []string{"old/a.txt", "z.txt"},
+			after:  []string{"old", "old/keep.txt", "z.txt", "z.txt/x"},
+		},
+		{
+			name:   "a file where an archive directory is needed fails the set",
+			before: []string{"d"},
+			stage:  []string{"d/a.txt"},
+			after:  []string{"d"},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			outDir := t.TempDir()
+			populate(t, outDir, tc.before)
+			published, err := ExtractStaged(log, outDir, Options{OverwriteFiles: true}, func(stageDir string) error {
+				for _, p := range tc.stage {
+					full := filepath.Join(stageDir, p)
+					if err := os.MkdirAll(filepath.Dir(full), 0o750); err != nil {
+						return err
+					}
+					if err := os.WriteFile(full, []byte("staged"), 0o600); err != nil {
+						return err
+					}
+				}
+				return nil
+			})
+			if err == nil || published != nil {
+				t.Fatalf("ExtractStaged = %v, %v; want nil and an error", published, err)
+			}
+			if got := dirTree(t, outDir); !slices.Equal(got, tc.after) {
+				t.Errorf("outDir after the failed publish = %v, want %v", got, tc.after)
+			}
+		})
+	}
+}

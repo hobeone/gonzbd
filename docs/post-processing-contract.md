@@ -907,12 +907,18 @@ recorded entirely through the fetch-policy discard, not through this field.
   archive extractor (`go_unrar`, `go_7z`, `go_tar`, `unrar`, `7z`, and
   DirectUnpack) writes into a `.gonzbd-tmp-unpack-*` staging directory inside
   it through `unpack.ExtractStaged`, which publishes the stage's files on
-  success and removes the stage on every return. A failed or cancelled
-  attempt therefore leaves no member, no directory, and no replaced file
-  behind, and a later attempt meets nothing of it
+  success and removes the stage on every return. An attempt that fails or is
+  cancelled before it publishes therefore leaves no member, no directory, and
+  no replaced file behind, and a later attempt meets nothing of it
   (`TestInProcessExtraction_CancelledLeavesNothing`,
   `TestGoTar_FailedExtractionChangesNothing`). A publish that fails part way
-  leaves the files it already renamed. `FileJoin` is not staged: it writes one
+  is undone: the files it renamed in and the directories it created are
+  removed, and a removal that fails is returned in the error and leaves that
+  entry in place. Under `overwrite_files` the undo removes a file this publish
+  renamed over, which can be any file already in the job directory, including
+  one an earlier set of the same job published; that set is not extracted
+  again, so the name stays missing unless this set's re-extraction succeeds.
+  `FileJoin` is not staged: it writes one
   temporary file and renames it into place only when the join completes.
 - **Not enough disk space (`FailDiskFull`)**: Before it writes, each
   extraction by the `unpack` stage compares the unpacked size the archive's
