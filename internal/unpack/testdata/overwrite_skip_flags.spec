@@ -68,29 +68,29 @@ file internal/unpack/sevenzip.go
 [publishStagedExtraction overwrites existing files when overwrite is false]
 file internal/unpack/snapshot.go
 --- anchor
-		if !opts.OverwriteFiles {
+		if lerr == nil && !opts.OverwriteFiles {
 --- replace
-		if false && !opts.OverwriteFiles {
+		if false && lerr == nil && !opts.OverwriteFiles {
 --- end
 
 [publishStagedExtraction skips log.Info when skipping existing file]
 file internal/unpack/snapshot.go
 --- anchor
-				log.Info("skipping existing file", "path", filepath.Join(outDir, rel))
+			log.Info("skipping existing file", "path", filepath.Join(outDir, rel))
 --- replace
-				_ = log
+			_ = log
 --- end
 
 [publishStagedExtraction skips OnLine callback when skipping existing file]
 file internal/unpack/snapshot.go
 --- anchor
-				if opts.OnLine != nil {
-					opts.OnLine("Skipping existing: " + rel)
-				}
+			if opts.OnLine != nil {
+				opts.OnLine("Skipping existing: " + rel)
+			}
 --- replace
-				if false && opts.OnLine != nil {
-					opts.OnLine("Skipping existing: " + rel)
-				}
+			if false && opts.OnLine != nil {
+				opts.OnLine("Skipping existing: " + rel)
+			}
 --- end
 
 

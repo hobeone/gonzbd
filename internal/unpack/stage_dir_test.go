@@ -621,3 +621,33 @@ func TestExtractStaged_APartialPublishLeavesNothing(t *testing.T) {
 		})
 	}
 }
+
+// TestExtractStaged_APartialPublishKeepsAReplacedName pins that, under
+// OverwriteFiles, a failed publish removes the names that were free before it
+// and leaves a name it replaced holding the replacement: a.txt existed, so it
+// keeps the new content, and b.txt did not, so it is removed.
+func TestExtractStaged_APartialPublishKeepsAReplacedName(t *testing.T) {
+	t.Parallel()
+	outDir := t.TempDir()
+	populate(t, outDir, []string{"a.txt", "z.txt/", "z.txt/x"})
+	if err := os.WriteFile(filepath.Join(outDir, "a.txt"), []byte("old"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	published, err := ExtractStaged(slog.New(slog.DiscardHandler), outDir, Options{OverwriteFiles: true}, func(stageDir string) error {
+		for name, content := range map[string]string{"a.txt": "new", "b.txt": "b", "z.txt": "z"} {
+			if err := os.WriteFile(filepath.Join(stageDir, name), []byte(content), 0o600); err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+	if err == nil || published != nil {
+		t.Fatalf("ExtractStaged = %v, %v; want nil and an error", published, err)
+	}
+	if got, err := os.ReadFile(filepath.Join(outDir, "a.txt")); err != nil || string(got) != "new" {
+		t.Errorf("a.txt = %q, %v; want the replacement %q", got, err, "new")
+	}
+	if got, want := dirTree(t, outDir), []string{"a.txt", "z.txt", "z.txt/x"}; !slices.Equal(got, want) {
+		t.Errorf("outDir after the failed publish = %v, want %v", got, want)
+	}
+}

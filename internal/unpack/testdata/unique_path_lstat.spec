@@ -49,7 +49,7 @@ file internal/unpack/unique_path.go
 [the overwrite skip check follows the link]
 file internal/unpack/snapshot.go
 --- anchor
-			if _, err := root.Lstat(dest); err == nil {
+		_, lerr := root.Lstat(dest)
 --- replace
-			if _, err := root.Stat(dest); err == nil {
+		_, lerr := root.Stat(dest)
 --- end

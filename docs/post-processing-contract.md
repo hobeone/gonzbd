@@ -913,12 +913,13 @@ recorded entirely through the fetch-policy discard, not through this field.
   no replaced file behind, and a later attempt meets nothing of it
   (`TestInProcessExtraction_CancelledLeavesNothing`,
   `TestGoTar_FailedExtractionChangesNothing`). A publish that fails part way
-  is undone: the files it renamed in and the directories it created are
-  removed, and a removal that fails is returned in the error and leaves that
-  entry in place. Under `overwrite_files` the undo removes a file this publish
-  renamed over, which can be any file already in the job directory, including
-  one an earlier set of the same job published; that set is not extracted
-  again, so the name stays missing unless this set's re-extraction succeeds.
+  is undone: the files it renamed into names that were free and the
+  directories it created are removed, and a removal that fails is returned in the error and leaves that
+  entry in place. The undo removes only names that
+  were free before the publish; under `overwrite_files` a name the publish
+  replaced keeps the replacement, as without the undo, so the earlier content
+  is lost at the rename and the name holds this failed set's member (it can be
+  a file an earlier set of the same job published).
   `FileJoin` is not staged: it writes one
   temporary file and renames it into place only when the join completes.
 - **Not enough disk space (`FailDiskFull`)**: Before it writes, each

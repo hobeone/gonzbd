@@ -106,7 +106,8 @@ func prepareStageDir(outDir string) (string, error) {
 // rather than skipped.
 //
 // A failed publish is undone by publishStagedExtraction, which also states
-// what the undo costs under opts.OverwriteFiles.
+// what the undo leaves behind under opts.OverwriteFiles. The returned list is
+// nil on every error.
 func ExtractStaged(log *slog.Logger, outDir string, opts Options, extract func(stageDir string) error) ([]string, error) {
 	stageDir, err := prepareStageDir(outDir)
 	if err != nil {
@@ -118,7 +119,7 @@ func ExtractStaged(log *slog.Logger, outDir string, opts Options, extract func(s
 	}
 	published, err := publishStagedExtraction(log, outDir, stageDir, opts)
 	if err != nil {
-		return published, fmt.Errorf("unpack: publish staged files: %w", err)
+		return nil, fmt.Errorf("unpack: publish staged files: %w", err)
 	}
 	return published, nil
 }
@@ -182,12 +183,14 @@ func extractInStage(ctx context.Context, log *slog.Logger, archive Archive, outD
 //
 // An error once the walk has begun undoes the publish (undoPublish) and
 // returns a nil list; an error before it (opening outDir, ownStageDirs,
-// countStagedNames) has published nothing to undo. The undo does not restore
-// a file the publish overwrote: under opts.OverwriteFiles it removes a file
-// this publish renamed over, which can be any file already in the job
-// directory, including one an earlier set of the same job published. That set
-// is not extracted again, so the name stays missing unless this set's
-// re-extraction succeeds.
+// countStagedNames) has published nothing to undo. The undo removes only the
+// names that were free before the publish, and the directories it created. A
+// name the publish replaced under opts.OverwriteFiles keeps its replacement,
+// as it would without the undo: the earlier content is gone at the rename and
+// is not restored, and the name holds this failed set's member, which can be
+// a file an earlier set of the same job published. The check that a name was
+// free is one Lstat before its rename, so it assumes no other writer in
+// outDir during the publish.
 func publishStagedExtraction(log *slog.Logger, outDir, stageDir string, opts Options) ([]string, error) {
 	root, err := os.OpenRoot(outDir)
 	if err != nil {
@@ -204,6 +207,9 @@ func publishStagedExtraction(log *slog.Logger, outDir, stageDir string, opts Opt
 	}
 	stageBase := filepath.Base(stageDir)
 	var published []string
+	// added is the part of published whose names were free before the rename,
+	// the only files undoPublish removes.
+	var added []string
 	var created []string
 	known := make(map[string]struct{})
 	seen := make(map[fileID]struct{})
@@ -241,14 +247,16 @@ func publishStagedExtraction(log *slog.Logger, outDir, stageDir string, opts Opt
 		if opts.OneFolder && !opts.OverwriteFiles {
 			dest = uniquePath(root, rel)
 		}
-		if !opts.OverwriteFiles {
-			if _, err := root.Lstat(dest); err == nil {
-				log.Info("skipping existing file", "path", filepath.Join(outDir, rel))
-				if opts.OnLine != nil {
-					opts.OnLine("Skipping existing: " + rel)
-				}
-				return nil
+		_, lerr := root.Lstat(dest)
+		// free only on a definite not-exist: a name whose Lstat failed any
+		// other way may hold a file, so the undo must not remove it.
+		free := errors.Is(lerr, fs.ErrNotExist)
+		if lerr == nil && !opts.OverwriteFiles {
+			log.Info("skipping existing file", "path", filepath.Join(outDir, rel))
+			if opts.OnLine != nil {
+				opts.OnLine("Skipping existing: " + rel)
 			}
+			return nil
 		}
 		if dir := filepath.Dir(dest); dir != "." {
 			if err := mkdirAllTracked(root, dir, known, &created); err != nil {
@@ -259,10 +267,13 @@ func publishStagedExtraction(log *slog.Logger, outDir, stageDir string, opts Opt
 			return err
 		}
 		published = append(published, dest)
+		if free {
+			added = append(added, dest)
+		}
 		return nil
 	})
 	if err != nil {
-		return nil, errors.Join(err, undoPublish(root, outDir, published, created))
+		return nil, errors.Join(err, undoPublish(root, outDir, added, created))
 	}
 	return published, nil
 }
@@ -302,15 +313,20 @@ func mkdirAllTracked(root *os.Root, rel string, known map[string]struct{}, creat
 	return nil
 }
 
-// undoPublish removes what a failed publish put into outDir: each published
-// file, then each created directory, deepest first. A directory is removed
-// non-recursively, so one that still holds something this publish did not
-// write is reported and left, never deleted. A file the publish overwrote is
-// not restored. Every removal failure is joined into the result.
-func undoPublish(root *os.Root, outDir string, published, created []string) error {
+// undoPublish removes what a failed publish put into outDir: each added file,
+// the published files whose names were free before, then each created
+// directory, deepest first. A name the publish replaced is not in added and
+// is left holding its replacement. A directory is removed non-recursively
+// with root.Remove, so one that still holds something this publish did not
+// write is reported and left, never deleted; that includes a directory
+// holding only NFS silly-rename files, which fsutil offers no non-recursive,
+// root-relative removal for. Every removal failure is joined into the result.
+func undoPublish(root *os.Root, outDir string, added, created []string) error {
 	var errs []error
-	for _, p := range published {
-		errs = append(errs, fsutil.RemoveRootAll(root, p, filepath.Join(outDir, p)))
+	for _, p := range added {
+		if err := fsutil.RemoveRootAll(root, p, filepath.Join(outDir, p)); err != nil {
+			errs = append(errs, err)
+		}
 	}
 	for _, dir := range slices.Backward(created) {
 		if err := root.Remove(dir); err != nil && !errors.Is(err, fs.ErrNotExist) {

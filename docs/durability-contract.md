@@ -1305,14 +1305,15 @@ articles or sparse regions.
     by a crash is removed by `unpack.CleanupStageDirs`, which `sweepTempFiles`
     runs at the start of post-processing and `ExtractStaged` runs before
     making a stage. A publish that fails part way is undone by
-    `publishStagedExtraction`: it removes the files it renamed in and the
-    directories it created, and keeps a directory that existed before
+    `publishStagedExtraction`: it removes the files it renamed into names
+    that were free and the directories it created, and keeps a directory that existed before
     (`TestExtractStaged_APartialPublishLeavesNothing`); a removal that fails
-    is returned in the error and leaves that entry in place. Under
-    `overwrite_files` the undo removes a file this publish renamed over, which
-    can be any file already in the job directory, including one an earlier
-    set of the same job published; that set is not extracted again, so the
-    name stays missing unless this set's re-extraction succeeds. Members that did reach the job directory are extracted again by
+    is returned in the error and leaves that entry in place. The undo
+    removes only names that were free before the publish; under
+    `overwrite_files` a name the publish replaced keeps the replacement, as
+    without the undo, so the earlier content is lost at the rename and the
+    name holds this failed set's member (it can be a file an earlier set of
+    the same job published). Members that did reach the job directory are extracted again by
     the unpack stage whenever the set is missing from `DirectUnpackSets`, and
     under `flat_unpack` without `overwrite_files` a re-extraction, by any
     engine, writes `_N` copies of them. The case found: a restart before

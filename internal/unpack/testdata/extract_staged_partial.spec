@@ -1,14 +1,12 @@
 pkg ./internal/unpack/
-run TestExtractStaged_APartialPublishLeavesNothing
+run ^TestExtractStaged_APartialPublish
 
 [the undo no longer removes the files it published]
 file internal/unpack/snapshot.go
 --- anchor
-		errs = append(errs, fsutil.RemoveRootAll(root, p, filepath.Join(outDir, p)))
+	for _, p := range added {
 --- replace
-		if false {
-			errs = append(errs, fsutil.RemoveRootAll(root, p, filepath.Join(outDir, p)))
-		}
+	for _, p := range added[:0] {
 --- end
 
 [the undo no longer removes the directories it created]
@@ -20,6 +18,13 @@ file internal/unpack/snapshot.go
 		if err := fs.ErrNotExist; err != nil && !errors.Is(err, fs.ErrNotExist) {
 --- end
 
+[the undo removes a replaced name too]
+file internal/unpack/snapshot.go
+--- anchor
+		free := errors.Is(lerr, fs.ErrNotExist)
+--- replace
+		free := errors.Is(lerr, fs.ErrNotExist) || lerr == nil
+--- end
 [every level is recorded as created whether or not it existed before]
 file internal/unpack/snapshot.go
 --- anchor
