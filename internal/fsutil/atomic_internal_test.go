@@ -40,3 +40,19 @@ func TestWriteAtomic_ChmodFlagGatesThePermission(t *testing.T) {
 		})
 	}
 }
+
+func TestIsTempFile_InternalHelpers(t *testing.T) {
+	t.Parallel()
+	if !isGonzbdTempFile(".gonzbd-tmp-0123456789abcdef") {
+		t.Error("isGonzbdTempFile(.gonzbd-tmp-0123456789abcdef) = false, want true")
+	}
+	if isGonzbdTempFile("part03.rar.par2engine-FW6AYZPLN4JV6JDE.tmp") {
+		t.Error("isGonzbdTempFile(par2engine tmp) = true, want false")
+	}
+	if !isPar2EngineTempFile("part03.rar.par2engine-FW6AYZPLN4JV6JDE.tmp") {
+		t.Error("isPar2EngineTempFile(par2engine tmp) = false, want true")
+	}
+	if isPar2EngineTempFile(".gonzbd-tmp-0123456789abcdef") {
+		t.Error("isPar2EngineTempFile(gonzbd tmp) = true, want false")
+	}
+}

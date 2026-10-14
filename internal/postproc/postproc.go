@@ -529,10 +529,11 @@ func (p *PostProcessor) runStage(ctx context.Context, stage Stage, job *Job) (St
 	return entry, false
 }
 
-// sweepTempFiles removes leftover .gonzbd-tmp-<16 hex> files and
+// sweepTempFiles removes leftover temp files (fsutil.IsTempFile:
+// .gonzbd-tmp-<16 hex> and <target>.par2engine-<16 base32>.tmp) and
 // .gonzbd-tmp-unpack-* staging directories under dir that an interrupted
-// extraction (writeEntrySafely, UnRAR, SevenZip) or split join (FileJoin) left
-// behind before its atomic rename completed.
+// repair (par2engine), extraction (writeEntrySafely, UnRAR, SevenZip) or split
+// join (FileJoin) left behind before its atomic rename completed.
 func sweepTempFiles(log *slog.Logger, dir string) {
 	if dir == "" {
 		return
@@ -726,8 +727,8 @@ func (p *PostProcessor) recoverUnpackFinalDir(ctx context.Context, job *Job) err
 
 // alreadyDelivered reports whether a job whose DownloadDir is missing has
 // already been delivered into its FinalDir (#767), which belongs to the job
-// alone, so a non-empty one is evidence of delivery. Orphaned .gonzbd-tmp-<16 hex> files do not
-// count as delivered payload.
+// alone, so a non-empty one is evidence of delivery. Orphaned temp files
+// (fsutil.IsTempFile) do not count as delivered payload.
 func (j *Job) alreadyDelivered() bool {
 	if j.FinalDir == "" {
 		return false

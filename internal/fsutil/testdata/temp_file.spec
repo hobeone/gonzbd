@@ -25,6 +25,38 @@ file internal/fsutil/rootedcreate.go
 		if false && c == 0 {
 --- end
 
+[IsTempFile skips par2engine temp-file check]
+file internal/fsutil/rootedcreate.go
+--- anchor
+	return isGonzbdTempFile(name) || isPar2EngineTempFile(name)
+--- replace
+	return isGonzbdTempFile(name)
+--- end
+
+[isPar2EngineTempFile accepts empty target prefix]
+file internal/fsutil/rootedcreate.go
+--- anchor
+	if len(name) <= par2TempSuffix || !strings.HasSuffix(name, par2TempExt) {
+--- replace
+	if len(name) < par2TempSuffix || !strings.HasSuffix(name, par2TempExt) {
+--- end
+
+[isPar2EngineTempFile skips marker check]
+file internal/fsutil/rootedcreate.go
+--- anchor
+	if name[markerStart:markerStart+len(par2TempMarker)] != par2TempMarker {
+--- replace
+	if false && name[markerStart:markerStart+len(par2TempMarker)] != par2TempMarker {
+--- end
+
+[isPar2EngineTempFile skips base32 character validation]
+file internal/fsutil/rootedcreate.go
+--- anchor
+		if (c < 'A' || c > 'Z') && (c < '2' || c > '7') {
+--- replace
+		if false && c == 0 {
+--- end
+
 [RootedCreateTempPerm ignores perm and uses 0o600]
 file internal/fsutil/rootedcreate.go
 --- anchor
