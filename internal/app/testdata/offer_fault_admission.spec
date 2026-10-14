@@ -12,24 +12,14 @@ file internal/app/app.go
 		msg = "storage fault after the hand-over to post-processing; the run already has a failure reason or is sealed, so this one is noted"
 --- end
 
-[an ended admission falls into the unreachable arm]
+[an ended or closed-notes admission falls into the unreachable arm]
 file internal/app/app.go
 --- anchor
 	case refusedEnded:
-		msg = "storage fault after the job's post-processing ended; it has no run left to reach and is logged only"
+		msg = "storage fault after the job's post-processing run ended or while its history entry is being written; it reaches neither and is logged only"
 --- replace
 	case admitOutcome(-1):
-		msg = "storage fault after the job's post-processing ended; it has no run left to reach and is logged only"
---- end
-
-[a closed-notes admission reads as a repeat]
-file internal/app/app.go
---- anchor
-	case refusedNotesClosed:
-		msg = "storage fault after the hand-over to post-processing; the run's history entry is already being written, so the fault is logged only"
---- replace
-	case admitOutcome(-1):
-		msg = "storage fault after the hand-over to post-processing; the run's history entry is already being written, so the fault is logged only"
+		msg = "storage fault after the job's post-processing run ended or while its history entry is being written; it reaches neither and is logged only"
 --- end
 
 [the source attribute is dropped]

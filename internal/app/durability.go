@@ -254,12 +254,15 @@ func (app *Application) stall(j *job.Job, f *storagefault.Fault, kind stallKind)
 	// the pause is claimed by us and resumed once the fault clears, and a
 	// user resume in the same window leaves the pause on a job nobody owns
 	// (docs/durability-contract.md).
-	if !app.noteStallUnlessHandedOff(j, f, kind) {
-		// Handed off: see handOverStall.
+	if app.noteStallUnlessHandedOff(j, f, kind) {
+		app.log.Warn("job stalled by a storage fault", "job", jobID, "fault", f.Error())
+	} else {
+		// Handed off (see handOverStall): no record, since a record makes
+		// reevaluateStall resume the ID, but the pause below is still made. A
+		// verify fault from the residency's parked callback relies on it to
+		// stop Dispatcher.reconcileResidency re-hydrating the job every tick.
 		app.offerFaultToAdmission(j, f, kind.source())
-		return
 	}
-	app.log.Warn("job stalled by a storage fault", "job", jobID, "fault", f.Error())
 	// The pause is latched whatever the state, and PauseInstance releases only
 	// a Fetching job's lease, the worker whose writes the fault
 	// interrupts. A job that has moved on — Assessing, say — keeps its

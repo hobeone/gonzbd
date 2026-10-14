@@ -58,12 +58,12 @@ import (
 // the history entry's stage log without changing its status.
 //
 // An admission is over for new reasons in two states, which differ in what
-// else they mean. Notes closed: finalize has read the notes
-// (closeAndTakeNotes) to write the history entry, so a later reason reaches
-// neither the run nor the entry, and admit refuses it as refusedNotesClosed;
-// the instance is still admitted, so has, withdraw and unlessHandedOff still
-// treat it as handed off. Ended: release has run, the instance is no longer
-// in jobs, and admit refuses any call as refusedEnded.
+// else they mean, and admit answers refusedEnded in both. Notes closed:
+// finalize has read the notes (closeAndTakeNotes) to write the history entry,
+// so a later reason that is not already recorded reaches neither the run nor
+// the entry; the instance is still admitted, so has, withdraw and
+// unlessHandedOff still treat it as handed off. Ended: release has run, the
+// instance is no longer in jobs, and admit refuses any call.
 //
 // A storage fault raised after the admission offers its reason through this
 // same admit call, on the instance already admitted, so that call is itself a
@@ -130,22 +130,20 @@ const (
 	// refusedReasonNoted: already admitted; the caller's reason is kept as a
 	// note, because the admission has a different reason or is sealed.
 	refusedReasonNoted
-	// refusedEnded: j's admission has ended (release). The caller's reason has
-	// no run left to reach, and is recorded nowhere.
+	// refusedEnded: the admission is over for new reasons, either because it
+	// has ended (release) or because finalize has taken its notes
+	// (closeAndTakeNotes) to write the history entry. The caller's reason
+	// reaches neither the run nor the entry, and is recorded nowhere.
 	refusedEnded
 	// deferredToAssessing: j is at Assessing and not admitted. The caller's
 	// reason is kept for j's Assessing worker, which hands j over.
 	deferredToAssessing
-	// refusedNotesClosed: j is still admitted, but finalize has read its
-	// notes (closeAndTakeNotes) to write the history entry. The caller's new
-	// reason reaches neither the run nor the entry, and is recorded nowhere.
-	refusedNotesClosed
 )
 
 // admit admits j unless it is admitted or its admission has ended. A call
 // refused as already admitted has its failMsg become the admission's reason if
 // it has none and is not sealed, and otherwise kept as a note unless it
-// repeats the reason or a note, or the notes are closed.
+// repeats the reason or a note; once the notes are closed it is refusedEnded.
 func (a *postProcAdmissions) admit(j *job.Job, failMsg string) admitOutcome {
 	a.mu.Lock()
 	defer a.mu.Unlock()
@@ -286,18 +284,17 @@ func (a *postProcAdmissions) admitLocked(j *job.Job, failMsg string) admitOutcom
 		return refusedEnded
 	}
 	if cur, ok := a.jobs[j]; ok {
-		if failMsg == "" || failMsg == cur.failMsg {
+		// Ahead of notesTaken, so a reason the entry already holds is still
+		// reported as refused rather than as lost.
+		if failMsg == "" || failMsg == cur.failMsg || slices.Contains(cur.notes, failMsg) {
 			return refused
 		}
 		if cur.notesTaken {
-			return refusedNotesClosed
+			return refusedEnded
 		}
 		if cur.failMsg == "" && !cur.sealed {
 			cur.failMsg = failMsg
 			return refusedReasonKept
-		}
-		if slices.Contains(cur.notes, failMsg) {
-			return refused
 		}
 		cur.notes = append(cur.notes, failMsg)
 		return refusedReasonNoted
@@ -383,8 +380,8 @@ func (a *postProcAdmissions) withdraw(j *job.Job) {
 }
 
 // closeAndTakeNotes closes j's admission's notes and returns a copy of them:
-// admit refuses a new reason as refusedNotesClosed from then on. j stays
-// admitted until release (postProcAdmissions).
+// admit refuses a new reason as refusedEnded from then on. j stays admitted
+// until release (postProcAdmissions).
 func (a *postProcAdmissions) closeAndTakeNotes(j *job.Job) []string {
 	a.mu.Lock()
 	defer a.mu.Unlock()
@@ -393,10 +390,7 @@ func (a *postProcAdmissions) closeAndTakeNotes(j *job.Job) []string {
 		return nil
 	}
 	cur.notesTaken = true
-	if len(cur.notes) == 0 {
-		return nil
-	}
-	return append([]string(nil), cur.notes...)
+	return slices.Clone(cur.notes)
 }
 
 // has reports whether j is admitted. It is the downloader's HandedOff: an

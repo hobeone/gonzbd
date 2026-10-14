@@ -75,7 +75,7 @@ func TestOfferFaultToAdmission(t *testing.T) {
 				a.admit(j, other)
 				a.closeAndTakeNotes(j)
 			},
-			wantMsg:      "history entry is already being written",
+			wantMsg:      "history entry is being written",
 			wantAdmitted: true,
 			wantFailMsg:  other,
 		},
@@ -85,7 +85,7 @@ func TestOfferFaultToAdmission(t *testing.T) {
 				a.admit(j, "")
 				a.release(j)
 			},
-			wantMsg: "post-processing ended",
+			wantMsg: "post-processing run ended",
 		},
 		{
 			// Neither caller offers a fault for such a job; the arm exists so a

@@ -28,11 +28,11 @@ type stallAdmissionOutcome struct {
 
 // TestStall_Admission: a storage fault routed through Stall or
 // parkVerifyFault parks a job that is not handed off, and is reported to the
-// admitted run, not parked, once the job is admitted. Once the instance's
-// admission has ended it is neither parked nor offered to a run. A record
-// left behind would report a job in post-processing as stalled, and its
-// re-evaluation would resume the ID, which a retry may hold by then
-// (handOverStall).
+// admitted run, with no stall record, once the job is admitted. Once the
+// instance's admission has ended it is offered to no run. The instance is
+// paused in every case. A record left behind would report a job in
+// post-processing as stalled, and its re-evaluation would resume the ID,
+// which a retry may hold by then (handOverStall).
 func TestStall_Admission(t *testing.T) {
 	t.Parallel()
 	fault := storagefault.Classify("write", "/mnt/dl/a.bin", syscall.ENOSPC)
@@ -60,6 +60,20 @@ func TestStall_Admission(t *testing.T) {
 			if !application.postProcAdmissions.has(j) {
 				t.Fatal("precondition: the hopeless hand-over did not admit the job")
 			}
+			route(application, j)
+			return observe(application, j)
+		}
+	}
+
+	// afterEnded routes the fault through route once the instance's admission
+	// has ended.
+	afterEnded := func(route func(*Application, *job.Job)) func(*testing.T) stallAdmissionOutcome {
+		return func(t *testing.T) stallAdmissionOutcome {
+			application, j := newDurabilityTestApp(t, 1, 2)
+			if got := application.postProcAdmissions.admit(j, ""); got != admitted {
+				t.Fatalf("precondition: admit = %v, want admitted", got)
+			}
+			application.postProcAdmissions.release(j)
 			route(application, j)
 			return observe(application, j)
 		}
@@ -96,7 +110,7 @@ func TestStall_Admission(t *testing.T) {
 	for _, tc := range []struct {
 		name string
 		run  func(*testing.T) stallAdmissionOutcome
-		// parked: the job has a stall record and Stall's pause.
+		// parked: the job has a stall record.
 		parked bool
 		// admitted: the instance holds an admission after the fault.
 		admitted bool
@@ -140,15 +154,11 @@ func TestStall_Admission(t *testing.T) {
 			// The dispatcher still holds an instance whose admission ended
 			// when the finalizer's removal failed.
 			name: "a write fault after the admission ended reaches no run",
-			run: func(t *testing.T) stallAdmissionOutcome {
-				application, j := newDurabilityTestApp(t, 1, 2)
-				if got := application.postProcAdmissions.admit(j, ""); got != admitted {
-					t.Fatalf("precondition: admit = %v, want admitted", got)
-				}
-				application.postProcAdmissions.release(j)
-				stall(application, j)
-				return observe(application, j)
-			},
+			run:  afterEnded(stall),
+		},
+		{
+			name: "a verify fault after the admission ended reaches no run",
+			run:  afterEnded(verify),
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -157,8 +167,10 @@ func TestStall_Admission(t *testing.T) {
 			if recorded := got.stallReason != ""; recorded != tc.parked {
 				t.Errorf("StallReason = %q, want a record: %v", got.stallReason, tc.parked)
 			}
-			if paused := got.intent == job.IntentPause; paused != tc.parked {
-				t.Errorf("intent after the fault = %v, want Stall's pause: %v", got.intent, tc.parked)
+			// Every row pauses, record or not: a refused verify fault relies on
+			// the pause to stop reconcileResidency re-hydrating the job.
+			if got.intent != job.IntentPause {
+				t.Errorf("intent after the fault = %v, want IntentPause", got.intent)
 			}
 			if got.admitted != tc.admitted {
 				t.Errorf("admitted after the fault = %v, want %v", got.admitted, tc.admitted)

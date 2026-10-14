@@ -32,24 +32,45 @@ file internal/app/durability.go
 		}
 --- end
 
+[a refused fault is not paused]
+file internal/app/durability.go
+--- anchor
+		app.offerFaultToAdmission(j, f, kind.source())
+	}
+--- replace
+		app.offerFaultToAdmission(j, f, kind.source())
+		return
+	}
+--- end
+
 [a reason after the notes were taken is noted and dropped]
 file internal/app/postproc_admission.go
 --- anchor
 		if cur.notesTaken {
-			return refusedNotesClosed
+			return refusedEnded
 		}
 --- replace
 		if false {
-			return refusedNotesClosed
+			return refusedEnded
 		}
 --- end
 
-[a reason after the notes were taken reads as an ended admission]
+[the notes-taken check runs before the duplicate check]
 file internal/app/postproc_admission.go
 --- anchor
-			return refusedNotesClosed
---- replace
+		if failMsg == "" || failMsg == cur.failMsg || slices.Contains(cur.notes, failMsg) {
+			return refused
+		}
+		if cur.notesTaken {
 			return refusedEnded
+		}
+--- replace
+		if cur.notesTaken {
+			return refusedEnded
+		}
+		if failMsg == "" || failMsg == cur.failMsg || slices.Contains(cur.notes, failMsg) {
+			return refused
+		}
 --- end
 
 [closeAndTakeNotes leaves the admission open to reasons]

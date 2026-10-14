@@ -325,8 +325,9 @@ func TestPostProcAdmissions_UnlessHandedOff(t *testing.T) {
 
 // TestPostProcAdmissions_NoReasonAfterTheNotesAreTaken: once the finalizer
 // has taken an admission's notes, a later reason reaches neither the run nor
-// its history entry: it is refused as refusedNotesClosed, not reported as
-// noted and then dropped. The instance stays admitted until release.
+// its history entry: a new reason is refused as refusedEnded, not reported as
+// noted and then dropped, while a reason the entry already holds is still
+// refused as refused. The instance stays admitted until release.
 func TestPostProcAdmissions_NoReasonAfterTheNotesAreTaken(t *testing.T) {
 	t.Parallel()
 	var a postProcAdmissions
@@ -335,10 +336,18 @@ func TestPostProcAdmissions_NoReasonAfterTheNotesAreTaken(t *testing.T) {
 	if got := a.admit(j, "Failed: before"); got != refusedReasonKept {
 		t.Fatalf("precondition: admit with a first reason = %v, want refusedReasonKept", got)
 	}
+	if got := a.admit(j, "Failed: noted"); got != refusedReasonNoted {
+		t.Fatalf("precondition: admit with a second reason = %v, want refusedReasonNoted", got)
+	}
 	a.closeAndTakeNotes(j)
 
-	if got := a.admit(j, "Failed: after the notes were taken"); got != refusedNotesClosed {
-		t.Errorf("admit after the notes were taken = %v, want refusedNotesClosed: the reason would be reported noted and then dropped", got)
+	if got := a.admit(j, "Failed: after the notes were taken"); got != refusedEnded {
+		t.Errorf("admit after the notes were taken = %v, want refusedEnded: the reason would be reported noted and then dropped", got)
+	}
+	for _, held := range []string{"Failed: before", "Failed: noted"} {
+		if got := a.admit(j, held); got != refused {
+			t.Errorf("admit of %q, which the entry holds, after the notes were taken = %v, want refused", held, got)
+		}
 	}
 	if !a.has(j) {
 		t.Error("has = false after the notes were taken; the instance is admitted until release")

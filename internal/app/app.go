@@ -2235,16 +2235,15 @@ func (app *Application) offerFaultToAdmission(j *job.Job, f *storagefault.Fault,
 		msg = "storage fault after the hand-over to post-processing; the run already has a failure reason or is sealed, so this one is noted"
 	case refused:
 		msg = "storage fault after the hand-over to post-processing; the run already records this reason"
-	case refusedNotesClosed:
-		msg = "storage fault after the hand-over to post-processing; the run's history entry is already being written, so the fault is logged only"
 	case refusedEnded:
-		msg = "storage fault after the job's post-processing ended; it has no run left to reach and is logged only"
+		msg = "storage fault after the job's post-processing run ended or while its history entry is being written; it reaches neither and is logged only"
 	default:
 		// admitted and deferredToAssessing: unreachable from both callers.
-		// Each calls only for a j the admission refused as admitted or ended
-		// (enqueuePostProc's own admit, stall's unlessHandedOff gate), and an
-		// admission leaves jobs only through release, which records it in
-		// ended (`git grep -n 'delete[(]a[.]jobs' -- 'internal/app/*.go'
+		// enqueuePostProc's close arm calls only after its own entry admit
+		// admitted j, and stall only after unlessHandedOff refused because j
+		// was admitted or its admission had ended. An admission leaves jobs
+		// only through release, which records it in ended
+		// (`git grep -n 'delete[(]a[.]jobs' -- 'internal/app/*.go'
 		// ':!*_test.go'` returns 1 line, in release), so admit cannot admit
 		// or defer j again.
 		msg = "storage fault offered to an admission that was not held; outcome " + strconv.Itoa(int(outcome))
@@ -2290,11 +2289,7 @@ func (app *Application) enqueuePostProc(j *job.Job, hdr dispatch.Header, failMsg
 			"job", j.ID(), "fail_msg", failMsg)
 		return
 	case refusedEnded:
-		app.log.Warn("postproc: this job instance's post-processing has already ended; not running it again",
-			"job", j.ID(), "fail_msg", failMsg)
-		return
-	case refusedNotesClosed:
-		app.log.Warn("postproc: this job's history entry is already being written; this failure reason is not recorded",
+		app.log.Warn("postproc: this job instance's post-processing has ended or its history entry is being written; not running it again, and this failure reason is not recorded",
 			"job", j.ID(), "fail_msg", failMsg)
 		return
 	}

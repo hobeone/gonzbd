@@ -108,7 +108,7 @@ func (app *Application) stalledJobIDs() []string {
 // stallMu is a leaf: `git grep -n 'stallMu[.]Lock()' -- 'internal/app/*.go'
 // ':!*_test.go'` returns 7 lines, each in a span that touches only the
 // stalls map.
-func (app *Application) noteStallUnlessHandedOff(j *job.Job, f *storagefault.Fault, kind stallKind) (noted bool) {
+func (app *Application) noteStallUnlessHandedOff(j *job.Job, f *storagefault.Fault, kind stallKind) bool {
 	return app.postProcAdmissions.unlessHandedOff(j, func() {
 		claimPause := j.Intent() != job.IntentPause
 		app.stallMu.Lock() //lockio: stallMu is a leaf under postProcAdmissions.mu; see the lock order above
@@ -182,8 +182,8 @@ func (app *Application) clearStall(jobID string) (parked bool) {
 // admission is recorded no record of j is written, and this clear sees the
 // final one. stall's checks ahead of the write (the stopping guard,
 // registered) are fast exits; the writer's gate is the authority. A fault the
-// gate refuses is neither recorded nor paused; stall hands it to
-// offerFaultToAdmission, whose doc says where it goes. A write or finish
+// gate refuses is not recorded, but stall still pauses the instance and hands
+// the reason to offerFaultToAdmission, whose doc says where it goes. A write or finish
 // fault left bytes the downloader never re-fetches for an admitted job, and a
 // verify fault means bytes the run cannot read, so neither is dropped.
 // A deferral is not an admission: a stall after handOverStall(j, true) is

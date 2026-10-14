@@ -736,7 +736,7 @@ operation, the path, and whether the condition is `Permanent`:
 | completion fault (§2) | untrust (§4), then `OnWriteFault` → `Stall` / `Fail` | the file's articles return to **Outstanding** |
 | close-time fault at the hand-over | untrust, and the run fails with it (*Hand-over to post-processing*) | — |
 | verification fault (§3) | at a hydration, always `parkVerifyFault` (a `Stall` lifted only once the job is resumed), never `Fail`; on a retry, the retry is aborted | nothing attached |
-| a `Stall` or `parkVerifyFault` for an instance handed to post-processing | no record and no pause; the reason goes to `offerFaultToAdmission` (*Hand-over to post-processing*) | as the fault's own row |
+| a `Stall` or `parkVerifyFault` for an instance handed to post-processing | no stall record, but the instance is still paused; the reason goes to `offerFaultToAdmission` (*Hand-over to post-processing*) | as the fault's own row |
 
 In no case is `Job.MarkArticleFailed` called, the failed-byte count touched, or
 the job's reported health degraded (R21). Attributing a full disk to the
@@ -819,7 +819,7 @@ incomplete (#349, #387).
 | Write fault | The article is resolved `RolledBack` (`fileWriter.resolve`) and its part rolls back, `OnArticlesUnwritten` clears its Emitted bit, `OnWriteFault` → Stall or Fail. No row is written. |
 | Completion fault | §4: untrusted, no tombstone, `FileInfo` dropped, Stall or Fail. On resume the file's articles are Outstanding and are refetched. |
 | Pause, low disk, server penalty | Nothing writes the record; no hook. |
-| Reload (`ReloadDownloader`) | Stop the old downloader; `setCompletions(nil)`, which returns once every buffered result has reached the assembler's queue; `Assembler.Quiesce`, answered once everything queued ahead of it has been processed and its callbacks have run; `ClearEmittedForReload(false)` for every job not admitted to post-processing; start the new downloader, paused first if the application is paused, and swap it in, both under `app.mu`. An Emitted bit still set after the quiesce covers only an article whose bytes never reached `pwrite`. If the quiesce fails, the clear is skipped and those articles stay Emitted until the next start. |
+| Reload (`ReloadDownloader`) | Stop the old downloader; `setCompletions(nil)`, which returns once every buffered result has reached the assembler's queue; `Assembler.Quiesce`, answered once everything queued ahead of it has been processed and its callbacks have run; `ClearEmittedForReload(false)` for every job not handed off to post-processing (neither admitted nor past its admission); start the new downloader, paused first if the application is paused, and swap it in, both under `app.mu`. An Emitted bit still set after the quiesce covers only an article whose bytes never reached `pwrite`. If the quiesce fails, the clear is skipped and those articles stay Emitted until the next start. |
 | Remove (`RemoveJob`) | `CancelJob` closes the job's handles; reclaim deletes its rows. A racing flush is stopped by the instance check and the `job_files` guard, and any orphan rows by the next start's `SweepOrphans`. |
 | Retry | §3 *Retry*. |
 | Clean shutdown | §*Clean shutdown*. |
@@ -846,13 +846,17 @@ exception**: no fault was observed, and the handles may still flush later
 `TestEnqueuePostProc_ACloseTimeoutRunsTheStages`).
 
 The close-time fault is **reported, not routed**: the job is already admitted,
-so `Fail` cannot hand it over again and `Stall` would pause a job whose files
-post-processing is using. **So is a fault routed after the admission.** A write
+so `Fail` cannot hand it over again and `Stall` would record a stall for a job
+whose files post-processing is using. **So is a fault routed after the
+admission.** A write
 in flight at the hand-over can raise a fault whose `Stall` runs after `admit`,
 and a hydration can raise a verification fault (`parkVerifyFault`). `stall`
 writes no record for an instance that is admitted or whose admission has ended,
 and passes the fault's reason to `offerFaultToAdmission`, the close arm's helper
-too, which offers it to the admission and logs where it went; the
+too, which offers it to the admission and logs where it went. `stall` still
+pauses the instance, since a verification fault relies on the pause to stop
+`Dispatcher.reconcileResidency` re-hydrating the job every tick, and the
+post-processor runs a paused job regardless; the
 `admitOutcome` constants say where each outcome sends it
 (`TestStall_Admission`,
 `TestPostProcAdmissions_NoReasonAfterTheNotesAreTaken`). The reason is
@@ -980,9 +984,9 @@ made after an admission either.** The record's one writer,
 instance that is admitted or whose admission has ended
 (`postProcAdmissions.unlessHandedOff`), so the clear, which follows the
 admission, sees the final record. Where the refused fault goes is
-§ "Hand-over to post-processing". A `PauseInstance` from a `Stall` that passed
-the gate just before the admission can still land after the clear, leaving an
-admitted job paused with no record: the post-processor runs it paused or not,
+§ "Hand-over to post-processing". An admitted job can be paused with no record,
+by a refused fault's pause or by one that passed the gate just before the
+admission and lands after the clear: the post-processor runs it paused or not,
 and with no record nothing resumes the ID later. **A deferral is not an
 admission**, so a fault after `handOverStall` defers the job to its Assessing
 worker is recorded and pauses it, and a retryable one holds that worker until
