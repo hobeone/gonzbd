@@ -422,14 +422,21 @@ func (e *RetryAfterError) Error() string {
 	return fmt.Sprintf("HTTP %d: retry after %s", e.StatusCode, e.Duration)
 }
 
+// maxRetryAfter caps the delay parseRetryAfter reports. Retry-After comes from
+// the remote server, and an unbounded value in seconds overflows
+// time.Duration.
+const maxRetryAfter = 24 * time.Hour
+
+// parseRetryAfter reads a Retry-After header, in seconds or as an HTTP date,
+// as a delay in [0, maxRetryAfter]. The seconds are clamped before they are
+// converted, which is what keeps a huge value from overflowing.
 func parseRetryAfter(val string) (time.Duration, error) {
 	if seconds, err := strconv.Atoi(val); err == nil {
-		return time.Duration(seconds) * time.Second, nil
+		return time.Duration(min(max(seconds, 0), int(maxRetryAfter/time.Second))) * time.Second, nil
 	}
 	t, err := http.ParseTime(val)
 	if err != nil {
 		return 0, err
 	}
-	duration := max(time.Until(t), 0)
-	return duration, nil
+	return min(max(time.Until(t), 0), maxRetryAfter), nil
 }
