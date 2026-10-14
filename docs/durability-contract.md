@@ -1293,7 +1293,8 @@ articles or sparse regions.
    the set's staging directory and writes every entry through it, so archive
    entries with `..` components, absolute paths, or symlinked path components
    cannot escape.
-10. **A set is staged, and published whole or not at all** (#855): `extractSet`
+10. **A set is staged, and published whole or not at all, except for names it
+    replaced under `overwrite_files`** (#855): `extractSet`
     extracts each set through `unpack.ExtractStaged` into a
     `.gonzbd-tmp-unpack-*` directory inside `extractDir` (the job directory).
     Only when extraction, the volume feed and the corrupt-set backstop all pass

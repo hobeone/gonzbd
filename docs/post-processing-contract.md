@@ -904,7 +904,9 @@ recorded entirely through the fetch-policy discard, not through this field.
 - **Unpack Failure (`UnpackError = true`)**: Extraction errors (bad password,
   corrupt archive) set `UnpackError = true`. Original archive files and `.par2` recovery files are
   preserved in `DownloadDir` for manual recovery.
-  An archive extraction changes `DownloadDir` only when it succeeds: every
+  An archive extraction changes `DownloadDir` only when it succeeds, except
+  that a publish failing part way under `overwrite_files` leaves each name it
+  replaced holding the new member (below): every
   archive extractor (`go_unrar`, `go_7z`, `go_tar`, `unrar`, `7z`, and
   DirectUnpack) writes into a `.gonzbd-tmp-unpack-*` staging directory inside
   it through `unpack.ExtractStaged`, which publishes the stage's files on
