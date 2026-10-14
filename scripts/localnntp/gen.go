@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"crypto/sha256"
 	"encoding/binary"
 	"encoding/hex"
@@ -17,6 +18,8 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+
+	"github.com/hobeone/gonzbd/test/mocknntp"
 )
 
 var (
@@ -119,6 +122,89 @@ func WriteDeterministicPayload(path string, size int64, seed uint64) (string, er
 	}
 
 	return hex.EncodeToString(hasher.Sum(nil)), nil
+}
+
+// FormatDotStuffedWire takes a yEnc-encoded body and formats it with NNTP dot-stuffing
+// and a trailing ".\r\n" terminator, ready to be transmitted directly over the wire.
+func FormatDotStuffedWire(yencBody []byte) []byte {
+	var b bytes.Buffer
+	b.Grow(len(yencBody) + len(yencBody)/50 + 16)
+	remaining := yencBody
+	for len(remaining) > 0 {
+		idx := bytes.IndexByte(remaining, '\n')
+		var lineBytes []byte
+		if idx < 0 {
+			lineBytes = remaining
+			remaining = nil
+		} else {
+			lineBytes = remaining[:idx]
+			remaining = remaining[idx+1:]
+			if len(lineBytes) > 0 && lineBytes[len(lineBytes)-1] == '\r' {
+				lineBytes = lineBytes[:len(lineBytes)-1]
+			}
+		}
+
+		if len(lineBytes) > 0 && lineBytes[0] == '.' {
+			b.WriteByte('.')
+		}
+		b.Write(lineBytes)
+		b.WriteString("\r\n")
+	}
+	b.WriteString(".\r\n")
+	return b.Bytes()
+}
+
+// WriteArticlesPack encodes each segment of the given release files into dot-stuffed wire format
+// and writes them sequentially into packPath, populating WireOffset and WireLength on each segment in-place.
+func WriteArticlesPack(packPath, filesDir string, files []ReleaseFile) error {
+	packFile, err := os.OpenFile(packPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o600) //nolint:gosec // packPath is within OutDir
+	if err != nil {
+		return fmt.Errorf("create articles packfile: %w", err)
+	}
+	defer func() {
+		_ = packFile.Close() //nolint:errcheck // best-effort packfile close
+	}()
+
+	var currentOffset int64
+	for fIdx := range files {
+		rf := &files[fIdx]
+		filePath := filepath.Join(filesDir, rf.DiskName)
+		f, err := os.Open(filePath) //nolint:gosec // filePath is within filesDir
+		if err != nil {
+			return fmt.Errorf("open file %s for pack: %w", rf.DiskName, err)
+		}
+
+		totalParts := len(rf.Segments)
+		for sIdx := range rf.Segments {
+			seg := &rf.Segments[sIdx]
+			raw := make([]byte, seg.Length)
+			if _, err := io.ReadFull(io.NewSectionReader(f, seg.Offset, int64(seg.Length)), raw); err != nil {
+				_ = f.Close() //nolint:errcheck // best-effort file close
+				return fmt.Errorf("read segment %s: %w", seg.MessageID, err)
+			}
+
+			var yencBody []byte
+			if totalParts == 1 {
+				yencBody = mocknntp.EncodeYEnc(rf.NZBFilename, raw)
+			} else {
+				yencBody = mocknntp.EncodeYEncPart(rf.NZBFilename, seg.PartNum, totalParts, rf.TotalSize, seg.Offset, raw)
+			}
+
+			wireBytes := FormatDotStuffedWire(yencBody)
+			n, err := packFile.Write(wireBytes)
+			if err != nil {
+				_ = f.Close() //nolint:errcheck // best-effort file close
+				return fmt.Errorf("write wire bytes for %s: %w", seg.MessageID, err)
+			}
+
+			seg.WireOffset = currentOffset
+			seg.WireLength = n
+			currentOffset += int64(n)
+		}
+		_ = f.Close() //nolint:errcheck // best-effort file close
+	}
+
+	return nil
 }
 
 // SliceFileSegments slices a file on disk into segments of at most partSize bytes,
@@ -377,6 +463,11 @@ func GenerateRelease(cfg GenConfig) (*ReleaseManifest, error) {
 			return nil, fmt.Errorf("slice file %s: %w", fname, err)
 		}
 		releaseFiles = append(releaseFiles, rf)
+	}
+
+	packPath := filepath.Join(cfg.OutDir, "articles.pack")
+	if err := WriteArticlesPack(packPath, filesDir, releaseFiles); err != nil {
+		return nil, fmt.Errorf("write articles pack: %w", err)
 	}
 
 	manifest := &ReleaseManifest{

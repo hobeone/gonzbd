@@ -281,9 +281,19 @@ func TestGenerateRelease_EndToEnd(t *testing.T) {
 		t.Errorf("sidecarCount = %d, want 2 (nfo + sample.mkv)", sidecarCount)
 	}
 
-	// Verify manifest.json and release.nzb were written to OutDir.
+	// Verify manifest.json, release.nzb, and articles.pack were written to OutDir.
 	if _, err := os.Stat(filepath.Join(dir, "manifest.json")); err != nil {
 		t.Errorf("manifest.json missing: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "articles.pack")); err != nil {
+		t.Errorf("articles.pack missing: %v", err)
+	}
+	for _, f := range manifest.Files {
+		for _, seg := range f.Segments {
+			if seg.WireLength <= 0 {
+				t.Errorf("segment %s has invalid WireLength: %d", seg.MessageID, seg.WireLength)
+			}
+		}
 	}
 	nzbRaw, err := os.ReadFile(filepath.Join(dir, "release.nzb"))
 	if err != nil {

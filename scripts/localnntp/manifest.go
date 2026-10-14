@@ -34,11 +34,13 @@ type ExpectedOutput struct {
 
 // SegmentMeta describes a single NNTP article segment.
 type SegmentMeta struct {
-	MessageID string `json:"message_id"`
-	PartNum   int    `json:"part_num"`
-	Offset    int64  `json:"offset"`
-	Length    int    `json:"length"`
-	CRC32     uint32 `json:"crc32"`
+	MessageID  string `json:"message_id"`
+	PartNum    int    `json:"part_num"`
+	Offset     int64  `json:"offset"`
+	Length     int    `json:"length"`
+	CRC32      uint32 `json:"crc32"`
+	WireOffset int64  `json:"wire_offset,omitempty"`
+	WireLength int    `json:"wire_length,omitempty"`
 }
 
 // ReleaseFile describes an individual file in the release and its segments.
