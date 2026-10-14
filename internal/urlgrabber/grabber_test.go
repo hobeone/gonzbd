@@ -1019,6 +1019,20 @@ func TestFetchRetryAfter(t *testing.T) {
 			wantErrType:  true,
 		},
 		{
+			name:         "429 seconds beyond int's range",
+			statusCode:   429,
+			headers:      map[string]string{"Retry-After": "99999999999999999999"},
+			wantDuration: maxRetryAfter,
+			wantErrType:  true,
+		},
+		{
+			name:         "429 negative seconds beyond int's range",
+			statusCode:   429,
+			headers:      map[string]string{"Retry-After": "-99999999999999999999"},
+			wantDuration: 0,
+			wantErrType:  true,
+		},
+		{
 			name:         "429 date past the ceiling",
 			statusCode:   429,
 			headers:      map[string]string{"Retry-After": now.Add(48 * time.Hour).UTC().Format(http.TimeFormat)},

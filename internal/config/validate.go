@@ -116,8 +116,9 @@ func positive(field string, v int) error {
 // a larger v wraps the consumer's time.Duration(v) * unit product to an
 // arbitrary value. The consumers:
 // `git grep -n -E 'time\.Duration\([^)]*\) ?\* ?time\.(Second|Minute)' -- '*.go' ':!*_test.go'`
-// returns 5 lines, covering dirscan_speed, server timeout, script timeout and
-// propagation_delay (twice).
+// returns 6 lines, covering dirscan_speed, server timeout, script timeout and
+// propagation_delay (twice), plus urlgrabber's Retry-After parse, which
+// converts an HTTP header rather than config.
 func fitsDuration(field string, v int, unit time.Duration) error {
 	if int64(v) > int64(math.MaxInt64/unit) {
 		return fmt.Errorf("%s: %d is too large (max %d)", field, v, int64(math.MaxInt64/unit))

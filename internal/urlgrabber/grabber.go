@@ -4,6 +4,7 @@ package urlgrabber
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -429,10 +430,13 @@ const maxRetryAfter = 24 * time.Hour
 
 // parseRetryAfter reads a Retry-After header, in seconds or as an HTTP date,
 // as a delay in [0, maxRetryAfter]. The seconds are clamped before they are
-// converted, which is what keeps a huge value from overflowing.
+// converted, which is what keeps a huge value from overflowing. A count of
+// seconds beyond int's range is still a count of seconds: Atoi returns it
+// saturated with ErrRange, and the clamp takes it from there.
 func parseRetryAfter(val string) (time.Duration, error) {
-	if seconds, err := strconv.Atoi(val); err == nil {
-		return time.Duration(min(max(seconds, 0), int(maxRetryAfter/time.Second))) * time.Second, nil
+	if seconds, err := strconv.Atoi(val); err == nil || errors.Is(err, strconv.ErrRange) {
+		clamped := min(max(seconds, 0), int(maxRetryAfter/time.Second))
+		return time.Duration(clamped) * time.Second, nil
 	}
 	t, err := http.ParseTime(val)
 	if err != nil {
