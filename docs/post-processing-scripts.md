@@ -395,7 +395,10 @@ func TestMyScript(t *testing.T) {
 - **Long-running work**: Scripts have no timeout (see "How Scripts Are
   Invoked"), so a long operation holds the job in post-processing until it
   exits or the job is cancelled. To release the job sooner, background the
-  work and exit 0.
+  work with its stdout and stderr redirected away from the script's, and exit
+  0: GoNZBD waits for the captured output to close, so a background process
+  that inherits it holds the job just as the script would
+  (`nohup long-task >/dev/null 2>&1 &`).
 
 ## SABnzbd Compatibility
 
