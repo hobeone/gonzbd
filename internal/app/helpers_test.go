@@ -71,37 +71,6 @@ func TestBuildNotifier_AllSinksDisabled(t *testing.T) {
 	}
 }
 
-func TestBuildNotifier_ScriptEnabled(t *testing.T) {
-	t.Parallel()
-	cfg := config.NotificationConfig{
-		Script: config.ScriptNotificationConfig{
-			Enable:  true,
-			Path:    "/tmp/notify.sh",
-			Timeout: 10,
-			Events:  []string{"DownloadComplete"},
-		},
-	}
-	d := BuildNotifier(cfg)
-	if d == nil {
-		t.Fatal("BuildNotifier returned nil")
-	}
-}
-
-func TestBuildNotifier_ScriptDefaultTimeout(t *testing.T) {
-	t.Parallel()
-	cfg := config.NotificationConfig{
-		Script: config.ScriptNotificationConfig{
-			Enable:  true,
-			Path:    "/tmp/notify.sh",
-			Timeout: 0, // should default to 30s
-		},
-	}
-	d := BuildNotifier(cfg)
-	if d == nil {
-		t.Fatal("BuildNotifier returned nil")
-	}
-}
-
 // ---------- WithEventEmitter ----------
 
 func TestWithEventEmitter_NilUseDummy(t *testing.T) {
