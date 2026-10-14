@@ -17,6 +17,31 @@ func testFault(op string) *storagefault.Fault {
 	return &storagefault.Fault{Op: op, Path: "/data/x.bin", Err: syscall.ENOSPC}
 }
 
+// stallTestJob is a job no dispatcher or admission holds, at IntentRun, for a
+// stall record keyed by its ID.
+func stallTestJob(id string) *job.Job {
+	return job.New(id, id, job.Policy{})
+}
+
+// TestStallKind_Source pins the source each kind reports for
+// offerFaultToAdmission's log, and that a kind with no name still says which
+// number it was.
+func TestStallKind_Source(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		kind stallKind
+		want string
+	}{
+		{stallRetryable, "write"},
+		{stallVerify, "verify"},
+		{stallKind(99), "unknown stall kind 99"},
+	} {
+		if got := tc.kind.source(); got != tc.want {
+			t.Errorf("stallKind(%d).source() = %q, want %q", int(tc.kind), got, tc.want)
+		}
+	}
+}
+
 // TestStallReason_ReportsNothingForAJobThatIsNotParked pins the polarity the
 // API depends on: an empty reason means "not stalled", so a job that never
 // stalled must not produce one.
@@ -35,7 +60,7 @@ func TestStallReason_ReportsNothingForAJobThatIsNotParked(t *testing.T) {
 func TestReevaluateStall_ForgetsAJobThatHasLeftTheQueue(t *testing.T) {
 	t.Parallel()
 	application, _, _ := newLifecycleTestApp(t)
-	application.noteStall("gone", testFault("write"), stallRetryable, true)
+	application.noteStallUnlessHandedOff(stallTestJob("gone"), testFault("write"), stallRetryable)
 
 	application.reevaluateStall("gone")
 
@@ -50,8 +75,8 @@ func TestReevaluateStall_ForgetsAJobThatHasLeftTheQueue(t *testing.T) {
 func TestReevaluateStalls_CoversEveryParkedJob(t *testing.T) {
 	t.Parallel()
 	application, _, _ := newLifecycleTestApp(t)
-	application.noteStall("gone-a", testFault("write"), stallRetryable, true)
-	application.noteStall("gone-b", testFault("write"), stallRetryable, true)
+	application.noteStallUnlessHandedOff(stallTestJob("gone-a"), testFault("write"), stallRetryable)
+	application.noteStallUnlessHandedOff(stallTestJob("gone-b"), testFault("write"), stallRetryable)
 
 	application.reevaluateStalls(t.Context())
 
@@ -66,8 +91,8 @@ func TestReevaluateStalls_CoversEveryParkedJob(t *testing.T) {
 func TestReevaluateStalls_StopsOnACancelledContext(t *testing.T) {
 	t.Parallel()
 	application, _, _ := newLifecycleTestApp(t)
-	application.noteStall("gone-a", testFault("write"), stallRetryable, true)
-	application.noteStall("gone-b", testFault("write"), stallRetryable, true)
+	application.noteStallUnlessHandedOff(stallTestJob("gone-a"), testFault("write"), stallRetryable)
+	application.noteStallUnlessHandedOff(stallTestJob("gone-b"), testFault("write"), stallRetryable)
 
 	ctx, cancel := context.WithCancel(t.Context())
 	cancel()

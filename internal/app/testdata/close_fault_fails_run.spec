@@ -17,9 +17,9 @@ file internal/app/app.go
 [the fault is not routed to the admission]
 file internal/app/app.go
 --- anchor
-		if app.postProcAdmissions.admit(j, faultReason(f)) == refusedReasonKept {
+	switch outcome := app.postProcAdmissions.admit(j, faultReason(f)); outcome {
 --- replace
-		if false {
+	switch outcome := refusedReasonNoted; outcome {
 --- end
 
 [every close error fails the run, a timeout included]

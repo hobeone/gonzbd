@@ -8,8 +8,10 @@ run Test(Enqueue_AfterAFinalizeThatCouldNotRemoveTheJob_AdmitsNoSecondRun|Enqueu
 [admit ignores an ended admission]
 file internal/app/postproc_admission.go
 --- anchor
-	if _, ok := a.ended[weak.Make(j)]; ok {
+func (a *postProcAdmissions) admitLocked(j *job.Job, failMsg string) admitOutcome {
+	if a.endedLocked(j) {
 --- replace
+func (a *postProcAdmissions) admitLocked(j *job.Job, failMsg string) admitOutcome {
 	if false {
 --- end
 

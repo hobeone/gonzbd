@@ -88,7 +88,7 @@ func (f *jobFinalizer) finalize(ppJob *postproc.Job) {
 	if app.finalizeHook != nil {
 		app.finalizeHook(ppJob)
 	}
-	notes := app.postProcAdmissions.notes(ppJob.Job)
+	notes := app.postProcAdmissions.closeAndTakeNotes(ppJob.Job)
 	// Decided before persistAndCommit tears the job down. A ParError files the
 	// entry Failed (buildHistoryEntry), which is what a retry requires of it.
 	retry := heldVolumesMightRepair(ppJob)

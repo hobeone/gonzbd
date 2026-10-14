@@ -2220,6 +2220,37 @@ func faultIn(err error) *storagefault.Fault {
 	return nil
 }
 
+// offerFaultToAdmission offers storage fault f, raised for j after j was
+// admitted to post-processing, to j's admission as a failure reason, and logs
+// where it went. source names what raised it: "close" for enqueuePostProc's
+// handle close, "write" (a write or finish) or "verify" for a fault stall
+// routed here (stallKind.source). Where the reason goes is the admitOutcome
+// admit returns; see its constants.
+func (app *Application) offerFaultToAdmission(j *job.Job, f *storagefault.Fault, source string) {
+	var msg string
+	switch outcome := app.postProcAdmissions.admit(j, faultReason(f)); outcome {
+	case refusedReasonKept:
+		msg = "storage fault after the hand-over to post-processing; the run fails with it"
+	case refusedReasonNoted:
+		msg = "storage fault after the hand-over to post-processing; the run already has a failure reason or is sealed, so this one is noted"
+	case refused:
+		msg = "storage fault after the hand-over to post-processing; the run already records this reason"
+	case refusedEnded:
+		msg = "storage fault after the job's post-processing run ended or while its history entry is being written; it reaches neither and is logged only"
+	default:
+		// admitted and deferredToAssessing: unreachable from both callers.
+		// enqueuePostProc's close arm calls only after its own entry admit
+		// admitted j, and stall only after unlessHandedOff refused because j
+		// was admitted or its admission had ended. An admission leaves jobs
+		// only through release, which records it in ended
+		// (`git grep -n 'delete[(]a[.]jobs' -- 'internal/app/*.go'
+		// ':!*_test.go'` returns 1 line, in release), so admit cannot admit
+		// or defer j again.
+		msg = "storage fault offered to an admission that was not held; outcome " + strconv.Itoa(int(outcome))
+	}
+	app.log.Error(msg, "job", j.ID(), "source", source, "fault", f.Error())
+}
+
 // enqueuePostProc hands j to the post-processor unless a post-processing run of
 // this instance is already admitted, or has been and ended
 // (postProcAdmissions). In the first case it does nothing but offer failMsg to
@@ -2258,7 +2289,7 @@ func (app *Application) enqueuePostProc(j *job.Job, hdr dispatch.Header, failMsg
 			"job", j.ID(), "fail_msg", failMsg)
 		return
 	case refusedEnded:
-		app.log.Warn("postproc: this job instance's post-processing has already ended; not running it again",
+		app.log.Warn("postproc: this job instance's post-processing has ended or its history entry is being written; not running it again, and this failure reason is not recorded",
 			"job", j.ID(), "fail_msg", failMsg)
 		return
 	}
@@ -2275,12 +2306,19 @@ func (app *Application) enqueuePostProc(j *job.Job, hdr dispatch.Header, failMsg
 		app.log.Warn("postproc: could not record the download finish time", "job", j.ID(), "err", err)
 	}
 
-	// A job handed over before its download finished (Fail, a hopeless
-	// callback) gets no more files: the downloader skips an admitted job. Its
-	// unpacker is aborted rather than awaited, so extraction stops at once
-	// rather than finishing a set of a download that did not finish. Read
-	// after the admission, which is what stops the download, and before the
-	// pipeline.forgetJob and the duOrch.collect below. completeFinalizedFile
+	// A job handed over before this process finished its download (Fail, a
+	// hopeless callback, an unwanted-file failure) gets no more files, since
+	// the downloader skips an admitted job, and it carries a FailMsg, so
+	// post-processing runs no stage that would read its unpacker's output. Its
+	// unpacker is aborted rather than awaited, so the failure is not held for
+	// extraction nothing uses. A job that resumed past Fetching after a restart
+	// can also read incomplete here, without a FailMsg, but it has no
+	// unpacker: unpackers live only in duOrch, and maybeStart is not called
+	// for a Resumed completion (completeFinalizedFile's `!fc.Resumed` guard on
+	// its maybeStart call).
+	//
+	// Completeness is read after the admission, which is what stops the
+	// download, and before the pipeline.forgetJob and the duOrch.collect below. completeFinalizedFile
 	// feeds a volume before it marks the file complete, so a job that reads
 	// complete here has had every feed it will get, each feed having resolved
 	// its path before forgetJob drops the paths, and the collect takes the
@@ -2327,18 +2365,7 @@ func (app *Application) enqueuePostProc(j *job.Job, hdr dispatch.Header, failMsg
 	// or may reach it later, so the job's handles can still be open while
 	// the stages run, and may still flush.
 	if f := faultIn(closeErr); f != nil {
-		// This admit is itself a refused call on the instance the switch
-		// above already admitted (postproc_admission.go's doc comment), so
-		// it only becomes the run's FailMsg on refusedReasonKept; any other
-		// outcome means the admission already has a different reason, and
-		// this one is only noted in the history entry's stage log.
-		if app.postProcAdmissions.admit(j, faultReason(f)) == refusedReasonKept {
-			app.log.Error("enqueuePostProc: closing the job's file handles hit a storage fault; the post-processing run fails with it",
-				"job", j.ID(), "err", closeErr)
-		} else {
-			app.log.Error("enqueuePostProc: closing the job's file handles hit a storage fault; the run already has another failure reason, so this is only noted",
-				"job", j.ID(), "err", closeErr)
-		}
+		app.offerFaultToAdmission(j, f, "close")
 	} else if closeErr != nil {
 		app.log.Warn("enqueuePostProc: failed to close assembler job handles with no fault observed (likely a timeout); post-processing runs anyway, and the handles may still be open or still flush",
 			"job", j.ID(), "err", closeErr)

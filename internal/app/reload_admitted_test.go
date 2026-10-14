@@ -13,7 +13,9 @@ import (
 // un-fails the failed articles of every file that is not Complete, so that the
 // new server set can try them. A job handed to post-processing is not
 // downloaded again, so for it the reset buys nothing, and it rewrites the
-// failed-byte figures its post-processing run and history entry read.
+// failed-byte figures its post-processing run and history entry read. The
+// same holds for an instance whose admission has ended while the dispatcher
+// still holds it.
 //
 // The job that is not admitted is the control: its failed article is reset by
 // the same reload, so the admitted job keeping its failure is the skip, not a
@@ -58,6 +60,12 @@ func TestReloadDownloader_LeavesAnAdmittedJobsProgressAlone(t *testing.T) {
 		t.Fatalf("admit = %v, want admitted", got)
 	}
 	t.Cleanup(func() { application.postProcAdmissions.release(admittedJob) })
+	// An instance whose run ended and that the dispatcher still holds, as
+	// after a finalizer's failed removal: its history entry already read the
+	// figures.
+	endedJob := addFailed("ended")
+	application.postProcAdmissions.admit(endedJob, "Failed: handed off from Fetching")
+	application.postProcAdmissions.release(endedJob)
 
 	if err := application.ReloadDownloader(nil); err != nil {
 		t.Fatalf("ReloadDownloader: %v", err)
@@ -67,15 +75,23 @@ func TestReloadDownloader_LeavesAnAdmittedJobsProgressAlone(t *testing.T) {
 		t.Fatalf("control job FailedBytes = %d after the reload, want 0: the reload did not "+
 			"reset a failed article, so the check below would pass for no reason", got)
 	}
-	p := admittedJob.Progress()
-	if got := p.FailedBytes(); got != 100 {
-		t.Errorf("admitted job FailedBytes = %d after the reload, want 100: the reload "+
-			"rewrote the progress of a job in post-processing", got)
-	}
-	m := mustManifest(t, admittedJob)
-	for i := range m.NumArticles() {
-		if m.ArticleID(i) == "admitted-second@t" && !p.ArticleFailed(i) {
-			t.Errorf("admitted job's failed article %d is no longer failed after the reload", i)
+	for _, tc := range []struct {
+		name string
+		j    *job.Job
+	}{
+		{"admitted", admittedJob},
+		{"ended", endedJob},
+	} {
+		p := tc.j.Progress()
+		if got := p.FailedBytes(); got != 100 {
+			t.Errorf("%s job FailedBytes = %d after the reload, want 100: the reload "+
+				"rewrote the progress of a job handed to post-processing", tc.name, got)
+		}
+		m := mustManifest(t, tc.j)
+		for i := range m.NumArticles() {
+			if m.ArticleID(i) == tc.name+"-second@t" && !p.ArticleFailed(i) {
+				t.Errorf("%s job's failed article %d is no longer failed after the reload", tc.name, i)
+			}
 		}
 	}
 }

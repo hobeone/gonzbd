@@ -392,8 +392,13 @@ func TestMyScript(t *testing.T) {
   unexpected errors.
 - **Output is captured**: Write diagnostic info to stdout/stderr — it's
   stored in the history database and visible in the UI.
-- **Timeout**: Scripts that run longer than 30 seconds are killed. For long
-  operations, consider backgrounding the work and exiting 0 immediately.
+- **Long-running work**: Scripts have no timeout (see "How Scripts Are
+  Invoked"), so a long operation holds the job in post-processing until it
+  exits or the job is cancelled. To release the job sooner, background the
+  work with its stdout and stderr redirected away from the script's, and exit
+  0: GoNZBD waits for the captured output to close, so a background process
+  that inherits it holds the job just as the script would
+  (`nohup long-task >/dev/null 2>&1 &`).
 
 ## SABnzbd Compatibility
 

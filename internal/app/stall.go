@@ -5,6 +5,7 @@ import (
 	"errors"
 	"maps"
 	"slices"
+	"strconv"
 	"time"
 
 	"github.com/hobeone/gonzbd/internal/dispatch"
@@ -49,6 +50,19 @@ func (k stallKind) reasonPrefix() string {
 	return "Stalled: "
 }
 
+// source names what raised a fault of kind k, for offerFaultToAdmission's
+// log: a write or finish fault (Stall), or a verification (parkVerifyFault).
+func (k stallKind) source() string {
+	switch k {
+	case stallRetryable:
+		return "write"
+	case stallVerify:
+		return "verify"
+	default:
+		return "unknown stall kind " + strconv.Itoa(int(k))
+	}
+}
+
 // stallRecord is one job's parked state: why it stopped, what may lift it, and
 // whether this application paused it.
 type stallRecord struct {
@@ -80,15 +94,27 @@ func (app *Application) stalledJobIDs() []string {
 	return slices.Sorted(maps.Keys(app.stalls))
 }
 
-// noteStall records why a job is parked. A second fault on an already-stalled
-// job replaces the reason: it is the more recent thing the user has to act on.
+// noteStallUnlessHandedOff records why j is parked, unless j is admitted to
+// post-processing or its admission has ended, and reports whether it did. A
+// second fault on an already-stalled job replaces the reason: it is the more
+// recent thing the user has to act on.
 //
-// claimPause is true when Stall is about to pause a job whose intent was not
-// already IntentPause, which makes the pause this application's.
-func (app *Application) noteStall(jobID string, f *storagefault.Fault, kind stallKind, claimPause bool) {
-	app.stallMu.Lock()
-	defer app.stallMu.Unlock()
-	app.setStallReasonLocked(jobID, kind, f.Error(), claimPause)
+// The pause is claimed, marking the record parked, when j's intent is not
+// already IntentPause, since Stall is about to pause it. The intent is read
+// and the record written under the admission lock (unlessHandedOff); see
+// handOverStall for why that keeps an admitted instance's record out.
+//
+// Lock order: postProcAdmissions.mu, then j's read lock (Intent) and stallMu.
+// stallMu is a leaf: `git grep -n 'stallMu[.]Lock()' -- 'internal/app/*.go'
+// ':!*_test.go'` returns 7 lines, each in a span that touches only the
+// stalls map.
+func (app *Application) noteStallUnlessHandedOff(j *job.Job, f *storagefault.Fault, kind stallKind) bool {
+	return app.postProcAdmissions.unlessHandedOff(j, func() {
+		claimPause := j.Intent() != job.IntentPause
+		app.stallMu.Lock() //lockio: stallMu is a leaf under postProcAdmissions.mu; see the lock order above
+		defer app.stallMu.Unlock()
+		app.setStallReasonLocked(j.ID(), kind, f.Error(), claimPause)
+	})
 }
 
 // setStallReasonLocked records a fault and its kind together, creating the
@@ -145,6 +171,24 @@ func (app *Application) clearStall(jobID string) (parked bool) {
 // is on its way to history: a record left behind would report it stalled until
 // the next re-evaluation, and that re-evaluation could resume it, or a retry
 // registered under its ID since (retryHistoryJob reuses the ID).
+//
+// An admitted or ended instance has no stall record, and each half of that
+// has one owner. This clear is the transition, and runs after the admission.
+// The writer's precondition is the other half: noteStallUnlessHandedOff
+// writes only under the admission lock, and only for an instance neither
+// admitted nor ended (postProcAdmissions.unlessHandedOff), and it is the one
+// writer: `git grep -n 'setStallReasonLocked[(]' -- 'internal/app/*.go'
+// ':!*_test.go'` returns 2 lines, its call and the definition. So once the
+// admission is recorded no record of j is written, and this clear sees the
+// final one. stall's checks ahead of the write (the stopping guard,
+// registered) are fast exits; the writer's gate is the authority. A fault the
+// gate refuses is not recorded, but stall still pauses the instance and hands
+// the reason to offerFaultToAdmission, whose doc says where it goes. A write or finish
+// fault left bytes the downloader never re-fetches for an admitted job, and a
+// verify fault means bytes the run cannot read, so neither is dropped.
+// A deferral is not an admission: a stall after handOverStall(j, true) is
+// recorded and pauses the job, and a retryable one holds its Assessing worker
+// until the next re-evaluation resumes it.
 //
 // enqueuePostProc's callers pass the instance registered under its ID
 // (finalizeRegistered and fileOwedUnwantedFailure read it with RowJob,

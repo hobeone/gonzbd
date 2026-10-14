@@ -692,7 +692,8 @@ func (d *DirectUnpacker) extractSet(ctx context.Context, setname string) (res Su
 		// The set is extracted into a staging directory inside extractDir, and
 		// its members reach extractDir only if every check in this callback
 		// passes; a set that fails or is aborted inside it leaves nothing there.
-		// A publish that fails part way leaves what it already renamed
+		// A publish that fails part way is undone: what it created is
+		// removed, and a removal that fails is reported in the error
 		// (unpack.ExtractStaged).
 		published, err := unpack.ExtractStaged(d.log, d.extractDir, d.unpackOptions(), func(stageDir string) error {
 			extractErr := d.extractEntries(ctx, r, stageDir)

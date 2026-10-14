@@ -35,10 +35,10 @@ file internal/app/job_finalizer.go
 [finalize drops the noted reasons]
 file internal/app/job_finalizer.go
 --- anchor
-	notes := app.postProcAdmissions.notes(ppJob.Job)
+	notes := app.postProcAdmissions.closeAndTakeNotes(ppJob.Job)
 --- replace
 	notes := []string(nil)
-	_ = app.postProcAdmissions.notes(ppJob.Job)
+	_ = app.postProcAdmissions.closeAndTakeNotes(ppJob.Job)
 --- end
 
 [a late reason overrides the status the stages decided]
@@ -92,7 +92,9 @@ file internal/app/postproc_admission.go
 file internal/app/postproc_admission.go
 --- anchor
 	if cur, ok := a.jobs[j]; ok {
-		if failMsg == "" || failMsg == cur.failMsg {
+		// Ahead of notesTaken, so a reason the entry already holds is still
+		// reported as refused rather than as lost.
+		if failMsg == "" || failMsg == cur.failMsg || slices.Contains(cur.notes, failMsg) {
 --- replace
 	var cur *postProcAdmission
 	var ok bool
@@ -102,7 +104,9 @@ file internal/app/postproc_admission.go
 		}
 	}
 	if ok {
-		if failMsg == "" || failMsg == cur.failMsg {
+		// Ahead of notesTaken, so a reason the entry already holds is still
+		// reported as refused rather than as lost.
+		if failMsg == "" || failMsg == cur.failMsg || slices.Contains(cur.notes, failMsg) {
 --- end
 
 [a refused call's reason never becomes the run's]
@@ -116,15 +120,15 @@ file internal/app/postproc_admission.go
 [a repeated reason is noted again]
 file internal/app/postproc_admission.go
 --- anchor
-		if failMsg == "" || failMsg == cur.failMsg {
+		if failMsg == "" || failMsg == cur.failMsg || slices.Contains(cur.notes, failMsg) {
 --- replace
-		if failMsg == "" {
+		if failMsg == "" || slices.Contains(cur.notes, failMsg) {
 --- end
 
 [a repeated note is noted again]
 file internal/app/postproc_admission.go
 --- anchor
-		if slices.Contains(cur.notes, failMsg) {
+		if failMsg == "" || failMsg == cur.failMsg || slices.Contains(cur.notes, failMsg) {
 --- replace
-		if false && slices.Contains(cur.notes, failMsg) {
+		if failMsg == "" || failMsg == cur.failMsg {
 --- end

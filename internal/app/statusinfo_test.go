@@ -177,9 +177,9 @@ func TestApplication_IsPipelineHealthy(t *testing.T) {
 func TestStallReasons_ReportsEveryParkedJob(t *testing.T) {
 	t.Parallel()
 	application, _, _ := newLifecycleTestApp(t)
-	application.noteStall("stalled-only", &storagefault.Fault{
+	application.noteStallUnlessHandedOff(stallTestJob("stalled-only"), &storagefault.Fault{
 		Op: "write", Path: "/data/x.bin", Err: syscall.ENOSPC,
-	}, stallRetryable, true)
+	}, stallRetryable)
 
 	got := application.StallReasons()
 
@@ -198,8 +198,8 @@ func TestStallReasons_AgreesWithStallReasonPerKind(t *testing.T) {
 	t.Parallel()
 	application, _, _ := newLifecycleTestApp(t)
 	fault := &storagefault.Fault{Op: "write", Path: "/data/x.bin", Err: syscall.ENOSPC}
-	application.noteStall("retryable", fault, stallRetryable, true)
-	application.noteStall("verify", fault, stallVerify, true)
+	application.noteStallUnlessHandedOff(stallTestJob("retryable"), fault, stallRetryable)
+	application.noteStallUnlessHandedOff(stallTestJob("verify"), fault, stallVerify)
 
 	got := application.StallReasons()
 

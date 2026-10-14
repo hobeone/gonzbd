@@ -149,8 +149,9 @@ single worker goroutine (`run`).
   retry. `TestFail_AJobInPostProcessingIsNotDispatched`,
   `TestCloseJobHandles_TombstonesTheWholeJob`, and (for the per-request check
   itself) `TestFetchArticle_HandedOffJobIsNotFetched` are the pins. A downloader
-  reload leaves an admitted job's progress alone: `ReloadDownloader` runs
-  `Job.ClearEmittedForReload` under `postProcAdmissions.unlessAdmitted`, so
+  reload leaves an admitted job's progress alone, and that of a job whose
+  admission has ended: `ReloadDownloader` runs
+  `Job.ClearEmittedForReload` under `postProcAdmissions.unlessHandedOff`, so
   it neither un-fails the articles whose failed bytes the run and its history
   entry read, nor overlaps an admission that begins during the reload
   (`TestReloadDownloader_LeavesAnAdmittedJobsProgressAlone`). Since no more
@@ -903,16 +904,25 @@ recorded entirely through the fetch-policy discard, not through this field.
 - **Unpack Failure (`UnpackError = true`)**: Extraction errors (bad password,
   corrupt archive) set `UnpackError = true`. Original archive files and `.par2` recovery files are
   preserved in `DownloadDir` for manual recovery.
-  An archive extraction changes `DownloadDir` only when it succeeds: every
+  An archive extraction changes `DownloadDir` only when it succeeds, except
+  that a publish failing part way under `overwrite_files` leaves each name it
+  replaced holding the new member (below): every
   archive extractor (`go_unrar`, `go_7z`, `go_tar`, `unrar`, `7z`, and
   DirectUnpack) writes into a `.gonzbd-tmp-unpack-*` staging directory inside
   it through `unpack.ExtractStaged`, which publishes the stage's files on
-  success and removes the stage on every return. A failed or cancelled
-  attempt therefore leaves no member, no directory, and no replaced file
-  behind, and a later attempt meets nothing of it
+  success and removes the stage on every return. An attempt that fails or is
+  cancelled before it publishes therefore leaves no member, no directory, and
+  no replaced file behind, and a later attempt meets nothing of it
   (`TestInProcessExtraction_CancelledLeavesNothing`,
   `TestGoTar_FailedExtractionChangesNothing`). A publish that fails part way
-  leaves the files it already renamed. `FileJoin` is not staged: it writes one
+  is undone: the files it renamed into names that were free and the
+  directories it created are removed, and a removal that fails is returned in the error and leaves that
+  entry in place. The undo removes only names that
+  were free before the publish; under `overwrite_files` a name the publish
+  replaced keeps the replacement, as without the undo, so the earlier content
+  is lost at the rename and the name holds this failed set's member (it can be
+  a file an earlier set of the same job published).
+  `FileJoin` is not staged: it writes one
   temporary file and renames it into place only when the join completes.
 - **Not enough disk space (`FailDiskFull`)**: Before it writes, each
   extraction by the `unpack` stage compares the unpacked size the archive's
