@@ -1,5 +1,5 @@
 pkg ./internal/postproc/
-run TestCleanupPar2Backups_ScopedToRepairedTargetsAndSkipsDirs|TestRepairStage_ExternalPar2RecordsBackupAndCrashRerunCleansIt
+run TestCleanupPar2Backups_ScopedToRepairedTargetsAndSkipsDirs|TestRepairStage_ExternalPar2RecordsBackupAndCrashRerunCleansIt|TestFindVerifiedPar2Backups
 
 [existing map includes directories as valid repaired targets]
 file internal/postproc/stage_repair.go
@@ -52,4 +52,24 @@ file internal/postproc/stage_par2cleanup.go
 	candidates = append(candidates, findVerifiedPar2Backups(job.DownloadDir, sets, job.Sanitize, s.ParseOpts, log)...)
 --- replace
 	_ = findVerifiedPar2Backups
+--- end
+
+[findVerifiedPar2Backups does not skip par2 members named X.N]
+file internal/postproc/stage_par2cleanup.go
+--- anchor
+		if _, isTarget := knownTargets[name]; isTarget {
+			continue
+		}
+--- replace
+		if false {
+			continue
+		}
+--- end
+
+[findVerifiedPar2Backups skips backup size verification]
+file internal/postproc/stage_par2cleanup.go
+--- anchor
+		if info, ierr := e.Info(); ierr == nil && info.Size() == spec.size {
+--- replace
+		if info, ierr := e.Info(); ierr == nil && (info.Size() == spec.size || true) {
 --- end

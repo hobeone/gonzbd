@@ -110,11 +110,13 @@ func (s *Par2CleanupStage) Run(ctx context.Context, job *Job) error {
 	// Par2 repair creates backup copies of damaged files by appending
 	// ".1", ".2" etc. (e.g. "movie.part01.rar" → "movie.part01.rar.1") and
 	// records them in job.par2Backups. Also scan for "<target>.<N>" backups
-	// whose 16 KiB MD5 matches an existing par2-verified "<target>" so a crash
-	// between repair and finalize still cleans them up on rerun when
-	// job.par2Backups is empty. Promote them to pendingDeletions so
-	// subsequent stages (deobfuscate, unwanted_cleanup, extension_cleanup)
-	// skip them and finalize deletes them after moving the job.
+	// alongside an existing par2-verified "<target>" (verified intact by the
+	// gates at lines 59–73) whose size matches "<target>"'s par2 description
+	// size, so a crash between repair and finalize still cleans them up on
+	// rerun when job.par2Backups is empty — even when the original damage was
+	// in the first 16 KiB. Promote them to pendingDeletions so subsequent
+	// stages (deobfuscate, unwanted_cleanup, extension_cleanup) skip them and
+	// finalize deletes them after moving the job.
 	var backupCleaned int
 	candidates := append([]string(nil), job.par2Backups...)
 	candidates = append(candidates, findVerifiedPar2Backups(job.DownloadDir, sets, job.Sanitize, s.ParseOpts, log)...)
@@ -136,6 +138,15 @@ func (s *Par2CleanupStage) Run(ctx context.Context, job *Job) error {
 	return nil
 }
 
+type par2TargetSpec struct {
+	hash16k [16]byte
+	size    int64
+}
+
+// findVerifiedPar2Backups scans dir for non-member "<target>.<N>" files where
+// "<target>" exists as a regular file whose 16 KiB MD5 matches its par2
+// FileDescription and the backup's byte size matches the par2 FileDescription
+// FileSize (#768).
 func findVerifiedPar2Backups(dir string, sets []par2.Set, opts fsutil.SanitizeOptions, parseOpts par2.ParseOptions, log *slog.Logger) []string {
 	if len(sets) == 0 {
 		return nil
@@ -151,8 +162,7 @@ func findVerifiedPar2Backups(dir string, sets []par2.Set, opts fsutil.SanitizeOp
 		return nil
 	}
 
-	hashToTarget := make(map[[16]byte]string)
-	knownTargets := make(map[string]struct{})
+	knownTargets := make(map[string]par2TargetSpec)
 	for _, set := range sets {
 		pf := set.ParseFile()
 		if pf == "" {
@@ -165,11 +175,13 @@ func findVerifiedPar2Backups(dir string, sets []par2.Set, opts fsutil.SanitizeOp
 		}
 		for _, d := range descs {
 			relDst := fsutil.SanitizeFilename(d.FileName, opts)
-			hashToTarget[d.Hash16k] = relDst
-			knownTargets[relDst] = struct{}{}
+			knownTargets[relDst] = par2TargetSpec{
+				hash16k: d.Hash16k,
+				size:    int64(d.FileSize), //nolint:gosec // G115: file size fits in int64
+			}
 		}
 	}
-	if len(hashToTarget) == 0 {
+	if len(knownTargets) == 0 {
 		return nil
 	}
 
@@ -183,18 +195,15 @@ func findVerifiedPar2Backups(dir string, sets []par2.Set, opts fsutil.SanitizeOp
 			continue
 		}
 		lastDot := strings.LastIndexByte(name, '.')
-		if lastDot <= 0 || !par2.IsBackupNumber(name[lastDot+1:]) {
+		if lastDot <= 0 {
 			continue
 		}
-		if _, isTarget := knownTargets[name[:lastDot]]; !isTarget {
+		relDst := name[:lastDot]
+		spec, isTarget := knownTargets[relDst]
+		if !isTarget || !par2.IsBackupNamedFor(root, name, relDst, spec.hash16k) {
 			continue
 		}
-		hash, herr := par2.ComputeHash16kRoot(root, name)
-		if herr != nil {
-			continue
-		}
-		relDst, ok := hashToTarget[hash]
-		if ok && par2.IsBackupOfVerifiedTarget(root, name, relDst, hash) {
+		if info, ierr := e.Info(); ierr == nil && info.Size() == spec.size {
 			backups = append(backups, name)
 		}
 	}

@@ -3,6 +3,7 @@ package postproc
 import (
 	"bytes"
 	"context"
+	"crypto/md5"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -1056,5 +1057,107 @@ func TestRepairStage_ExternalPar2RecordsBackupAndCrashRerunCleansIt(t *testing.T
 	}
 	if rerunJob.isPendingDeletion(target + ".1") {
 		t.Fatalf("Par2CleanupStage on crash rerun wrongly queued pre-existing %s.1", target)
+	}
+
+	// Also verify crash rerun when the repaired damage was inside the first 16 KiB (offset 100),
+	// so the backup's 16 KiB MD5 differs from the par2 description's Hash16k.
+	damaged100 := slices.Clone(payload)
+	damaged100[100] ^= 0xff
+	if err := os.WriteFile(filepath.Join(dir, wantBackup), damaged100, 0o600); err != nil {
+		t.Fatalf("WriteFile damaged100 backup: %v", err)
+	}
+	rerun100 := repairJob(t)
+	rerun100.DownloadDir = dir
+	if err := NewPar2CleanupStage(true).Run(t.Context(), rerun100); err != nil {
+		t.Fatalf("Par2CleanupStage.Run (offset 100 crash rerun): %v", err)
+	}
+	if !rerun100.isPendingDeletion(wantBackup) {
+		t.Fatalf("Par2CleanupStage on crash rerun (damage at offset 100) did not queue %s", wantBackup)
+	}
+}
+
+func TestFindVerifiedPar2Backups(t *testing.T) {
+	t.Parallel()
+
+	log := slog.New(slog.DiscardHandler)
+	payload := make([]byte, 24*1024)
+	for i := range payload {
+		payload[i] = byte((i*17 + 3) & 0xff)
+	}
+	// memberDot1 shares the first 16 KiB and total size with payload, but differs in the tail.
+	memberDot1 := slices.Clone(payload)
+	memberDot1[20*1024] ^= 0xff
+	// damagedAt100 has the same total size as payload, but differs at offset 100 (first 16 KiB).
+	damagedAt100 := slices.Clone(payload)
+	damagedAt100[100] ^= 0xff
+
+	tests := []struct {
+		name        string
+		parMembers  map[string][]byte
+		extraOnDisk map[string][]byte
+		want        []string
+	}{
+		{
+			name: "par2 member named X.1 sharing first 16 KiB and size with X is preserved",
+			parMembers: map[string][]byte{
+				"archive.rar":   payload,
+				"archive.rar.1": memberDot1,
+			},
+			extraOnDisk: map[string][]byte{
+				"archive.rar.2": damagedAt100,
+			},
+			want: []string{"archive.rar.2"},
+		},
+		{
+			name: "non-member X.1 with wrong size is ignored while matching-size X.2 is returned",
+			parMembers: map[string][]byte{
+				"archive.rar": payload,
+			},
+			extraOnDisk: map[string][]byte{
+				"archive.rar.1": []byte("wrong-size"),
+				"archive.rar.2": damagedAt100,
+			},
+			want: []string{"archive.rar.2"},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			dir := t.TempDir()
+			var parData []byte
+			setID := [16]byte{1, 2, 3, 4}
+			idx := byte(1)
+			for mName, mData := range tc.parMembers {
+				if err := os.WriteFile(filepath.Join(dir, mName), mData, 0o600); err != nil {
+					t.Fatalf("WriteFile %s: %v", mName, err)
+				}
+				first16k := mData
+				if len(first16k) > 16*1024 {
+					first16k = first16k[:16*1024]
+				}
+				fileID := [16]byte{idx}
+				idx++
+				body := buildFileDescBody(fileID, md5.Sum(mData), md5.Sum(first16k), uint64(len(mData)), mName)
+				parData = append(parData, buildPacket(setID, typeFileDesc, body)...)
+			}
+			if err := os.WriteFile(filepath.Join(dir, "set.par2"), parData, 0o600); err != nil {
+				t.Fatalf("WriteFile set.par2: %v", err)
+			}
+			for eName, eData := range tc.extraOnDisk {
+				if err := os.WriteFile(filepath.Join(dir, eName), eData, 0o600); err != nil {
+					t.Fatalf("WriteFile %s: %v", eName, err)
+				}
+			}
+			sets, err := par2.FindPar2Files(dir)
+			if err != nil {
+				t.Fatalf("FindPar2Files: %v", err)
+			}
+			got := findVerifiedPar2Backups(dir, sets, repairJob(t).Sanitize, par2.ParseOptions{}, log)
+			slices.Sort(got)
+			if !slices.Equal(got, tc.want) {
+				t.Errorf("findVerifiedPar2Backups = %v, want %v", got, tc.want)
+			}
+		})
 	}
 }

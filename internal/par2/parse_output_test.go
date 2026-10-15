@@ -463,7 +463,7 @@ func TestParseRepairOutput_CRDelimitedProgressLines(t *testing.T) {
 	}
 }
 
-func TestIsBackupOfVerifiedTarget(t *testing.T) {
+func TestIsBackupNamedFor(t *testing.T) {
 	t.Parallel()
 
 	if !IsBackupNumber("1") || !IsBackupNumber("999") || IsBackupNumber("") || IsBackupNumber("01") || IsBackupNumber("1000") || IsBackupNumber("1a") {
@@ -493,23 +493,23 @@ func TestIsBackupOfVerifiedTarget(t *testing.T) {
 		t.Fatalf("ComputeHash16kRoot: %v", err)
 	}
 
-	if !IsBackupOfVerifiedTarget(root, "movie.rar.1", "movie.rar", wantHash) {
-		t.Error("IsBackupOfVerifiedTarget(movie.rar.1, movie.rar, wantHash) = false, want true")
+	if !IsBackupNamedFor(root, "movie.rar.1", "movie.rar", wantHash) {
+		t.Error("IsBackupNamedFor(movie.rar.1, movie.rar, wantHash) = false, want true")
 	}
-	if IsBackupOfVerifiedTarget(root, "movie.rar.01", "movie.rar", wantHash) {
-		t.Error("IsBackupOfVerifiedTarget accepted zero-padded .01 suffix")
+	if IsBackupNamedFor(root, "movie.rar.01", "movie.rar", wantHash) {
+		t.Error("IsBackupNamedFor accepted zero-padded .01 suffix")
 	}
-	if IsBackupOfVerifiedTarget(root, "other.rar.1", "movie.rar", wantHash) {
-		t.Error("IsBackupOfVerifiedTarget accepted mismatched target prefix")
+	if IsBackupNamedFor(root, "other.rar.1", "movie.rar", wantHash) {
+		t.Error("IsBackupNamedFor accepted mismatched target prefix")
 	}
-	if IsBackupOfVerifiedTarget(root, "subdir.rar.1", "subdir.rar", wantHash) {
-		t.Error("IsBackupOfVerifiedTarget accepted directory target")
+	if IsBackupNamedFor(root, "subdir.rar.1", "subdir.rar", wantHash) {
+		t.Error("IsBackupNamedFor accepted directory target")
 	}
-	if IsBackupOfVerifiedTarget(root, "missing.rar.1", "missing.rar", wantHash) {
-		t.Error("IsBackupOfVerifiedTarget accepted missing target")
+	if IsBackupNamedFor(root, "missing.rar.1", "missing.rar", wantHash) {
+		t.Error("IsBackupNamedFor accepted missing target")
 	}
 	var wrongHash [16]byte
-	if IsBackupOfVerifiedTarget(root, "movie.rar.1", "movie.rar", wrongHash) {
-		t.Error("IsBackupOfVerifiedTarget accepted mismatched target 16 KiB hash")
+	if IsBackupNamedFor(root, "movie.rar.1", "movie.rar", wrongHash) {
+		t.Error("IsBackupNamedFor accepted mismatched target 16 KiB hash")
 	}
 }

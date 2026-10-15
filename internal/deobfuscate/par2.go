@@ -132,7 +132,7 @@ func par2RenameFile(
 	// Perform rename; GetUniqueRelPath adds a numeric suffix if the
 	// par2-recorded target already exists on disk.
 	relDst := fsutil.SanitizeFilename(trueName, opts)
-	if par2.IsBackupOfVerifiedTarget(root, e.Name(), relDst, hash) {
+	if par2.IsBackupNamedFor(root, e.Name(), relDst, hash) {
 		return Rename{}, false, nil
 	}
 	relNewPath := fsutil.GetUniqueRelPath(root, relDst)
