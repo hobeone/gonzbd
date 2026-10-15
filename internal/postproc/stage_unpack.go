@@ -334,9 +334,19 @@ func (u *UnpackStage) prepareOptions(ctx context.Context, log *slog.Logger, job 
 		}
 	}
 	// Build the password list: per-job password comes first (highest priority),
-	// followed by any passwords from the config password_file.
+	// followed by any NZB header meta passwords, followed by any passwords
+	// from the config password_file.
+	var jobPws []string
 	if job.Password != "" {
-		opts.Passwords = append([]string{job.Password}, opts.Passwords...)
+		jobPws = append(jobPws, job.Password)
+	}
+	for _, pw := range job.MetaPasswords {
+		if pw != "" && !slices.Contains(jobPws, pw) {
+			jobPws = append(jobPws, pw)
+		}
+	}
+	if len(jobPws) > 0 {
+		opts.Passwords = append(jobPws, opts.Passwords...)
 	}
 	if passwordFile != "" {
 		filePws, err := cmdutil.LoadPasswordFile(passwordFile)

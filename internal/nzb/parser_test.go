@@ -808,6 +808,7 @@ func TestAbsorbHead_Direct(t *testing.T) {
 	const headXMLData = `<head>
 		<meta type="title">Test Direct Title</meta>
 		<meta type="category">  test-category  </meta>
+		<meta type=" Password ">  secret-pass  </meta>
 		<meta type="empty"></meta>
 		<meta type="">no-type</meta>
 	</head>`
@@ -833,6 +834,9 @@ func TestAbsorbHead_Direct(t *testing.T) {
 	}
 	if got := nzbOut.Meta["category"]; len(got) != 1 || got[0] != "test-category" {
 		t.Errorf("expected category 'test-category' (trimmed), got %v", got)
+	}
+	if got := nzbOut.Meta["password"]; len(got) != 1 || got[0] != "secret-pass" {
+		t.Errorf("expected password 'secret-pass' (normalized & trimmed), got %v", got)
 	}
 	if _, ok := nzbOut.Meta["empty"]; ok {
 		t.Errorf("empty meta value should be skipped")

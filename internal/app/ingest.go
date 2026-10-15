@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"path/filepath"
+	"slices"
 	"strings"
 
 	"github.com/hobeone/gonzbd/internal/config"
@@ -71,15 +72,24 @@ func BuildIngestJob(cfg *config.Config, parsed *nzb.NZB, filename string, opts t
 	// 2. Apply filesystem sanitization rules.
 	name = fsutil.SanitizeFolderName(name, sOpts)
 
+	category := opts.Category
+	if category == "" {
+		category = firstMeta(parsed, "category")
+	}
+	password := opts.Password
+	if password == "" {
+		password = firstMeta(parsed, "password")
+	}
+
 	// Resolve sentinel values from the matching category config.
 	level := opts.PP
 	script := opts.Script
-	priority, pause, err := config.ResolvePriority(categories, opts.Category, opts.Priority)
+	priority, pause, err := config.ResolvePriority(categories, category, opts.Priority)
 	if err != nil {
 		return nil, dispatch.Header{}, fmt.Errorf("create job %q: %w", filename, err)
 	}
 	ppReason := "explicit"
-	cat := config.FindCategory(categories, opts.Category)
+	cat := config.FindCategory(categories, category)
 	if level == types.PPInherit {
 		level = cat.PP
 		ppReason = fmt.Sprintf("category %q", cat.Name)
@@ -93,7 +103,7 @@ func BuildIngestJob(cfg *config.Config, parsed *nzb.NZB, filename string, opts t
 	if logger != nil {
 		logger.Info("job PP resolved",
 			"job_name", name,
-			"category", opts.Category,
+			"category", category,
 			"requested_pp", opts.PP,
 			"resolved_pp", pp.Int(),
 			"reason", ppReason,
@@ -146,18 +156,68 @@ func BuildIngestJob(cfg *config.Config, parsed *nzb.NZB, filename string, opts t
 	hdr := dispatch.Header{
 		Name:          name,
 		Filename:      filename,
-		Category:      opts.Category,
+		Category:      category,
 		Priority:      priority,
 		Bytes:         manifest.TotalBytes(),
 		IngestAnomaly: parseAnomalySummary(parsed),
 		Script:        script,
-		Password:      opts.Password,
+		Password:      password,
 		PP:            pp,
 		URL:           "",
 		MD5:           hex.EncodeToString(parsed.MD5[:]),
 	}
 
 	return j, hdr, nil
+}
+
+// allMeta returns all non-empty trimmed values for key in parsed.Meta,
+// deduplicated in order of appearance. It checks exact key matches first,
+// then scans remaining keys case-insensitively using deterministic key ordering.
+func allMeta(parsed *nzb.NZB, key string) []string {
+	if parsed == nil || len(parsed.Meta) == 0 {
+		return nil
+	}
+	var out []string
+	if vals, ok := parsed.Meta[key]; ok {
+		for _, v := range vals {
+			if trimmed := strings.TrimSpace(v); trimmed != "" {
+				if !slices.Contains(out, trimmed) {
+					out = append(out, trimmed)
+				}
+			}
+		}
+	}
+	keys := make([]string, 0, len(parsed.Meta))
+	for k := range parsed.Meta {
+		if k == key {
+			continue
+		}
+		keys = append(keys, k)
+	}
+	slices.Sort(keys)
+	for _, k := range keys {
+		if strings.EqualFold(k, key) {
+			for _, v := range parsed.Meta[k] {
+				if trimmed := strings.TrimSpace(v); trimmed != "" {
+					if !slices.Contains(out, trimmed) {
+						out = append(out, trimmed)
+					}
+				}
+			}
+		}
+	}
+	return out
+}
+
+// firstMeta returns the first non-empty trimmed value for key in parsed.Meta.
+// It delegates to allMeta, which checks key directly first and scans keys
+// case-insensitively using deterministic key ordering.
+func firstMeta(parsed *nzb.NZB, key string) string {
+	vals := allMeta(parsed, key)
+	if len(vals) == 0 {
+		return ""
+	}
+	return vals[0]
 }
 
 // stripCompressionSuffix removes a trailing ".gz" or ".bz2" from a name that

@@ -4,7 +4,7 @@ run TestBuildIngestJob_CategoryDefaultPriorityResolves|TestBuildIngestJob_Catego
 [ingest stores the requested priority unresolved]
 file internal/app/ingest.go
 --- anchor
-	priority, pause, err := config.ResolvePriority(categories, opts.Category, opts.Priority)
+	priority, pause, err := config.ResolvePriority(categories, category, opts.Priority)
 --- replace
 	priority, pause, err := opts.Priority, opts.Priority == -2, error(nil)
 --- end
@@ -20,9 +20,9 @@ file internal/app/ingest.go
 [ingest stores a priority the resolver refused]
 file internal/app/ingest.go
 --- anchor
-	priority, pause, err := config.ResolvePriority(categories, opts.Category, opts.Priority)
+	priority, pause, err := config.ResolvePriority(categories, category, opts.Priority)
 	if err != nil {
 --- replace
-	priority, pause, err := config.ResolvePriority(categories, opts.Category, opts.Priority)
+	priority, pause, err := config.ResolvePriority(categories, category, opts.Priority)
 	if err != nil && false {
 --- end

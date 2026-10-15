@@ -1,6 +1,11 @@
 package app
 
 import (
+	"bytes"
+	"compress/gzip"
+	"os"
+	"path/filepath"
+	"slices"
 	"testing"
 
 	"github.com/hobeone/gonzbd/internal/config"
@@ -338,5 +343,214 @@ func TestDeriveName(t *testing.T) {
 		if got := deriveName(tc.input); got != tc.want {
 			t.Errorf("deriveName(%q) = %q, want %q", tc.input, got, tc.want)
 		}
+	}
+}
+
+func TestBuildIngestJob_NZBMetaDefaults(t *testing.T) {
+	t.Parallel()
+
+	cfg := &config.Config{Categories: []config.CategoryConfig{
+		{Name: "Default", PP: 3, Priority: int(constants.NormalPriority)},
+		{Name: "tv", PP: 1, Script: "notify.sh", Priority: int(constants.HighPriority)},
+		{Name: "movies", PP: 2, Script: "movie.sh", Priority: int(constants.LowPriority)},
+	}}
+
+	t.Run("meta password used when option empty", func(t *testing.T) {
+		t.Parallel()
+		nzbDoc := multiVolumeNZB()
+		nzbDoc.Meta = map[string][]string{
+			"password": {"meta_secret"},
+		}
+		_, hdr, err := BuildIngestJob(cfg, nzbDoc, "test.nzb", types.FetchOptions{}, nil)
+		if err != nil {
+			t.Fatalf("BuildIngestJob: %v", err)
+		}
+		if hdr.Password != "meta_secret" {
+			t.Errorf("Password = %q, want %q", hdr.Password, "meta_secret")
+		}
+	})
+
+	t.Run("meta password case insensitive lookup", func(t *testing.T) {
+		t.Parallel()
+		nzbDoc := multiVolumeNZB()
+		nzbDoc.Meta = map[string][]string{
+			"Password": {"case_secret"},
+		}
+		_, hdr, err := BuildIngestJob(cfg, nzbDoc, "test.nzb", types.FetchOptions{}, nil)
+		if err != nil {
+			t.Fatalf("BuildIngestJob: %v", err)
+		}
+		if hdr.Password != "case_secret" {
+			t.Errorf("Password = %q, want %q", hdr.Password, "case_secret")
+		}
+	})
+
+	t.Run("option password takes precedence over meta", func(t *testing.T) {
+		t.Parallel()
+		nzbDoc := multiVolumeNZB()
+		nzbDoc.Meta = map[string][]string{
+			"password": {"meta_secret"},
+		}
+		_, hdr, err := BuildIngestJob(cfg, nzbDoc, "test.nzb", types.FetchOptions{Password: "opt_secret"}, nil)
+		if err != nil {
+			t.Fatalf("BuildIngestJob: %v", err)
+		}
+		if hdr.Password != "opt_secret" {
+			t.Errorf("Password = %q, want %q", hdr.Password, "opt_secret")
+		}
+	})
+
+	t.Run("meta category used when option empty", func(t *testing.T) {
+		t.Parallel()
+		nzbDoc := multiVolumeNZB()
+		nzbDoc.Meta = map[string][]string{
+			"category": {"tv"},
+		}
+		_, hdr, err := BuildIngestJob(cfg, nzbDoc, "test.nzb", types.FetchOptions{
+			PP:       types.PPInherit,
+			Priority: constants.DefaultPriority,
+		}, nil)
+		if err != nil {
+			t.Fatalf("BuildIngestJob: %v", err)
+		}
+		if hdr.Category != "tv" {
+			t.Errorf("Category = %q, want %q", hdr.Category, "tv")
+		}
+		if hdr.Priority != constants.HighPriority {
+			t.Errorf("Priority = %v, want %v (from tv category)", hdr.Priority, constants.HighPriority)
+		}
+		if hdr.PP.Int() != 1 {
+			t.Errorf("PP = %d, want 1 (from tv category)", hdr.PP.Int())
+		}
+		if hdr.Script != "notify.sh" {
+			t.Errorf("Script = %q, want %q (from tv category)", hdr.Script, "notify.sh")
+		}
+	})
+
+	t.Run("meta category case insensitive lookup", func(t *testing.T) {
+		t.Parallel()
+		nzbDoc := multiVolumeNZB()
+		nzbDoc.Meta = map[string][]string{
+			"Category": {"tv"},
+		}
+		_, hdr, err := BuildIngestJob(cfg, nzbDoc, "test.nzb", types.FetchOptions{
+			PP:       types.PPInherit,
+			Priority: constants.DefaultPriority,
+		}, nil)
+		if err != nil {
+			t.Fatalf("BuildIngestJob: %v", err)
+		}
+		if hdr.Category != "tv" {
+			t.Errorf("Category = %q, want %q", hdr.Category, "tv")
+		}
+		if hdr.Priority != constants.HighPriority {
+			t.Errorf("Priority = %v, want %v (from tv category)", hdr.Priority, constants.HighPriority)
+		}
+	})
+
+	t.Run("option category takes precedence over meta", func(t *testing.T) {
+		t.Parallel()
+		nzbDoc := multiVolumeNZB()
+		nzbDoc.Meta = map[string][]string{
+			"category": {"tv"},
+		}
+		_, hdr, err := BuildIngestJob(cfg, nzbDoc, "test.nzb", types.FetchOptions{
+			Category: "movies",
+			PP:       types.PPInherit,
+			Priority: constants.DefaultPriority,
+		}, nil)
+		if err != nil {
+			t.Fatalf("BuildIngestJob: %v", err)
+		}
+		if hdr.Category != "movies" {
+			t.Errorf("Category = %q, want %q", hdr.Category, "movies")
+		}
+		if hdr.Priority != constants.LowPriority {
+			t.Errorf("Priority = %v, want %v (from movies category)", hdr.Priority, constants.LowPriority)
+		}
+		if hdr.PP.Int() != 2 {
+			t.Errorf("PP = %d, want 2 (from movies category)", hdr.PP.Int())
+		}
+		if hdr.Script != "movie.sh" {
+			t.Errorf("Script = %q, want %q (from movies category)", hdr.Script, "movie.sh")
+		}
+	})
+}
+
+func TestAllMeta(t *testing.T) {
+	t.Parallel()
+	nzbDoc := &nzb.NZB{
+		Meta: map[string][]string{
+			"password": {"pass1", "  pass2  ", "pass1", ""},
+			"Password": {"pass3", "pass2", "  "},
+			"PASSWORD": {"pass4"},
+		},
+	}
+	got := allMeta(nzbDoc, "password")
+	want := []string{"pass1", "pass2", "pass4", "pass3"}
+	if !slices.Equal(got, want) {
+		t.Errorf("allMeta = %v, want %v", got, want)
+	}
+
+	if gotNil := allMeta(nil, "password"); gotNil != nil {
+		t.Errorf("allMeta(nil) = %v, want nil", gotNil)
+	}
+
+	emptyDoc := &nzb.NZB{Meta: map[string][]string{}}
+	if gotEmpty := allMeta(emptyDoc, "password"); gotEmpty != nil {
+		t.Errorf("allMeta(empty) = %v, want nil", gotEmpty)
+	}
+}
+
+func TestReadNZBMetaPasswords(t *testing.T) {
+	t.Parallel()
+	adminDir := t.TempDir()
+	nzbDir := filepath.Join(adminDir, "nzb")
+	if err := os.MkdirAll(nzbDir, 0o750); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+
+	// 1. Missing backup returns nil
+	if pws := readNZBMetaPasswords(adminDir, ""); pws != nil {
+		t.Errorf("readNZBMetaPasswords(\"\") = %v, want nil", pws)
+	}
+	if pws := readNZBMetaPasswords(adminDir, "nonexistent.nzb.gz"); pws != nil {
+		t.Errorf("readNZBMetaPasswords(nonexistent) = %v, want nil", pws)
+	}
+
+	// 2. Valid NZB backup with multiple passwords (including mixed case and duplicates)
+	nzbContent := `<?xml version="1.0" encoding="utf-8" ?>
+<!DOCTYPE nzb PUBLIC "-//newzBin//DTD NZB 1.1//EN" "http://www.newzbin.com/DTD/nzb/nzb-1.1.dtd">
+<nzb xmlns="http://www.newzbin.com/DTD/2003/nzb">
+ <head>
+   <meta type="password">passA</meta>
+   <meta type="Password">  passB  </meta>
+   <meta type="password">passA</meta>
+   <meta type="PASSWORD">passC</meta>
+ </head>
+ <file subject="test">
+  <groups><group>alt.binaries.test</group></groups>
+  <segments><segment bytes="100" number="1">id1@test</segment></segments>
+ </file>
+</nzb>`
+
+	var buf bytes.Buffer
+	gz := gzip.NewWriter(&buf)
+	if _, err := gz.Write([]byte(nzbContent)); err != nil {
+		t.Fatalf("gzip write: %v", err)
+	}
+	if err := gz.Close(); err != nil {
+		t.Fatalf("gzip close: %v", err)
+	}
+
+	backupName := "multi_pw.nzb.gz"
+	if err := os.WriteFile(filepath.Join(nzbDir, backupName), buf.Bytes(), 0o640); err != nil {
+		t.Fatalf("write backup: %v", err)
+	}
+
+	pws := readNZBMetaPasswords(adminDir, backupName)
+	want := []string{"passA", "passB", "passC"}
+	if !slices.Equal(pws, want) {
+		t.Errorf("readNZBMetaPasswords = %v, want %v", pws, want)
 	}
 }
