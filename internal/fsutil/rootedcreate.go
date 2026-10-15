@@ -33,7 +33,7 @@ func IsTempFile(name string) bool {
 	return isGonzbdTempFile(name) || isPar2EngineTempFile(name)
 }
 
-func isGonzbdTempFile(name string) bool { //noalign: covered via IsTempFile in rootedcreate_test.go
+func isGonzbdTempFile(name string) bool { //noalign: covered via IsTempFile in rootedcreate_test.go and temp_file.spec
 	if !strings.HasPrefix(name, TempFilePrefix) {
 		return false
 	}
@@ -50,7 +50,7 @@ func isGonzbdTempFile(name string) bool { //noalign: covered via IsTempFile in r
 	return true
 }
 
-func isPar2EngineTempFile(name string) bool { //noalign: covered via IsTempFile in rootedcreate_test.go
+func isPar2EngineTempFile(name string) bool { //noalign: covered via IsTempFile in rootedcreate_test.go and temp_file.spec
 	if len(name) <= par2TempSuffix || !strings.HasSuffix(name, par2TempExt) {
 		return false
 	}

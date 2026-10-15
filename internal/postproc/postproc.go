@@ -689,7 +689,7 @@ func (p *PostProcessor) processJob(ctx context.Context, job *Job) {
 // before or during deletePending), it loads the JSON list and runs
 // deletePending to finish unlinking the recorded archives and par2 files before
 // renaming _UNPACK_<FinalDir> to FinalDir.
-func (p *PostProcessor) recoverUnpackFinalDir(ctx context.Context, job *Job) error { //noalign: covered via Process in TestPostProcessor_DeferredCleanup
+func (p *PostProcessor) recoverUnpackFinalDir(ctx context.Context, job *Job) error {
 	if job.FinalDir == "" {
 		return nil
 	}
