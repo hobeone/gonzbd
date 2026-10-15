@@ -181,6 +181,11 @@ func TestFinalize_ParErrorWithHeldVolumesRetriesWithThemReleased(t *testing.T) {
 	if n := h.notes.count(notifier.PostProcessingFailed); n != 0 {
 		t.Errorf("%d failure notification(s) sent for a job that is being retried, want 0", n)
 	}
+	select {
+	case pc := <-h.app.PostProcComplete():
+		t.Errorf("received PostProcComplete(%q) for a job that is being retried; retry must complete first", pc.JobID)
+	default:
+	}
 }
 
 // The retry has no held volume left, so a par2 failure of the retry is final:
@@ -193,6 +198,11 @@ func TestFinalize_RetriedJobIsNotRetriedAgain(t *testing.T) {
 	retried, held := h.app.dispatcher.Job(id)
 	if !held || retried == h.job {
 		t.Fatalf("fixture guard: the first failure was not retried; log:\n%s", h.logged.String())
+	}
+	select {
+	case pc := <-h.app.PostProcComplete():
+		t.Errorf("received PostProcComplete(%q) on the first failure of a retried job", pc.JobID)
+	default:
 	}
 
 	h.app.finalizer.finalize(h.failedPar2Run(retried))
@@ -210,6 +220,14 @@ func TestFinalize_RetriedJobIsNotRetriedAgain(t *testing.T) {
 	}
 	if n := h.notes.count(notifier.PostProcessingFailed); n != 1 {
 		t.Errorf("%d failure notification(s), want 1 for the final failure", n)
+	}
+	select {
+	case pc := <-h.app.PostProcComplete():
+		if pc.JobID != id {
+			t.Errorf("PostProcComplete.JobID = %q, want %q", pc.JobID, id)
+		}
+	default:
+		t.Errorf("no PostProcComplete received for the retried job's final failure")
 	}
 }
 
@@ -233,6 +251,14 @@ func TestFinalize_RetryThatCannotStartLeavesTheFailureVisible(t *testing.T) {
 	}
 	if n := h.notes.count(notifier.PostProcessingFailed); n != 1 {
 		t.Errorf("%d failure notification(s), want 1", n)
+	}
+	select {
+	case pc := <-h.app.PostProcComplete():
+		if pc.JobID != id {
+			t.Errorf("PostProcComplete.JobID = %q, want %q", pc.JobID, id)
+		}
+	default:
+		t.Errorf("no PostProcComplete received for a final failure that could not be retried")
 	}
 	logged := h.logged.String()
 	if !strings.Contains(logged, "could not retry the job with its held recovery volumes") ||
