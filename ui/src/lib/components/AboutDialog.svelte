@@ -207,6 +207,6 @@
 	<div
 		class="border-t border-border/60 px-6 py-4 text-center text-xs text-muted-foreground font-medium"
 	>
-		GoNZBD — A Go reimplementation of SABnzbd
+		GoNZBD — A Go NZB Downloader
 	</div>
 </Modal>
