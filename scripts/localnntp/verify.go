@@ -420,7 +420,7 @@ func verifyComplete(ctx context.Context, db *sql.DB, m *ReleaseManifest, cfg Ver
 				return walkErr
 			}
 			name := d.Name()
-			if strings.Contains(name, ".gonzbd-tmp-") || strings.Contains(name, ".gonzbd-pending-deletions") {
+			if strings.Contains(name, ".gonzbd-tmp-") || strings.Contains(name, ".gonzbd-pending-deletions") || strings.Contains(name, ".par2engine-") {
 				return fmt.Errorf("hygiene violation: temporary artifact %s found in complete dir", path)
 			}
 			if !d.IsDir() && (strings.HasSuffix(name, ".rar") || strings.HasSuffix(name, ".par2")) {

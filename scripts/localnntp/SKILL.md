@@ -48,11 +48,11 @@ Fault rules match against requested message IDs, target filenames, part numbers,
 
 | Fault Action | Behavior & Impact | gonzbd Pipeline Response |
 |---|---|---|
-| `drop` | Server returns NNTP error `430 No such article` | Downloader charges article failure; triggers server fallbacks or PAR2 recovery |
-| `corrupt-payload` | Valid yEnc CRC32 header, but corrupt internal payload bytes | Passes yEnc decoder; triggers `DirectUnpack` quickcheck failure and promotes PAR2 repair |
-| `corrupt-wire` | Invalid yEnc body or bad CRC32 line | Rejected immediately by `internal/decoder` as corrupt; downloader retries or marks failed |
-| `drop-mid-body` | Server sends first 100 lines then abruptly terminates TCP connection | Downloader catches mid-stream EOF / connection reset; drops socket and reconnects |
-| `stall` | Server sleeps for `timeout` duration before responding | Triggers client download connection timeouts or verifies rate smoothing |
+| `drop` | Server returns NNTP error `430 No such article` | Downloader charges article failure and promotes `.vol*.par2` recovery volumes inline inside `Job.MarkArticleFailed` |
+| `corrupt-payload` | Valid yEnc CRC32 header, but corrupt internal payload bytes | Passes yEnc decoder; `.vol*.par2` remains deferred (`FetchIfNeeded`) until initial download finishes and `Assessing` (`maybeReleaseRecoveryVolumes`) detects the file-level CRC mismatch and triggers a second recovery download wave |
+| `corrupt-wire` | Invalid yEnc body or bad CRC32 line | Rejected immediately by `internal/decoder` (`ErrCRCMismatch`); downloader tries alternate servers or marks failed |
+| `drop-mid-body` | Server sends half the body then abruptly closes TCP connection | Downloader catches mid-stream EOF / connection reset, drops socket, and applies a server penalty (clear immediately in single-server tests via `GET /api?mode=status&name=unblock_server&value=localnntp`) |
+| `stall` | Server sends `222` status line then sleeps for `timeout` before closing | Triggers client socket read timeout (`idleTimeoutReader`) and server penalty |
 
 ### Format Specification Syntax
 
@@ -114,6 +114,13 @@ general:
   download_dir: /tmp/gonzbd-crash/incomplete
   admin_dir: /tmp/gonzbd-crash/admin
   log_dir: /tmp/gonzbd-crash
+downloads:
+  on_demand_par2: true
+  no_penalties: true
+  max_art_tries: 4
+postproc:
+  direct_unpack: true
+  use_go_par2: true
 servers:
   - name: localnntp
     host: 127.0.0.1
@@ -212,14 +219,14 @@ go run ./scripts/localnntp verify \
 When validating recovery, test across these specific lifecycle checkpoints:
 
 1. **Killing during `Downloading` + `DirectUnpack`**:
-   - Injects `POST /rate` to throttle to 10 MB/s.
+   - Injects `POST /rate` to throttle to 10-80 MB/s.
    - Kills during active extraction. Verifies partial unrar temp state does not corrupt resumed download.
 2. **Killing during `Assessing` / `on_demand_par2` recovery promotion**:
-   - Injects `POST /faults` with `drop:part02.rar:parts=1,2,3`.
-   - Forces parity volume promotion. Kills while downloading parity blocks.
+   - Note that permanent `430` failures (`drop`) promote `.vol*.par2` recovery volumes inline inside `Job.MarkArticleFailed`, whereas `corrupt-payload` (valid yEnc CRC with corrupted payload bytes) keeps `.vol*.par2` deferred (`FetchIfNeeded`) until initial download finishes and `Assessing` (`maybeReleaseRecoveryVolumes`) verifies assembled CRCs against the `.par2` index.
+   - Inject `corrupt-payload:part04.rar:parts=2:bytes=64:max=1` and wait for `"on-demand par2: repair needed, fetching recovery volumes"` in `gonzbd.log` to deterministically kill during the second recovery download wave.
 3. **Killing during `Repairing` / `Extracting`**:
-   - Allows full download to complete. Kills while `par2repair` or unrar process is active.
-   - Verifies lock cleanup and proper resumption without duplicate work.
+   - For mid-repair `SIGKILL`: wait for `<target>.par2engine-*.tmp` in the incomplete job directory (written by `par2engine` during out-of-place repair) and `kill -9`. On restart, `sweepTempFiles` cleans the orphaned `.par2engine-*.tmp` before `recover_par2_names`.
+   - For mid-extraction `SIGKILL`: wait for `.gonzbd-tmp-unpack-*/.gonzbd-tmp-*` in the complete job directory (while `go_unrar`'s `writeEntrySafely` streams an entry before renaming it to the final member name) and `kill -9`. On restart, `sweepTempFiles` removes `.gonzbd-tmp-unpack-*` and re-extracts cleanly.
 4. **Killing right after final directory move**:
    - Kills when job is inserted into `history` table.
    - Verifies job is atomically absent from `dispatch_jobs`.
