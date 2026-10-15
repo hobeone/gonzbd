@@ -245,6 +245,9 @@ func TestGenerateRelease_EndToEnd(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GenerateRelease: %v", err)
 	}
+	if _, err := GenerateRelease(cfg); err == nil || !strings.Contains(err.Error(), "is not empty") {
+		t.Fatalf("GenerateRelease on populated dir = %v, want non-empty error", err)
+	}
 	if len(manifest.ExpectedOutputs) != 1 || manifest.ExpectedOutputs[0].Name != "payload.bin" {
 		t.Fatalf("ExpectedOutputs = %+v, want [payload.bin]", manifest.ExpectedOutputs)
 	}

@@ -116,22 +116,27 @@ func resolveArticleIDs(adminDir, jobID string, m *ReleaseManifest) (func(artIdx 
 	if err == nil {
 		defer func() { _ = f.Close() }() //nolint:errcheck // best effort close
 		gz, gzErr := gzip.NewReader(f)
-		if gzErr == nil {
-			data, readErr := io.ReadAll(gz)
-			_ = gz.Close() //nolint:errcheck // best effort close
-			if readErr == nil {
-				var jm job.Manifest
-				if unmarshalErr := json.Unmarshal(data, &jm); unmarshalErr == nil {
-					return func(artIdx int) (string, bool) {
-						id := jm.ArticleID(artIdx)
-						return id, id != ""
-					}, nil
-				}
-			}
+		if gzErr != nil {
+			return nil, fmt.Errorf("open gzip queue manifest %s: %w", manifestFile, gzErr)
 		}
+		data, readErr := io.ReadAll(gz)
+		_ = gz.Close() //nolint:errcheck // best effort close
+		if readErr != nil {
+			return nil, fmt.Errorf("read gzip queue manifest %s: %w", manifestFile, readErr)
+		}
+		var jm job.Manifest
+		if unmarshalErr := json.Unmarshal(data, &jm); unmarshalErr != nil {
+			return nil, fmt.Errorf("unmarshal queue manifest %s: %w", manifestFile, unmarshalErr)
+		}
+		return func(artIdx int) (string, bool) {
+			id := jm.ArticleID(artIdx)
+			return id, id != ""
+		}, nil
+	} else if !errors.Is(err, fs.ErrNotExist) {
+		return nil, fmt.Errorf("open queue manifest %s: %w", manifestFile, err)
 	}
 
-	// Fallback: flatten segments from ReleaseManifest in order.
+	// Fallback: flatten segments from ReleaseManifest in order when the queue manifest file is absent.
 	var fallbackIDs []string
 	for _, file := range m.Files {
 		for _, seg := range file.Segments {
@@ -192,7 +197,7 @@ func verifyCrash(ctx context.Context, db *sql.DB, m *ReleaseManifest, cfg Verify
 	if err != nil {
 		return nil, fmt.Errorf("query job_files: %w", err)
 	}
-	defer func() { _ = fileRows.Close() }()
+	defer func() { _ = fileRows.Close() }() //nolint:errcheck // best-effort close of SQL rows
 
 	fileNames := make(map[int32]string)
 	for fileRows.Next() {
@@ -212,7 +217,7 @@ func verifyCrash(ctx context.Context, db *sql.DB, m *ReleaseManifest, cfg Verify
 	if err != nil {
 		return nil, fmt.Errorf("query written_articles: %w", err)
 	}
-	defer func() { _ = artRows.Close() }()
+	defer func() { _ = artRows.Close() }() //nolint:errcheck // best-effort close of SQL rows
 
 	var written []writtenArtRow
 	for artRows.Next() {
@@ -306,7 +311,7 @@ func verifyCrash(ctx context.Context, db *sql.DB, m *ReleaseManifest, cfg Verify
 		if err != nil {
 			return nil, fmt.Errorf("post snapshot %s: %w", snapshotURL, err)
 		}
-		defer func() { _ = resp.Body.Close() }()
+		defer func() { _ = resp.Body.Close() }() //nolint:errcheck // best-effort close of HTTP response body
 		if resp.StatusCode != http.StatusOK {
 			body, _ := io.ReadAll(resp.Body) //nolint:errcheck // body reading for error message
 			return nil, fmt.Errorf("post snapshot returned status %d: %s", resp.StatusCode, string(body))
@@ -465,7 +470,7 @@ func verifyComplete(ctx context.Context, db *sql.DB, m *ReleaseManifest, cfg Ver
 		if err != nil {
 			return nil, fmt.Errorf("fetch snapshot %s: %w", snapURL, err)
 		}
-		defer func() { _ = resp.Body.Close() }()
+		defer func() { _ = resp.Body.Close() }() //nolint:errcheck // best-effort close of HTTP response body
 		if resp.StatusCode != http.StatusOK {
 			return nil, fmt.Errorf("fetch snapshot returned status %d", resp.StatusCode)
 		}
@@ -484,7 +489,7 @@ func verifyComplete(ctx context.Context, db *sql.DB, m *ReleaseManifest, cfg Ver
 		if err != nil {
 			return nil, fmt.Errorf("fetch stats %s: %w", statsURL, err)
 		}
-		defer func() { _ = respStats.Body.Close() }()
+		defer func() { _ = respStats.Body.Close() }() //nolint:errcheck // best-effort close of HTTP response body
 		if respStats.StatusCode != http.StatusOK {
 			return nil, fmt.Errorf("fetch stats returned status %d", respStats.StatusCode)
 		}

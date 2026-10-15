@@ -340,6 +340,9 @@ func GenerateRelease(cfg GenConfig) (*ReleaseManifest, error) {
 	}
 
 	filesDir := filepath.Join(cfg.OutDir, "files")
+	if entries, err := os.ReadDir(filesDir); err == nil && len(entries) > 0 {
+		return nil, fmt.Errorf("files dir %s is not empty; use a fresh --dir", filesDir)
+	}
 	if err := os.MkdirAll(filesDir, 0o750); err != nil {
 		return nil, fmt.Errorf("create files dir: %w", err)
 	}

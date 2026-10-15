@@ -14,7 +14,6 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
-	"time"
 
 	_ "modernc.org/sqlite"
 
@@ -277,6 +276,20 @@ func TestVerify_Crash_QueueManifestGz(t *testing.T) {
 	}
 	if len(report.RecordedIDs) != 1 || report.RecordedIDs[0] != "gz-article-id@test" {
 		t.Errorf("got recorded IDs %v, want [gz-article-id@test]", report.RecordedIDs)
+	}
+
+	// Verify corrupt queue manifest returns an error instead of silently falling back.
+	if err := os.WriteFile(filepath.Join(queueManifestDir, jobID+".json.gz"), []byte("not-gzip"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Verify(context.Background(), VerifyConfig{
+		Mode:         "crash",
+		ManifestPath: manifestPath,
+		AdminDir:     adminDir,
+		DownloadDir:  downloadDir,
+		JobID:        jobID,
+	}); err == nil || !strings.Contains(err.Error(), "gzip queue manifest") {
+		t.Fatalf("expected error on corrupt gzip queue manifest, got: %v", err)
 	}
 }
 
@@ -909,11 +922,7 @@ func TestCLI_Run(t *testing.T) {
 		_ = SaveManifest(filepath.Join(outDir, "manifest.json"), manifest)
 
 		ctx, cancel := context.WithCancel(context.Background())
-		// Cancel shortly after starting
-		go func() {
-			time.Sleep(50 * time.Millisecond)
-			cancel()
-		}()
+		cancel()
 
 		var stdout, stderr bytes.Buffer
 		code := run(ctx, []string{
@@ -962,6 +971,19 @@ func TestCLI_Run(t *testing.T) {
 		code = run(context.Background(), []string{"serve", "--dir", filepath.Join(tempDir, "nonexistent-dir")}, &stdout, &stderr)
 		if code == 0 {
 			t.Fatal("expected non-zero exit code for missing manifest")
+		}
+
+		outDir := filepath.Join(tempDir, "serve-bad-control")
+		_ = os.MkdirAll(outDir, 0o755)
+		_ = SaveManifest(filepath.Join(outDir, "manifest.json"), &ReleaseManifest{Name: "rel", PartSize: 1024})
+		code = run(context.Background(), []string{
+			"serve",
+			"--dir", outDir,
+			"--listen", "127.0.0.1:0",
+			"--control", "invalid:addr:port",
+		}, &stdout, &stderr)
+		if code == 0 {
+			t.Fatal("expected non-zero exit code for invalid control listen address")
 		}
 	})
 

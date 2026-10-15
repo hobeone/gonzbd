@@ -819,6 +819,19 @@ func TestControl_API(t *testing.T) {
 	}
 	_ = resp.Body.Close()
 
+	// POST /snapshot?name=snap-bad with malformed JSON -> 400
+	resp, err = client.Post(ts.URL+"/snapshot?name=snap-bad", "application/json", strings.NewReader(`{invalid`))
+	if err != nil {
+		t.Fatalf("POST /snapshot malformed: %v", err)
+	}
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("expected 400 for malformed snapshot json, got %d", resp.StatusCode)
+	}
+	_ = resp.Body.Close()
+	if _, ok := srv.GetSnapshot("snap-bad"); ok {
+		t.Fatalf("expected malformed POST /snapshot not to store snapshot")
+	}
+
 	// POST /rate with negative rate -> 400
 	resp, err = client.Post(ts.URL+"/rate", "application/json", strings.NewReader(`{"rate_mbps": -1.0}`))
 	if err != nil {

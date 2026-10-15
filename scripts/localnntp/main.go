@@ -8,6 +8,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"
@@ -16,8 +17,7 @@ import (
 	"time"
 )
 
-// nocover: thin CLI entry point
-func main() {
+func main() { //nocover: thin CLI entry point
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	code := run(ctx, os.Args[1:], os.Stdout, os.Stderr)
 	cancel()
@@ -174,20 +174,26 @@ func runServe(ctx context.Context, args []string, stdout, stderr io.Writer) int 
 	}
 	defer func() { _ = srv.Close() }() //nolint:errcheck // best effort close on exit
 
+	controlLn, err := net.Listen("tcp", *control)
+	if err != nil {
+		printMsg(stderr, "error starting control server: %v\n", err)
+		return 1
+	}
+
 	controlHandler := NewControlHandler(srv)
 	controlSrv := &http.Server{
-		Addr:              *control,
 		Handler:           controlHandler,
 		ReadHeaderTimeout: 5 * time.Second,
+		ReadTimeout:       10 * time.Second,
 	}
 
 	go func() {
-		if err := controlSrv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+		if err := controlSrv.Serve(controlLn); err != nil && !errors.Is(err, http.ErrServerClosed) {
 			printMsg(stderr, "control server error: %v\n", err)
 		}
 	}()
 
-	printMsg(stdout, "NNTP server listening on %s\nControl API listening on %s\n", srv.Addr(), *control)
+	printMsg(stdout, "NNTP server listening on %s\nControl API listening on %s\n", srv.Addr(), controlLn.Addr())
 
 	<-ctx.Done()
 

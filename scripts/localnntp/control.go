@@ -3,7 +3,9 @@ package main
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
 	"net/http"
 )
 
@@ -85,8 +87,11 @@ func NewControlHandler(srv *Server) http.Handler {
 			RecordedIDs []string `json:"recorded_ids"`
 		}
 		name := r.URL.Query().Get("name")
-		if r.Body != nil && r.ContentLength > 0 {
-			_ = json.NewDecoder(r.Body).Decode(&req) //nolint:errcheck // query param name fallback is permitted
+		if r.Body != nil && r.ContentLength != 0 {
+			if err := json.NewDecoder(r.Body).Decode(&req); err != nil && !errors.Is(err, io.EOF) {
+				http.Error(w, "invalid JSON payload: "+err.Error(), http.StatusBadRequest)
+				return
+			}
 		}
 		if name == "" {
 			name = req.Name

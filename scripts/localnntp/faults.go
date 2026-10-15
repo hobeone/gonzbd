@@ -60,12 +60,23 @@ type FaultEngine struct {
 	rng   *rand.Rand
 }
 
+func normalizeMessageIDs(ids []string) []string {
+	if len(ids) == 0 {
+		return nil
+	}
+	out := make([]string, len(ids))
+	for i, id := range ids {
+		out[i] = extractMessageID(id)
+	}
+	return out
+}
+
 // NewFaultEngine creates a thread-safe FaultEngine seeded with seed and initial rules.
 func NewFaultEngine(seed uint64, rules []FaultRule) *FaultEngine {
 	copied := make([]FaultRule, len(rules))
 	for i, r := range rules {
 		copied[i] = r
-		copied[i].MessageIDs = slices.Clone(r.MessageIDs)
+		copied[i].MessageIDs = normalizeMessageIDs(r.MessageIDs)
 		copied[i].Parts = slices.Clone(r.Parts)
 	}
 	return &FaultEngine{
@@ -94,7 +105,7 @@ func (e *FaultEngine) AddRule(r FaultRule) {
 	defer e.mu.Unlock()
 
 	c := r
-	c.MessageIDs = slices.Clone(r.MessageIDs)
+	c.MessageIDs = normalizeMessageIDs(r.MessageIDs)
 	c.Parts = slices.Clone(r.Parts)
 	e.rules = append(e.rules, c)
 }
@@ -183,8 +194,8 @@ func ParseFaultSpec(spec string) (FaultRule, error) {
 			case "msgid", "message_id":
 				ids := strings.Split(v, ",")
 				for _, id := range ids {
-					if id != "" {
-						rule.MessageIDs = append(rule.MessageIDs, id)
+					if clean := extractMessageID(id); clean != "" {
+						rule.MessageIDs = append(rule.MessageIDs, clean)
 					}
 				}
 			case "file", "file_match":

@@ -81,7 +81,7 @@ func TestParseFaultSpec_Success(t *testing.T) {
 		},
 		{
 			name: "multiple message IDs via kv",
-			spec: "stall:msgid=m1@test,m2@test",
+			spec: "stall:msgid=m1@test,<m2@test>",
 			expected: FaultRule{
 				Action:     FaultStall,
 				MessageIDs: []string{"m1@test", "m2@test"},
