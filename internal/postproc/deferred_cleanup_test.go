@@ -450,6 +450,7 @@ func TestDeferredCleanup_CleanupFlagsHonouredAtFinalize(t *testing.T) {
 			if err := os.WriteFile(filepath.Join(dir, "Real.Name.rar.1"), []byte("damaged-backup"), 0o600); err != nil {
 				t.Fatalf("write backup: %v", err)
 			}
+			job.recordPar2Backup("Real.Name.rar.1")
 			if err := os.WriteFile(filepath.Join(dir, "checksums.sfv"), []byte("sfv"), 0o600); err != nil {
 				t.Fatalf("write sfv: %v", err)
 			}
@@ -534,6 +535,7 @@ func TestDeferredCleanup_CleanupFlagsHonouredAtFinalize(t *testing.T) {
 		if err := os.WriteFile(filepath.Join(dir, "Real.Name.rar.1"), []byte("damaged-backup"), 0o600); err != nil {
 			t.Fatalf("write backup: %v", err)
 		}
+		job.recordPar2Backup("Real.Name.rar.1")
 
 		roParent := filepath.Join(t.TempDir(), "readonly")
 		if err := os.MkdirAll(roParent, 0o500); err != nil {
@@ -975,6 +977,7 @@ func TestDeferredCleanup_ExcludedFromIntermediateStages(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(dir, "movie_part.rar.1"), backupBytes, 0o600); err != nil {
 		t.Fatalf("write backup: %v", err)
 	}
+	job.recordPar2Backup("movie_part.rar.1")
 	tarBytes := writeSingleFileTar(t, filepath.Join(dir, "sample_archive.tar"), "extra.txt", []byte("extra payload"))
 	writeMinimalPar2File(t, filepath.Join(dir, "movie.par2"), "Par2_Renamed.tar", tarBytes)
 

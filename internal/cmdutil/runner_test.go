@@ -276,10 +276,27 @@ func TestBuildCommand_MalformedPriorityArgs(t *testing.T) {
 func TestBuildCommand_ProcessGroupCancellationKillsChildren(t *testing.T) {
 	t.Parallel()
 
-	directCmd := exec.Command("true")
-	configureProcessGroup(directCmd)
-	if directCmd.SysProcAttr == nil || !directCmd.SysProcAttr.Setpgid || directCmd.Cancel == nil {
-		t.Fatal("configureProcessGroup did not set Setpgid and Cancel")
+	directCmd := exec.CommandContext(t.Context(), "true")
+	existingAttr := &syscall.SysProcAttr{Chroot: ""}
+	directCmd.SysProcAttr = existingAttr
+	SetProcessGroup(directCmd)
+	if directCmd.SysProcAttr != existingAttr {
+		t.Fatal("SetProcessGroup replaced an existing non-nil SysProcAttr instead of reusing it")
+	}
+	if !directCmd.SysProcAttr.Setpgid || directCmd.Cancel == nil {
+		t.Fatal("SetProcessGroup did not set Setpgid and Cancel")
+	}
+	KillProcessGroup(directCmd) // unstarted Process == nil must be a no-op
+
+	// Verify KillProcessGroup falls back to cmd.Process.Kill() when the child
+	// is not a process-group leader (so syscall.Kill(-pid, SIGKILL) returns ESRCH).
+	nonLeader := exec.Command("sleep", "1")
+	if err := nonLeader.Start(); err != nil {
+		t.Fatalf("nonLeader.Start: %v", err)
+	}
+	KillProcessGroup(nonLeader)
+	if err := nonLeader.Wait(); err == nil {
+		t.Fatal("nonLeader.Wait succeeded after KillProcessGroup fallback; want signal failure")
 	}
 
 	for _, cfg := range []CmdConfig{{}, {Nice: "-n 5"}} {

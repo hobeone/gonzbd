@@ -33,11 +33,14 @@ func (c CmdConfig) IsEmpty() bool {
 	return c.Nice == "" && c.Ionice == ""
 }
 
-// BuildCommand constructs an *exec.Cmd with optional nice/ionice wrapping.
+// BuildCommand constructs an *exec.Cmd with optional nice/ionice wrapping
+// and configures process-group isolation via SetProcessGroup so context
+// cancellation terminates the entire child process group.
 // The returned Cmd has not been started. The caller is responsible for
 // setting Stdout, Stderr, Dir, Env, etc.
 //
-// When CmdConfig is empty, this is equivalent to exec.CommandContext.
+// When CmdConfig is empty, this constructs exec.CommandContext(ctx, name, args...)
+// with SetProcessGroup configured.
 // When Nice and/or Ionice are set, the actual binary and args are
 // prepended with the priority wrapper(s).
 //
@@ -47,7 +50,7 @@ func (c CmdConfig) IsEmpty() bool {
 func BuildCommand(ctx context.Context, cfg CmdConfig, name string, args ...string) (*exec.Cmd, error) {
 	if cfg.IsEmpty() {
 		cmd := exec.CommandContext(ctx, name, args...) //nolint:gosec // caller-supplied args
-		configureProcessGroup(cmd)
+		SetProcessGroup(cmd)
 		return cmd, nil
 	}
 
@@ -59,18 +62,38 @@ func BuildCommand(ctx context.Context, cfg CmdConfig, name string, args ...strin
 	fullArgs = append(fullArgs, args...)
 
 	cmd := exec.CommandContext(ctx, fullArgs[0], fullArgs[1:]...) //nolint:gosec // priority-wrapped command
-	configureProcessGroup(cmd)
+	SetProcessGroup(cmd)
 	return cmd, nil
 }
 
-func configureProcessGroup(cmd *exec.Cmd) {
-	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
-	cmd.Cancel = func() error {
-		if cmd.Process != nil {
-			//nolint:errcheck // best-effort kill; process group may have already exited
-			_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
+// SetProcessGroup configures cmd to start in its own Unix process group
+// (Setpgid: true, preserving any existing non-nil SysProcAttr). When cmd was
+// constructed with exec.CommandContext (so cmd.Cancel is non-nil), it replaces
+// cmd.Cancel with KillProcessGroup so context cancellation terminates the
+// entire process tree rather than only the direct child.
+func SetProcessGroup(cmd *exec.Cmd) {
+	if cmd.SysProcAttr == nil {
+		cmd.SysProcAttr = &syscall.SysProcAttr{}
+	}
+	cmd.SysProcAttr.Setpgid = true
+	if cmd.Cancel != nil {
+		cmd.Cancel = func() error {
+			KillProcessGroup(cmd)
+			return nil
 		}
-		return nil
+	}
+}
+
+// KillProcessGroup sends SIGKILL to the process group of cmd (-pid) and falls
+// back to killing the direct process if the group signal fails. If cmd has not
+// been started, it is a no-op.
+func KillProcessGroup(cmd *exec.Cmd) {
+	if cmd.Process == nil {
+		return
+	}
+	if err := syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL); err != nil {
+		//nolint:errcheck // best-effort fallback when process is not a group leader or already exited
+		_ = cmd.Process.Kill()
 	}
 }
 

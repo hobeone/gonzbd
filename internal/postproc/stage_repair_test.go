@@ -265,7 +265,8 @@ func TestCleanupPar2Backups_RemovesBackupsWithOriginal(t *testing.T) {
 	os.WriteFile(filepath.Join(dir, "movie.part01.rar.1"), []byte("damaged-orig"), 0o644) //nolint:errcheck
 
 	log := slog.New(slog.DiscardHandler)
-	removed := cleanupPar2Backups(dir, log)
+	repaired := map[string]struct{}{"movie.part01.rar": {}}
+	removed := cleanupPar2Backups(dir, repaired, log)
 
 	if len(removed) != 1 || removed[0] != "movie.part01.rar.1" {
 		t.Errorf("removed = %v, want [movie.part01.rar.1]", removed)
@@ -284,7 +285,8 @@ func TestCleanupPar2Backups_PreservesIfOriginalMissing(t *testing.T) {
 	os.WriteFile(backupPath, []byte("damaged-orig"), 0o644) //nolint:errcheck
 
 	log := slog.New(slog.DiscardHandler)
-	removed := cleanupPar2Backups(dir, log)
+	repaired := map[string]struct{}{"movie.part01.rar": {}}
+	removed := cleanupPar2Backups(dir, repaired, log)
 
 	if len(removed) != 0 {
 		t.Errorf("removed = %d, want 0 (no original present)", len(removed))
@@ -294,17 +296,26 @@ func TestCleanupPar2Backups_PreservesIfOriginalMissing(t *testing.T) {
 	}
 }
 
-func TestCleanupPar2Backups_ArbitraryExtensionsAndNoZeroPaddedSplit(t *testing.T) {
+func TestCleanupPar2Backups_ScopedToRepairedTargetsAndSkipsDirs(t *testing.T) {
 	t.Parallel()
 
 	dir := t.TempDir()
+	// Directory named release.v1 must not count as an existing repaired file for release.v1.1.
+	if err := os.MkdirAll(filepath.Join(dir, "release.v1"), 0o750); err != nil {
+		t.Fatalf("MkdirAll release.v1: %v", err)
+	}
 	for _, name := range []string{
-		"payload.bin",
-		"payload.bin.1",
-		"disc.iso",
-		"disc.iso.2",
-		"movie.mkv",
-		"movie.mkv.001", // zero-padded split part, NOT a par2 .1 backup
+		"disc.iso",           // unrepaired payload
+		"disc.iso.1",         // unrepaired payload with .1 suffix — must be kept
+		"libfoo.so",          // unrepaired payload
+		"libfoo.so.1",        // unrepaired payload — must be kept
+		"release.v1.1",       // file next to directory release.v1 — must be kept
+		"movie.part01.rar",   // repaired target
+		"movie.part01.rar.1", // backup of repaired target — must be queued
+		"payload.bin",        // repaired target
+		"payload.bin.1",      // backup 1 of repaired target — must be queued
+		"payload.bin.2",      // backup 2 of repaired target — must be queued
+		"payload.bin.001",    // zero-padded split part, NOT a par2 .1 backup
 	} {
 		if err := os.WriteFile(filepath.Join(dir, name), []byte("data"), 0o600); err != nil {
 			t.Fatalf("WriteFile %s: %v", name, err)
@@ -312,11 +323,64 @@ func TestCleanupPar2Backups_ArbitraryExtensionsAndNoZeroPaddedSplit(t *testing.T
 	}
 
 	log := slog.New(slog.DiscardHandler)
-	removed := cleanupPar2Backups(dir, log)
+	repaired := map[string]struct{}{
+		"movie.part01.rar": {},
+		"payload.bin":      {},
+		"release.v1":       {},
+	}
+	removed := cleanupPar2Backups(dir, repaired, log)
 	slices.Sort(removed)
-	want := []string{"disc.iso.2", "payload.bin.1"}
+	want := []string{"movie.part01.rar.1", "payload.bin.1", "payload.bin.2"}
 	if !slices.Equal(removed, want) {
 		t.Errorf("cleanupPar2Backups = %v, want %v", removed, want)
+	}
+	if got := cleanupPar2Backups(dir, nil, log); len(got) != 0 {
+		t.Errorf("cleanupPar2Backups with nil repairedTargets = %v, want empty", got)
+	}
+	if !isPar2BackupNumber("1") || !isPar2BackupNumber("999") || isPar2BackupNumber("01") || isPar2BackupNumber("1000") || isPar2BackupNumber("1a") || isPar2BackupNumber("") {
+		t.Error("isPar2BackupNumber classification failed")
+	}
+
+	// Verify recordRepairSuccess records backups of DamagedTargets and Renames
+	// onto job.par2Backups, RecoverPar2NamesStage excludes them via
+	// par2RenameExclusions, and Par2CleanupStage promotes only those backups.
+	job := repairJob(t)
+	job.DownloadDir = dir
+	recordRepairSuccess(t.Context(), log, par2.Set{Name: "movie", MainFile: filepath.Join(dir, "movie.par2")}, job, par2.RepairResult{
+		Success: true,
+		Parsed: &par2.RepairOutput{
+			DamagedTargets: []string{"movie.part01.rar"},
+			Renames:        map[string]string{"payload.bin": "obf.bin"},
+		},
+	})
+	excl := job.par2RenameExclusions()
+	for _, wantExcl := range []string{"movie.part01.rar.1", "payload.bin.1", "payload.bin.2"} {
+		if _, ok := excl[wantExcl]; !ok {
+			t.Errorf("par2RenameExclusions missing %q: %v", wantExcl, excl)
+		}
+	}
+	if _, ok := excl["disc.iso.1"]; ok {
+		t.Errorf("unrepaired disc.iso.1 was excluded as a par2 backup: %v", excl)
+	}
+	if err := NewPar2CleanupStage(true).Run(t.Context(), job); err != nil {
+		t.Fatalf("Par2CleanupStage.Run: %v", err)
+	}
+	for _, wantPending := range []string{"movie.part01.rar.1", "payload.bin.1", "payload.bin.2"} {
+		if !job.isPendingDeletion(wantPending) {
+			t.Errorf("%q was not promoted to pendingDeletions by Par2CleanupStage", wantPending)
+		}
+	}
+	for _, keep := range []string{"disc.iso.1", "libfoo.so.1", "release.v1.1", "payload.bin.001"} {
+		if job.isPendingDeletion(keep) {
+			t.Errorf("unrepaired/non-backup %q was queued for deletion", keep)
+		}
+	}
+	if _, err := job.outputFileList(); err == nil {
+		t.Error("expected error from outputFileList before finalize runs")
+	}
+	job.clearPendingDeletions()
+	if len(job.pendingDeletions) != 0 {
+		t.Errorf("pendingDeletions after clearPendingDeletions = %v, want empty", job.pendingDeletions)
 	}
 }
 

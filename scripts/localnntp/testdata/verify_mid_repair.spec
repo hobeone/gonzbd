@@ -1,18 +1,34 @@
 pkg ./scripts/localnntp/
 run TestVerify_Crash_MidPar2RepairOnCompleteFile
 
-[verifyCompletePostProcFallback disabled in verifyCrashRow]
+[resolveCompletePostProcFile disabled in verifyCrashFileRows]
 file scripts/localnntp/verify.go
 --- anchor
-	if err != nil && fr.Complete && verifyCompletePostProcFallback(downloadDir, candidateSubdirs, filename, rf, r) {
+	if fr.Complete && resolveCompletePostProcFile(downloadDir, candidateSubdirs, openFiles, fileIdx, filename, rf, rows) {
 --- replace
-	if false && err != nil && fr.Complete && verifyCompletePostProcFallback(downloadDir, candidateSubdirs, filename, rf, r) {
+	if false && fr.Complete && resolveCompletePostProcFile(downloadDir, candidateSubdirs, openFiles, fileIdx, filename, rf, rows) {
 --- end
 
-[postProcAllowedCRCs skips clean segment CRC from ReleaseManifest]
+[allowedRowCRCs accepts clean manifest CRC even without a .1 backup]
 file scripts/localnntp/verify.go
 --- anchor
-		if seg.Offset == r.Offset && int64(seg.Length) == r.Length && seg.CRC32 != r.CRC32 {
+	if !hasPar2Backup {
+		return crcs
+	}
 --- replace
-		if false && seg.Offset == r.Offset && int64(seg.Length) == r.Length && seg.CRC32 != r.CRC32 {
+	if false {
+		return crcs
+	}
+--- end
+
+[verifyAllRowsAgainstCandidate succeeds on first matching row instead of all rows]
+file scripts/localnntp/verify.go
+--- anchor
+		if !slices.Contains(crcs, got) {
+			return false
+		}
+--- replace
+		if slices.Contains(crcs, got) {
+			return true
+		}
 --- end

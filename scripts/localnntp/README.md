@@ -8,7 +8,7 @@
 - **Fast Line-Rate Server**: Serves NNTP `ARTICLE`, `BODY`, `STAT`, `CAPABILITIES`, and `AUTHINFO` commands using an immutable pre-encoded `articles.pack` fast path exceeding 1 GB/s.
 - **Semantic Fault Engine**: Injects article drops, wire corruption, payload corruption (invalid content with valid yEnc CRC to trigger DirectUnpack / quickcheck repair), mid-body disconnects, and stalls.
 - **Dynamic HTTP Control API**: Provides live endpoints for updating bandwidth rate limits, adding/clearing fault rules, and recording point-in-time article snapshots.
-- **Crash & Completion Verifier**: Verifies `gonzbd` SQLite state (`written_articles`, `job_files`, `dispatch_jobs`, `history`) against partial and complete files on disk, ensuring zero re-fetches after crash recovery.
+- **Crash & Completion Verifier**: Verifies `gonzbd` SQLite state (`written_articles`, `job_files`, `dispatch_jobs`, `history`) against partial and complete files on disk (including a file-scoped post-processing fallback reported via `fallback_rows` when a `complete=1` file was renamed or backed up to `.1` during mid-post-processing crashes), ensuring zero re-fetches after crash recovery.
 
 ---
 

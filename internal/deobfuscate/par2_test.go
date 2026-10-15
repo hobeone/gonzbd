@@ -173,12 +173,12 @@ func TestPar2Rename_CollisionDifferent(t *testing.T) {
 	}
 }
 
-// TestPar2Rename_SkipsPar2NumberedBackupsWhenTargetExists pins that numbered
-// backup files created by external par2 repair (e.g. "ExtMovie.part03.rar.1",
+// TestPar2Rename_SkipsExcludedPar2Backups pins that numbered backup files
+// created by external par2 repair (e.g. "ExtMovie.part03.rar.1",
 // "ExtMovie.part03.rar.2") whose first 16 KiB match the par2 entry are NOT
-// renamed to ".1.rar" / ".2.rar" when the repaired target already exists on
-// disk, leaving them at ".rar.1" / ".rar.2" for Par2CleanupStage to remove.
-func TestPar2Rename_SkipsPar2NumberedBackupsWhenTargetExists(t *testing.T) {
+// renamed to ".1.rar" / ".2.rar" when excluded via Par2RenameExcluding,
+// leaving them at ".rar.1" / ".rar.2" for Par2CleanupStage to remove.
+func TestPar2Rename_SkipsExcludedPar2Backups(t *testing.T) {
 	t.Parallel()
 	jobDir := t.TempDir()
 
@@ -209,9 +209,19 @@ func TestPar2Rename_SkipsPar2NumberedBackupsWhenTargetExists(t *testing.T) {
 
 	writePar2(t, jobDir, trueName, repaired)
 
-	renames, err := testPar2Rename(t.Context(), slog.Default(), jobDir, fsutil.SanitizeOptions{})
+	root, err := os.OpenRoot(jobDir)
 	if err != nil {
-		t.Fatalf("Par2Rename: %v", err)
+		t.Fatalf("OpenRoot: %v", err)
+	}
+	defer root.Close()
+
+	exclude := map[string]struct{}{
+		trueName + ".1": {},
+		trueName + ".2": {},
+	}
+	renames, err := Par2RenameExcluding(t.Context(), slog.Default(), root, jobDir, fsutil.SanitizeOptions{}, exclude)
+	if err != nil {
+		t.Fatalf("Par2RenameExcluding: %v", err)
 	}
 	if len(renames) != 0 {
 		t.Fatalf("len(renames) = %d (%+v); want 0 (par2 .1/.2 backups must be skipped)", len(renames), renames)
@@ -225,42 +235,6 @@ func TestPar2Rename_SkipsPar2NumberedBackupsWhenTargetExists(t *testing.T) {
 		if _, err := os.Stat(filepath.Join(jobDir, bad)); !os.IsNotExist(err) {
 			t.Errorf("unexpected colliding rename %q created on disk", bad)
 		}
-	}
-
-	cases := []struct {
-		name     string
-		cand     string
-		trueName string
-		relDst   string
-		want     bool
-	}{
-		{"single-digit backup", "ExtMovie.part03.rar.1", "ExtMovie.part03.rar", "ExtMovie.part03.rar", true},
-		{"multi-digit backup", "ExtMovie.part03.rar.12", "ExtMovie.part03.rar", "ExtMovie.part03.rar", true},
-		{"three-digit backup", "ExtMovie.part03.rar.999", "ExtMovie.part03.rar", "ExtMovie.part03.rar", true},
-		{"case-insensitive base match", "extmovie.part03.rar.1", "ExtMovie.part03.rar", "ExtMovie.part03.rar", true},
-		{"matches trueName basename when sanitized relDst differs", "Sub/Movie:Name.rar.1", "Sub/Movie:Name.rar", "Movie_Name.rar", false},
-		{"matches trueName basename directly", "Movie:Name.rar.1", "Sub/Movie:Name.rar", "Movie_Name.rar", true},
-		{"zero-padded split suffix is not backup", "ExtMovie.part03.rar.001", "ExtMovie.part03.rar", "ExtMovie.part03.rar", false},
-		{"zero suffix is not backup", "ExtMovie.part03.rar.0", "ExtMovie.part03.rar", "ExtMovie.part03.rar", false},
-		{"four-digit suffix is not backup", "ExtMovie.part03.rar.1000", "ExtMovie.part03.rar", "ExtMovie.part03.rar", false},
-		{"non-digit suffix is not backup", "ExtMovie.part03.rar.1a", "ExtMovie.part03.rar", "ExtMovie.part03.rar", false},
-		{"missing dot separator", "ExtMovie.part03.rarX1", "ExtMovie.part03.rar", "ExtMovie.part03.rar", false},
-		{"too short suffix", "ExtMovie.part03.rar.", "ExtMovie.part03.rar", "ExtMovie.part03.rar", false},
-		{"empty base", "ExtMovie.part03.rar.1", "", "", false},
-	}
-	for _, tc := range cases {
-		if got := isPar2BackupOf(tc.cand, tc.trueName, tc.relDst); got != tc.want {
-			t.Errorf("%s: isPar2BackupOf(%q, %q, %q) = %v, want %v", tc.name, tc.cand, tc.trueName, tc.relDst, got, tc.want)
-		}
-	}
-	if isPar2BackupNumber("") {
-		t.Error("isPar2BackupNumber(\"\") = true, want false")
-	}
-	if !hasPar2BackupSuffix("ExtMovie.part03.rar.1", "ExtMovie.part03.rar") {
-		t.Error("hasPar2BackupSuffix(\"ExtMovie.part03.rar.1\", \"ExtMovie.part03.rar\") = false, want true")
-	}
-	if hasPar2BackupSuffix("ExtMovie.part03.rar.001", "ExtMovie.part03.rar") {
-		t.Error("hasPar2BackupSuffix(\"ExtMovie.part03.rar.001\", \"ExtMovie.part03.rar\") = true, want false")
 	}
 }
 

@@ -28,6 +28,9 @@ All files are correct, repair is not required.
 	if ro.Status != StatusAllFilesOK {
 		t.Errorf("Status = %d, want StatusAllFilesOK", ro.Status)
 	}
+	if len(ro.DamagedTargets) != 0 {
+		t.Errorf("DamagedTargets = %v, want empty", ro.DamagedTargets)
+	}
 }
 
 func TestParseRepairOutput_RepairComplete(t *testing.T) {
@@ -56,6 +59,9 @@ Target: "data.bin" - found.
 	}
 	if ro.RepairPercent != 100.0 {
 		t.Errorf("RepairPercent = %f, want 100.0", ro.RepairPercent)
+	}
+	if len(ro.DamagedTargets) != 1 || ro.DamagedTargets[0] != "data.bin" {
+		t.Errorf("DamagedTargets = %v, want [data.bin]", ro.DamagedTargets)
 	}
 }
 
@@ -415,6 +421,9 @@ Target: "movie.srt" - found.
 	}
 	if got := ro.Renames["movie.srt"]; got != "abc123.srt" {
 		t.Errorf("Renames[movie.srt] = %q, want %q", got, "abc123.srt")
+	}
+	if len(ro.DamagedTargets) != 1 || ro.DamagedTargets[0] != "movie.srt" {
+		t.Errorf("DamagedTargets = %v, want [movie.srt]", ro.DamagedTargets)
 	}
 	if ro.RepairPercent != 100.0 {
 		t.Errorf("RepairPercent = %f, want 100.0", ro.RepairPercent)

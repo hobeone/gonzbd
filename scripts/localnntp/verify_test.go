@@ -517,8 +517,11 @@ func TestVerify_Crash_MidPar2RepairOnCompleteFile(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(jobSub, "ExtMovie.part01.rar.1"), cleanBytes, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	// File 1 on disk: repaired in place with cleanBytes.
+	// File 1 on disk: repaired in place with cleanBytes, with .1 backup present on disk as evidence repair ran.
 	if err := os.WriteFile(filepath.Join(jobSub, "ExtMovie.part02.rar"), cleanBytes, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(jobSub, "ExtMovie.part02.rar.1"), corruptBytes, 0o600); err != nil {
 		t.Fatal(err)
 	}
 	// File 2 on disk: renamed from obf03.bin to DiskName ExtMovie.part03.rar.
@@ -573,6 +576,53 @@ func TestVerify_Crash_MidPar2RepairOnCompleteFile(t *testing.T) {
 	}
 	if report.VerifiedRows != 3 {
 		t.Errorf("VerifiedRows = %d, want 3", report.VerifiedRows)
+	}
+	if report.FallbackRows != 3 {
+		t.Errorf("FallbackRows = %d, want 3", report.FallbackRows)
+	}
+
+	// Without a .1 backup on disk, clean manifest CRC must NOT be accepted when
+	// written_articles recorded a different CRC.
+	if err := os.Remove(filepath.Join(jobSub, "ExtMovie.part02.rar.1")); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Verify(t.Context(), VerifyConfig{
+		Mode:         "crash",
+		ManifestPath: manifestPath,
+		AdminDir:     adminDir,
+		DownloadDir:  downloadDir,
+		JobID:        jobID,
+	}); err == nil {
+		t.Fatal("expected error when clean manifest CRC is used without a .1 repair backup on disk")
+	}
+	if err := os.WriteFile(filepath.Join(jobSub, "ExtMovie.part02.rar.1"), corruptBytes, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	// Split-brain across candidates: if File 0 has two rows where row 0 is only
+	// valid in ExtMovie.part01.rar and row 1 is only valid in ExtMovie.part01.rar.1,
+	// no single candidate file is whole, so Verify must fail.
+	if _, err := db.Exec(`INSERT INTO written_articles (job_id, file_idx, art_idx, offset, length, crc32) VALUES (?, ?, ?, ?, ?, ?)`,
+		jobID, 0, 3, len(cleanBytes), len(cleanBytes), cleanCRC); err != nil {
+		t.Fatal(err)
+	}
+	bogusChunk := []byte("bogus-segment-payload-00000")
+	primarySplit := append(append([]byte{}, cleanBytes...), bogusChunk...)
+	backupSplit := append(append([]byte{}, bogusChunk...), cleanBytes...)
+	if err := os.WriteFile(filepath.Join(jobSub, "ExtMovie.part01.rar"), primarySplit, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(jobSub, "ExtMovie.part01.rar.1"), backupSplit, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Verify(t.Context(), VerifyConfig{
+		Mode:         "crash",
+		ManifestPath: manifestPath,
+		AdminDir:     adminDir,
+		DownloadDir:  downloadDir,
+		JobID:        jobID,
+	}); err == nil {
+		t.Fatal("expected error when neither primary nor .1 backup is intact across all rows of File 0")
 	}
 
 	// If a complete=1 file has bogus bytes matching neither written_articles nor

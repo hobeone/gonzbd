@@ -106,13 +106,14 @@ func (s *Par2CleanupStage) Run(ctx context.Context, job *Job) error {
 	}
 
 	// Par2 repair creates backup copies of damaged files by appending
-	// ".1", ".2" etc. (e.g. "movie.part01.rar" → "movie.part01.rar.1").
-	// Record them for deletion at finalize and exclude them from later
-	// stages (deobfuscate, unwanted, extension_cleanup).
-	backups := cleanupPar2Backups(job.DownloadDir, log)
+	// ".1", ".2" etc. (e.g. "movie.part01.rar" → "movie.part01.rar.1") and
+	// records them in job.par2Backups. Promote them to pendingDeletions so
+	// subsequent stages (deobfuscate, unwanted_cleanup, extension_cleanup)
+	// skip them and finalize deletes them after moving the job.
 	var backupCleaned int
-	for _, backup := range backups {
-		if job.recordPendingDeletion(filepath.Join(job.DownloadDir, backup)) {
+	for _, backup := range job.par2Backups {
+		abs := filepath.Join(job.DownloadDir, backup)
+		if _, err := os.Lstat(abs); err == nil && job.recordPendingDeletion(abs) {
 			line := "Queued par2 backup file for deletion at finalize: " + filepath.Base(backup)
 			job.OutputLines = append(job.OutputLines, "[par2_cleanup] "+line)
 			if job.OnOutput != nil {

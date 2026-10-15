@@ -361,14 +361,6 @@ func RunScript(ctx context.Context, scriptPath string, in ScriptInput) ScriptRes
 	// are also killed and the stdout pipe closes promptly.
 	setProcessGroup(cmd)
 
-	// Override the default Cancel to kill the entire process group rather
-	// than just the direct process. This ensures cmd.Wait() returns promptly
-	// even when the script has spawned grandchildren.
-	cmd.Cancel = func() error {
-		killProcessGroup(cmd)
-		return nil
-	}
-
 	streamer := cmdutil.NewLineStreamerCapped(in.OnLine, MaxLogBytes)
 	cmd.Stdout = streamer
 	cmd.Stderr = streamer
@@ -393,10 +385,6 @@ func RunScript(ctx context.Context, scriptPath string, in ScriptInput) ScriptRes
 				cmd.Dir = in.FinalDir
 			}
 			setProcessGroup(cmd)
-			cmd.Cancel = func() error {
-				killProcessGroup(cmd)
-				return nil
-			}
 			streamer = cmdutil.NewLineStreamerCapped(in.OnLine, MaxLogBytes)
 			cmd.Stdout = streamer
 			cmd.Stderr = streamer

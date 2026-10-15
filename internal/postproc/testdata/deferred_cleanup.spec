@@ -70,11 +70,13 @@ file internal/postproc/stage_par2cleanup.go
 [par2_cleanup skips recording backup files for deletion]
 file internal/postproc/stage_par2cleanup.go
 --- anchor
-	for _, backup := range backups {
-		if job.recordPendingDeletion(filepath.Join(job.DownloadDir, backup)) {
+	for _, backup := range job.par2Backups {
+		abs := filepath.Join(job.DownloadDir, backup)
+		if _, err := os.Lstat(abs); err == nil && job.recordPendingDeletion(abs) {
 --- replace
-	for _, backup := range backups {
-		if false && job.recordPendingDeletion(filepath.Join(job.DownloadDir, backup)) {
+	for _, backup := range job.par2Backups {
+		abs := filepath.Join(job.DownloadDir, backup)
+		if false && job.recordPendingDeletion(abs) {
 --- end
 
 [sample_cleanup does not skip pending deletions]
@@ -88,7 +90,7 @@ file internal/postproc/sample_cleanup.go
 [recover_par2_names does not exclude pending deletions]
 file internal/postproc/stage_par2names.go
 --- anchor
-	renames, err := deobfuscate.Par2RenameExcluding(ctx, log, root, job.DownloadDir, job.Sanitize, job.pendingDeletionSet())
+	renames, err := deobfuscate.Par2RenameExcluding(ctx, log, root, job.DownloadDir, job.Sanitize, job.par2RenameExclusions())
 --- replace
 	renames, err := deobfuscate.Par2RenameExcluding(ctx, log, root, job.DownloadDir, job.Sanitize, nil)
 --- end

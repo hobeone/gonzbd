@@ -240,7 +240,7 @@ func serveMode(configPath, listenOverride, logLevelsOverride, pidPath string, ve
 		return fmt.Errorf("build app: %w", err)
 	}
 
-	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM, syscall.SIGHUP, syscall.SIGQUIT)
 	defer cancel()
 
 	if err := application.Start(ctx); err != nil {
@@ -1020,7 +1020,7 @@ func run(configPath, nzbPath, logLevelsOverride string, verbose bool) error {
 		return fmt.Errorf("build app: %w", err)
 	}
 
-	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM, syscall.SIGHUP, syscall.SIGQUIT)
 	defer cancel()
 
 	if err := application.Start(ctx); err != nil {

@@ -1,18 +1,43 @@
 pkg ./internal/postproc/
-run TestCleanupPar2Backups_ArbitraryExtensionsAndNoZeroPaddedSplit
+run TestCleanupPar2Backups_ScopedToRepairedTargetsAndSkipsDirs
 
-[par2BackupRe restricted to hardcoded extension list]
+[existing map includes directories as valid repaired targets]
 file internal/postproc/stage_repair.go
 --- anchor
-var par2BackupRe = regexp.MustCompile(`(?i)\.[a-z0-9]{1,10}\.[1-9]\d{0,2}$`)
+		if !e.IsDir() {
+			existing[e.Name()] = true
+		}
 --- replace
-var par2BackupRe = regexp.MustCompile(`(?i)\.(rar|r\d+|7z|zip|mkv|avi|mp4|flac|mp3|srt|nfo)\.[1-9]\d{0,2}$`)
+		existing[e.Name()] = true
 --- end
 
-[par2BackupRe accepts zero-padded split suffix]
+[unrepaired files are treated as repaired targets]
 file internal/postproc/stage_repair.go
 --- anchor
-var par2BackupRe = regexp.MustCompile(`(?i)\.[a-z0-9]{1,10}\.[1-9]\d{0,2}$`)
+		if _, ok := repairedTargets[originalName]; !ok {
+			continue
+		}
 --- replace
-var par2BackupRe = regexp.MustCompile(`(?i)\.[a-z0-9]{1,10}\.\d{1,3}$`)
+		if false {
+			continue
+		}
+--- end
+
+[zero-padded split suffix accepted as par2 backup number]
+file internal/postproc/stage_repair.go
+--- anchor
+	if suffix == "" || len(suffix) > 3 || suffix[0] < '1' || suffix[0] > '9' {
+--- replace
+	if suffix == "" || len(suffix) > 3 || suffix[0] < '0' || suffix[0] > '9' {
+--- end
+
+[par2Backups omitted from par2RenameExclusions]
+file internal/postproc/stages.go
+--- anchor
+	for _, rel := range j.par2Backups {
+		set[rel] = struct{}{}
+	}
+--- replace
+	for range j.par2Backups {
+	}
 --- end
