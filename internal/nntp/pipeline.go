@@ -177,8 +177,8 @@ func (c *Conn) runReader() {
 	defer close(c.readerDone)
 
 	for {
-		// Idle timeout is enforced per-Read by idleTimeoutReader
-		// wrapping nc, so no per-command SetReadDeadline is needed.
+		// Idle timeout is enforced per-Read by idleTimeoutReader while a
+		// command is in flight, and disarmed when no command is in flight.
 		line, err := readResponseLine(c.br)
 		if err != nil {
 			c.finishReader(err)
@@ -238,6 +238,7 @@ func (c *Conn) runReader() {
 		}
 		pc.result = res
 		close(pc.done)
+		c.itr.endCmd()
 
 		// Pull the semaphore slot back now that the command is
 		// complete. Orphaned commands still land here — the caller
@@ -271,6 +272,7 @@ func (c *Conn) submit(pc *pendingCmd, cmd []byte) error {
 		return c.closeError()
 	}
 	c.pending = append(c.pending, pc)
+	c.itr.beginCmd()
 	c.pendingLock.Unlock()
 
 	if _, err := c.bw.Write(cmd); err != nil {
@@ -292,11 +294,13 @@ func (c *Conn) submit(pc *pendingCmd, cmd []byte) error {
 // FIFO alone rather than scrambling the order.
 func (c *Conn) unappendPending(pc *pendingCmd) {
 	c.pendingLock.Lock()
-	defer c.pendingLock.Unlock()
 	n := len(c.pending)
-	if n > 0 && c.pending[n-1] == pc {
+	removed := n > 0 && c.pending[n-1] == pc
+	if removed {
 		c.pending = c.pending[:n-1]
+		c.itr.endCmd()
 	}
+	c.pendingLock.Unlock()
 }
 
 // popPending removes and returns the head of the pending FIFO, or nil
