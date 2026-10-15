@@ -70,11 +70,11 @@ file internal/postproc/stage_par2cleanup.go
 [par2_cleanup skips recording backup files for deletion]
 file internal/postproc/stage_par2cleanup.go
 --- anchor
-	for _, backup := range job.par2Backups {
+	for _, backup := range candidates {
 		abs := filepath.Join(job.DownloadDir, backup)
 		if _, err := os.Lstat(abs); err == nil && job.recordPendingDeletion(abs) {
 --- replace
-	for _, backup := range job.par2Backups {
+	for _, backup := range candidates {
 		abs := filepath.Join(job.DownloadDir, backup)
 		if false && job.recordPendingDeletion(abs) {
 --- end

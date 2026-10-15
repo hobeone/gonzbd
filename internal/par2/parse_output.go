@@ -1,6 +1,7 @@
 package par2
 
 import (
+	"os"
 	"regexp"
 	"strconv"
 	"strings"
@@ -153,7 +154,7 @@ func ParseRepairOutput(output string) *RepairOutput {
 	inExtraFiles := false
 	verified := false // true once "Repair is required" is seen
 
-	for rawLine := range strings.SplitSeq(output, "\n") {
+	for rawLine := range strings.FieldsFuncSeq(output, func(r rune) bool { return r == '\n' || r == '\r' }) {
 		line := strings.TrimSpace(rawLine)
 		if line == "" {
 			continue
@@ -380,4 +381,35 @@ func parseFinalStateOrFailure(line string, ro *RepairOutput, inVerify, inExtraFi
 			}
 		}
 	}
+}
+
+// IsBackupNumber reports whether suffix is a par2 backup index ("1".."999",
+// non-zero-padded) as emitted by par2cmdline when renaming a damaged file to
+// "<target>.1", "<target>.2", etc.
+func IsBackupNumber(suffix string) bool {
+	if suffix == "" || len(suffix) > 3 || suffix[0] < '1' || suffix[0] > '9' {
+		return false
+	}
+	for i := 1; i < len(suffix); i++ {
+		if suffix[i] < '0' || suffix[i] > '9' {
+			return false
+		}
+	}
+	return true
+}
+
+// IsBackupOfVerifiedTarget reports whether candidateName is a "<targetName>.<N>"
+// par2 backup file alongside an existing regular file targetName whose 16 KiB
+// MD5 equals wantHash (#768).
+func IsBackupOfVerifiedTarget(root *os.Root, candidateName, targetName string, wantHash [16]byte) bool {
+	suffix, ok := strings.CutPrefix(candidateName, targetName+".")
+	if !ok || !IsBackupNumber(suffix) {
+		return false
+	}
+	info, err := root.Lstat(targetName)
+	if err != nil || !info.Mode().IsRegular() {
+		return false
+	}
+	targetHash, err := ComputeHash16kRoot(root, targetName)
+	return err == nil && targetHash == wantHash
 }

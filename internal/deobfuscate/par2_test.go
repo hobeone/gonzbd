@@ -530,3 +530,42 @@ func TestDeobfuscateHelpersAndExcluding(t *testing.T) {
 		t.Errorf("identical obfuscated file still exists: err=%v", err)
 	}
 }
+
+func TestPar2Rename_SkipsBackupOfVerifiedTargetWithoutExclusions(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	log := slog.New(slog.DiscardHandler)
+
+	prefix := strings.Repeat("A", 16*1024)
+	repairedData := []byte(prefix + "repaired-tail")
+	damagedBackupData := []byte(prefix + "damaged-tail!")
+
+	for name, data := range map[string][]byte{
+		"ExtMovie.part03.rar":   repairedData,
+		"ExtMovie.part03.rar.1": damagedBackupData,
+	} {
+		if err := os.WriteFile(filepath.Join(dir, name), data, 0o600); err != nil {
+			t.Fatalf("WriteFile %s: %v", name, err)
+		}
+	}
+
+	writePar2(t, dir, "ExtMovie.part03.rar", repairedData)
+
+	root, err := os.OpenRoot(dir)
+	if err != nil {
+		t.Fatalf("OpenRoot: %v", err)
+	}
+	defer root.Close()
+
+	renames, err := Par2Rename(t.Context(), log, root, dir, fsutil.SanitizeOptions{})
+	if err != nil {
+		t.Fatalf("Par2Rename: %v", err)
+	}
+	if len(renames) != 0 {
+		t.Fatalf("Par2Rename renamed par2 backup without exclusions: %+v", renames)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "ExtMovie.part03.rar.1")); err != nil {
+		t.Errorf("ExtMovie.part03.rar.1 missing after Par2Rename: %v", err)
+	}
+}

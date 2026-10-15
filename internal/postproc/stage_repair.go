@@ -250,6 +250,8 @@ func (s *RepairStage) processPar2Set(
 		return fmt.Errorf("repair %q: pre-repair containment check: %w", set.Name, cErr)
 	}
 
+	beforeRepair := snapshotNonDirEntries(job.DownloadDir)
+
 	// Dispatch: native par2engine vs external par2 binary.
 	res, err := dispatchRepairTool(ctx, log, job, main, dataFiles, repairOpts, useGoPar2Val, goPar2FallbackVal)
 
@@ -262,7 +264,7 @@ func (s *RepairStage) processPar2Set(
 		job.OutputLines = append(job.OutputLines, toolOutputLines(res.Output)...)
 	}
 
-	return s.handleRepairResult(ctx, log, job, set, res, err)
+	return s.handleRepairResult(ctx, log, job, set, beforeRepair, res, err)
 }
 
 // handleRepairResult evaluates the repair result: classifies errors, records failures,
@@ -272,6 +274,7 @@ func (s *RepairStage) handleRepairResult(
 	log *slog.Logger,
 	job *Job,
 	set par2.Set,
+	beforeRepair map[string]struct{},
 	res par2.RepairResult,
 	err error,
 ) error {
@@ -310,7 +313,7 @@ func (s *RepairStage) handleRepairResult(
 		return fmt.Errorf("repair %q: unsuccessful (exit=%d)", set.Name, res.ExitCode)
 	}
 
-	recordRepairSuccess(ctx, log, set, job, res)
+	recordRepairSuccess(ctx, log, set, job, beforeRepair, res)
 	return nil
 }
 
@@ -414,7 +417,7 @@ func nativeRepairReason(res par2.RepairResult, err error) string {
 // protects joinables and repair sources from premature cleanup deletion.
 //
 // The verdict itself is not recorded anywhere that outlives the run.
-func recordRepairSuccess(ctx context.Context, log *slog.Logger, set par2.Set, job *Job, res par2.RepairResult) {
+func recordRepairSuccess(ctx context.Context, log *slog.Logger, set par2.Set, job *Job, beforeRepair map[string]struct{}, res par2.RepairResult) {
 	logf(ctx, log, job, slog.LevelInfo, "Par2 repair %q succeeded", set.Name)
 
 	// M7: record par2 files as consumed for cleanup protection.
@@ -466,9 +469,23 @@ func recordRepairSuccess(ctx context.Context, log *slog.Logger, set par2.Set, jo
 	for canonical := range res.Parsed.Renames {
 		repairedTargets[canonical] = struct{}{}
 	}
-	for _, backup := range cleanupPar2Backups(job.DownloadDir, repairedTargets, log) {
+	for _, backup := range cleanupPar2Backups(job.DownloadDir, beforeRepair, repairedTargets, log) {
 		job.recordPar2Backup(filepath.Join(job.DownloadDir, backup))
 	}
+}
+
+func snapshotNonDirEntries(dir string) map[string]struct{} {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return nil
+	}
+	snap := make(map[string]struct{}, len(entries))
+	for _, e := range entries {
+		if !e.IsDir() {
+			snap[e.Name()] = struct{}{}
+		}
+	}
+	return snap
 }
 
 // cleanupPar2Backups finds ".N" backup files (".1"..".999", non-zero-padded)
@@ -477,9 +494,10 @@ func recordRepairSuccess(ctx context.Context, log *slog.Logger, set par2.Set, jo
 // deletion at finalize (#768).
 // When par2 repairs a damaged file "movie.rar", it renames the damaged
 // original to "movie.rar.1" and writes the repaired data to "movie.rar".
-// A candidate "<target>.<N>" is returned when "<target>" is in repairedTargets
-// and exists alongside the backup as a non-directory entry.
-func cleanupPar2Backups(dir string, repairedTargets map[string]struct{}, log *slog.Logger) []string {
+// A candidate "<target>.<N>" is returned when it was not present in
+// beforeRepair, "<target>" is in repairedTargets, and "<target>" exists
+// alongside the backup as a non-directory entry.
+func cleanupPar2Backups(dir string, beforeRepair, repairedTargets map[string]struct{}, log *slog.Logger) []string {
 	if len(repairedTargets) == 0 {
 		return nil
 	}
@@ -502,10 +520,13 @@ func cleanupPar2Backups(dir string, repairedTargets map[string]struct{}, log *sl
 			continue
 		}
 		name := e.Name()
+		if _, existedBefore := beforeRepair[name]; existedBefore {
+			continue
+		}
 		// Extract the original filename by stripping the trailing ".N" suffix.
 		// e.g. "movie.part01.rar.1" → "movie.part01.rar"
 		lastDot := strings.LastIndexByte(name, '.')
-		if lastDot <= 0 || !isPar2BackupNumber(name[lastDot+1:]) {
+		if lastDot <= 0 || !par2.IsBackupNumber(name[lastDot+1:]) {
 			continue
 		}
 		originalName := name[:lastDot]
@@ -522,18 +543,6 @@ func cleanupPar2Backups(dir string, repairedTargets map[string]struct{}, log *sl
 		removed = append(removed, name)
 	}
 	return removed
-}
-
-func isPar2BackupNumber(suffix string) bool {
-	if suffix == "" || len(suffix) > 3 || suffix[0] < '1' || suffix[0] > '9' {
-		return false
-	}
-	for i := 1; i < len(suffix); i++ {
-		if suffix[i] < '0' || suffix[i] > '9' {
-			return false
-		}
-	}
-	return true
 }
 
 // listNonPar2Files returns the absolute paths of all non-directory,

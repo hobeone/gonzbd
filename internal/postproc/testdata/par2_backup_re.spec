@@ -1,5 +1,5 @@
 pkg ./internal/postproc/
-run TestCleanupPar2Backups_ScopedToRepairedTargetsAndSkipsDirs
+run TestCleanupPar2Backups_ScopedToRepairedTargetsAndSkipsDirs|TestRepairStage_ExternalPar2RecordsBackupAndCrashRerunCleansIt
 
 [existing map includes directories as valid repaired targets]
 file internal/postproc/stage_repair.go
@@ -9,6 +9,18 @@ file internal/postproc/stage_repair.go
 		}
 --- replace
 		existing[e.Name()] = true
+--- end
+
+[pre-existing .N files before repair are treated as newly created par2 backups]
+file internal/postproc/stage_repair.go
+--- anchor
+		if _, existedBefore := beforeRepair[name]; existedBefore {
+			continue
+		}
+--- replace
+		if false {
+			continue
+		}
 --- end
 
 [unrepaired files are treated as repaired targets]
@@ -23,14 +35,6 @@ file internal/postproc/stage_repair.go
 		}
 --- end
 
-[zero-padded split suffix accepted as par2 backup number]
-file internal/postproc/stage_repair.go
---- anchor
-	if suffix == "" || len(suffix) > 3 || suffix[0] < '1' || suffix[0] > '9' {
---- replace
-	if suffix == "" || len(suffix) > 3 || suffix[0] < '0' || suffix[0] > '9' {
---- end
-
 [par2Backups omitted from par2RenameExclusions]
 file internal/postproc/stages.go
 --- anchor
@@ -40,4 +44,12 @@ file internal/postproc/stages.go
 --- replace
 	for range j.par2Backups {
 	}
+--- end
+
+[Par2CleanupStage omits hash-verified par2 backup discovery on crash rerun]
+file internal/postproc/stage_par2cleanup.go
+--- anchor
+	candidates = append(candidates, findVerifiedPar2Backups(job.DownloadDir, sets, job.Sanitize, s.ParseOpts, log)...)
+--- replace
+	_ = findVerifiedPar2Backups
 --- end

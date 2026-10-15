@@ -1,6 +1,8 @@
 package par2
 
 import (
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -430,5 +432,84 @@ Target: "movie.srt" - found.
 	}
 	if ro.Phase != PhaseVerifyingRepair {
 		t.Errorf("Phase = %d, want PhaseVerifyingRepair", ro.Phase)
+	}
+}
+
+func TestParseRepairOutput_CRDelimitedProgressLines(t *testing.T) {
+	t.Parallel()
+	// Real par2cmdline (1.1.1 and turbo) emits Target: and File: lines on the
+	// same \n-delimited line as preceding \r-terminated "Scanning: NN.N%"
+	// progress lines.
+	output := "Verifying source files:\n" +
+		"Opening: \"a.rar\"\n" +
+		"Scanning: 10.0%\rScanning: 94.2%\rTarget: \"a.rar\" - damaged. Found 12 of 13 data blocks.\n" +
+		"Scanning extra files:\n" +
+		"Opening: \"obf.bin\"\n" +
+		"Scanning: 50.0%\rScanning: 99.9%\rFile: \"obf.bin\" - is a match for \"b.rar\".\n" +
+		"Repair is required.\n" +
+		"1 file(s) exist but are damaged.\n" +
+		"Repair is possible.\n" +
+		"Repairing: 10.0%\rRepairing: 100.0%\rRepair complete.\n"
+
+	ro := ParseRepairOutput(output)
+	if !ro.Finished || ro.Status != StatusRepairComplete {
+		t.Errorf("Finished=%v Status=%v, want true/%v", ro.Finished, ro.Status, StatusRepairComplete)
+	}
+	if len(ro.DamagedTargets) != 1 || ro.DamagedTargets[0] != "a.rar" {
+		t.Errorf("DamagedTargets = %v, want [a.rar]", ro.DamagedTargets)
+	}
+	if got := ro.Renames["b.rar"]; got != "obf.bin" {
+		t.Errorf("Renames[b.rar] = %q, want %q", got, "obf.bin")
+	}
+}
+
+func TestIsBackupOfVerifiedTarget(t *testing.T) {
+	t.Parallel()
+
+	if !IsBackupNumber("1") || !IsBackupNumber("999") || IsBackupNumber("") || IsBackupNumber("01") || IsBackupNumber("1000") || IsBackupNumber("1a") {
+		t.Error("IsBackupNumber classification failed")
+	}
+
+	dir := t.TempDir()
+	targetData := []byte("verified-target-bytes")
+	if err := os.WriteFile(filepath.Join(dir, "movie.rar"), targetData, 0o600); err != nil {
+		t.Fatalf("WriteFile movie.rar: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "movie.rar.1"), targetData, 0o600); err != nil {
+		t.Fatalf("WriteFile movie.rar.1: %v", err)
+	}
+	if err := os.MkdirAll(filepath.Join(dir, "subdir.rar"), 0o750); err != nil {
+		t.Fatalf("MkdirAll subdir.rar: %v", err)
+	}
+
+	root, err := os.OpenRoot(dir)
+	if err != nil {
+		t.Fatalf("OpenRoot: %v", err)
+	}
+	defer root.Close()
+
+	wantHash, err := ComputeHash16kRoot(root, "movie.rar")
+	if err != nil {
+		t.Fatalf("ComputeHash16kRoot: %v", err)
+	}
+
+	if !IsBackupOfVerifiedTarget(root, "movie.rar.1", "movie.rar", wantHash) {
+		t.Error("IsBackupOfVerifiedTarget(movie.rar.1, movie.rar, wantHash) = false, want true")
+	}
+	if IsBackupOfVerifiedTarget(root, "movie.rar.01", "movie.rar", wantHash) {
+		t.Error("IsBackupOfVerifiedTarget accepted zero-padded .01 suffix")
+	}
+	if IsBackupOfVerifiedTarget(root, "other.rar.1", "movie.rar", wantHash) {
+		t.Error("IsBackupOfVerifiedTarget accepted mismatched target prefix")
+	}
+	if IsBackupOfVerifiedTarget(root, "subdir.rar.1", "subdir.rar", wantHash) {
+		t.Error("IsBackupOfVerifiedTarget accepted directory target")
+	}
+	if IsBackupOfVerifiedTarget(root, "missing.rar.1", "missing.rar", wantHash) {
+		t.Error("IsBackupOfVerifiedTarget accepted missing target")
+	}
+	var wrongHash [16]byte
+	if IsBackupOfVerifiedTarget(root, "movie.rar.1", "movie.rar", wrongHash) {
+		t.Error("IsBackupOfVerifiedTarget accepted mismatched target 16 KiB hash")
 	}
 }

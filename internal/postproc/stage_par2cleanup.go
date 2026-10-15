@@ -5,8 +5,10 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync/atomic"
 
+	"github.com/hobeone/gonzbd/internal/fsutil"
 	"github.com/hobeone/gonzbd/internal/par2"
 )
 
@@ -107,11 +109,16 @@ func (s *Par2CleanupStage) Run(ctx context.Context, job *Job) error {
 
 	// Par2 repair creates backup copies of damaged files by appending
 	// ".1", ".2" etc. (e.g. "movie.part01.rar" → "movie.part01.rar.1") and
-	// records them in job.par2Backups. Promote them to pendingDeletions so
+	// records them in job.par2Backups. Also scan for "<target>.<N>" backups
+	// whose 16 KiB MD5 matches an existing par2-verified "<target>" so a crash
+	// between repair and finalize still cleans them up on rerun when
+	// job.par2Backups is empty. Promote them to pendingDeletions so
 	// subsequent stages (deobfuscate, unwanted_cleanup, extension_cleanup)
 	// skip them and finalize deletes them after moving the job.
 	var backupCleaned int
-	for _, backup := range job.par2Backups {
+	candidates := append([]string(nil), job.par2Backups...)
+	candidates = append(candidates, findVerifiedPar2Backups(job.DownloadDir, sets, job.Sanitize, s.ParseOpts, log)...)
+	for _, backup := range candidates {
 		abs := filepath.Join(job.DownloadDir, backup)
 		if _, err := os.Lstat(abs); err == nil && job.recordPendingDeletion(abs) {
 			line := "Queued par2 backup file for deletion at finalize: " + filepath.Base(backup)
@@ -127,4 +134,69 @@ func (s *Par2CleanupStage) Run(ctx context.Context, job *Job) error {
 	}
 
 	return nil
+}
+
+func findVerifiedPar2Backups(dir string, sets []par2.Set, opts fsutil.SanitizeOptions, parseOpts par2.ParseOptions, log *slog.Logger) []string {
+	if len(sets) == 0 {
+		return nil
+	}
+	root, err := os.OpenRoot(dir)
+	if err != nil {
+		return nil
+	}
+	defer root.Close() //nolint:errcheck // read-only close
+
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return nil
+	}
+
+	hashToTarget := make(map[[16]byte]string)
+	knownTargets := make(map[string]struct{})
+	for _, set := range sets {
+		pf := set.ParseFile()
+		if pf == "" {
+			continue
+		}
+		descs, derr := par2.ParseFileDescriptions(pf, parseOpts)
+		if derr != nil {
+			log.Warn("par2 cleanup: failed to parse par2 descriptions", "path", pf, "err", derr)
+			continue
+		}
+		for _, d := range descs {
+			relDst := fsutil.SanitizeFilename(d.FileName, opts)
+			hashToTarget[d.Hash16k] = relDst
+			knownTargets[relDst] = struct{}{}
+		}
+	}
+	if len(hashToTarget) == 0 {
+		return nil
+	}
+
+	var backups []string
+	for _, e := range entries {
+		if !e.Type().IsRegular() {
+			continue
+		}
+		name := e.Name()
+		if _, isTarget := knownTargets[name]; isTarget {
+			continue
+		}
+		lastDot := strings.LastIndexByte(name, '.')
+		if lastDot <= 0 || !par2.IsBackupNumber(name[lastDot+1:]) {
+			continue
+		}
+		if _, isTarget := knownTargets[name[:lastDot]]; !isTarget {
+			continue
+		}
+		hash, herr := par2.ComputeHash16kRoot(root, name)
+		if herr != nil {
+			continue
+		}
+		relDst, ok := hashToTarget[hash]
+		if ok && par2.IsBackupOfVerifiedTarget(root, name, relDst, hash) {
+			backups = append(backups, name)
+		}
+	}
+	return backups
 }
