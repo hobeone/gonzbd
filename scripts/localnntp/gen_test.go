@@ -298,12 +298,12 @@ func TestGenerateRelease_EndToEnd(t *testing.T) {
 			}
 		}
 	}
-	nzbRaw, err := os.ReadFile(filepath.Join(dir, "release.nzb"))
+	nzbRaw, err := os.ReadFile(filepath.Join(dir, "synth-movie.nzb"))
 	if err != nil {
-		t.Fatalf("release.nzb missing: %v", err)
+		t.Fatalf("synth-movie.nzb missing: %v", err)
 	}
 	if !strings.Contains(string(nzbRaw), "<nzb") {
-		t.Errorf("release.nzb does not contain <nzb")
+		t.Errorf("synth-movie.nzb does not contain <nzb")
 	}
 
 	// Verify validation errors on bad GenConfig.

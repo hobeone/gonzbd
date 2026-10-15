@@ -25,7 +25,7 @@ The tool consists of three integrated subsystems:
 |---|---|---|
 | `gen` | Generates synthetic RAR5+PAR2 releases and NZB XML | `--dir`, `--size`, `--volumes`, `--par2-redundancy`, `--seed` |
 | `serve` | Runs disk-backed NNTP server & HTTP control API | `--dir`, `--listen`, `--control`, `--rate-mbps`, `--fault` |
-| `verify` | Validates SQLite state against disk & server stats | `--mode` (`crash`\|`complete`), `--manifest`, `--admin-dir`, `--download-dir`, `--complete-dir`, `--server`, `--snapshot-as`, `--snapshot` |
+| `verify` | Validates SQLite state against disk & server stats | `--mode` (`crash`\|`complete`), `--manifest`, `--admin-dir`, `--download-dir`, `--complete-dir`, `--server`, `--snapshot-as`, `--snapshot`, `--expect-archive-cleanup` |
 
 ### HTTP Control API Endpoints
 
@@ -57,8 +57,8 @@ Fault rules match against requested message IDs, target filenames, part numbers,
 ### Format Specification Syntax
 
 Specs use `<action>:<selector>:<params>` format:
-- `drop:part01.rar:parts=1,2:max=1` — Drops segments 1 and 2 of `part01.rar` at most once.
-- `corrupt-payload:part03.rar:bytes=100:max=2` — Flips 100 bytes inside the payload of `part03.rar`.
+- `drop:part01.rar:parts=1,2:max=1` — Drops each named segment (parts 1 and 2) of `part01.rar` at most once per part (`parts=` and `msgid=` rules enforce `max` per targeted article).
+- `corrupt-payload:part03.rar:bytes=100:max=2` — Flips 100 bytes inside the payload of up to 2 segments of `part03.rar` in total (whole-file / role rules without `parts=` or `msgid=` enforce `max` across the rule).
 - `corrupt-wire:role=par2_volume:rate=0.05` — Corrupts yEnc framing for 5% of PAR2 volume articles.
 - `stall:timeout=10s:msgid=<art123@localnntp.test>` — Delays serving article `art123` by 10 seconds.
 
@@ -86,7 +86,7 @@ go run ./scripts/localnntp gen \
 This writes:
 - `/tmp/fake-usenet/movie/files/` — The split `.partNN.rar` and `.par2` files.
 - `/tmp/fake-usenet/movie/manifest.json` — Release structural manifest and SHA-256 expected outputs.
-- `/tmp/fake-usenet/movie/release.nzb` — Standard NZB XML pointing to synthetic Message-IDs.
+- `/tmp/fake-usenet/movie/StressMovie.nzb` — Standard NZB XML pointing to synthetic Message-IDs.
 - `/tmp/fake-usenet/movie/articles.pack` — Pre-encoded yEnc articles pack file.
 
 ### Step 2: Start the Local NNTP Server
@@ -142,7 +142,7 @@ sleep 1
 
 # Enqueue the job via SABnzbd compatibility API
 curl -sf "http://127.0.0.1:18089/api?mode=addfile&output=json&apikey=0123456789abcdef" \
-  -F "nzbfile=@/tmp/fake-usenet/movie/release.nzb"
+  -F "nzbfile=@/tmp/fake-usenet/movie/StressMovie.nzb"
 ```
 
 ### Step 4: Deliver `SIGKILL` During Active Download
@@ -225,8 +225,7 @@ When validating recovery, test across these specific lifecycle checkpoints:
    - Note that permanent `430` failures (`drop`) promote `.vol*.par2` recovery volumes inline inside `Job.MarkArticleFailed`, whereas `corrupt-payload` (valid yEnc CRC with corrupted payload bytes) keeps `.vol*.par2` deferred (`FetchIfNeeded`) until initial download finishes and `Assessing` (`maybeReleaseRecoveryVolumes`) verifies assembled CRCs against the `.par2` index.
    - Inject `corrupt-payload:part04.rar:parts=2:bytes=64:max=1` and wait for `"on-demand par2: repair needed, fetching recovery volumes"` in `gonzbd.log` to deterministically kill during the second recovery download wave.
 3. **Killing during `Repairing` / `Extracting`**:
-   <!-- doccite:ok internal/fsutil/tempname.go — added on main in commit 766a1598 (PR #963) -->
-   - For mid-repair `SIGKILL`: wait for `<target>.par2engine-*.tmp` in the incomplete job directory (written by `par2engine` during out-of-place repair) and `kill -9`. On restart, `sweepTempFiles` (`internal/postproc/postproc.go`) removes files matched by `fsutil.IsTempFile` (`internal/fsutil/tempname.go`): `.gonzbd-tmp-<16 lowercase hex>` and, once commit `766a1598` (PR #963) is included, `<target>.par2engine-<16 uppercase base32>.tmp` before `recover_par2_names`. (On builds without `766a1598`, `fsutil.IsTempFile` does not match `.par2engine-*.tmp`, leaving the temp file in the job directory after a mid-repair kill.)
+   - For mid-repair `SIGKILL`: wait for `<target>.par2engine-*.tmp` in the incomplete job directory (written by `par2engine` during out-of-place repair) and `kill -9`. On restart, `sweepTempFiles` (`internal/postproc/postproc.go`) removes names matched by `fsutil.IsTempFile` (`internal/fsutil/rootedcreate.go`), including `.gonzbd-tmp-<16 lowercase hex>` and `<target>.par2engine-<16 uppercase base32>.tmp`, before `recover_par2_names`.
    - For mid-extraction `SIGKILL`: wait for `.gonzbd-tmp-unpack-*/.gonzbd-tmp-*` in the complete job directory (while `go_unrar`'s `writeEntrySafely` streams an entry before renaming it to the final member name) and `kill -9`. On restart, `sweepTempFiles` removes `.gonzbd-tmp-unpack-*` and re-extracts cleanly.
 4. **Killing right after final directory move**:
    - Kills when job is inserted into `history` table.

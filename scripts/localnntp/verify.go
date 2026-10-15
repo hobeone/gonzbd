@@ -151,15 +151,6 @@ func filterMatchingCandidates(all []dispatchJobCandidate, releaseName string) []
 	if len(exact) > 0 {
 		return exact
 	}
-	var fallback []dispatchJobCandidate
-	for _, c := range all {
-		if c.name == "release" {
-			fallback = append(fallback, c)
-		}
-	}
-	if len(fallback) > 0 {
-		return fallback
-	}
 	if len(all) == 1 && all[0].name == "" {
 		return all
 	}
@@ -388,7 +379,7 @@ func verifyCrash(ctx context.Context, db *sql.DB, m *ReleaseManifest, cfg Verify
 	}
 
 	sortedFiles := sortedManifestFiles(m)
-	candidateSubdirs := []string{jobName, m.Name, "release", jobID}
+	candidateSubdirs := []string{jobName, m.Name, jobID}
 
 	openFiles := make(map[int]*os.File)
 	defer func() {
@@ -544,19 +535,6 @@ func resolveCompleteHistory(ctx context.Context, db *sql.DB, explicitID, release
 		return historyRecord{}, fmt.Errorf("multiple history rows (%d) match release %q; specify --job-id", len(exact), releaseName)
 	}
 
-	var fallback []historyRecord
-	for _, r := range records {
-		if r.name == "release" {
-			fallback = append(fallback, r)
-		}
-	}
-	if len(fallback) == 1 {
-		return fallback[0], nil
-	}
-	if len(fallback) > 1 {
-		return historyRecord{}, fmt.Errorf("multiple history rows (%d) match default release name; specify --job-id", len(fallback))
-	}
-
 	if len(records) == 1 && records[0].name == "" {
 		return records[0], nil
 	}
@@ -645,7 +623,7 @@ func checkIncompleteHygiene(downloadDir, releaseName, historyName, jobID string)
 	if downloadDir == "" {
 		return nil
 	}
-	names := []string{releaseName, historyName, "release", jobID}
+	names := []string{historyName, releaseName, jobID}
 	var checkDirs []string
 	seen := make(map[string]bool)
 	for _, n := range names {
@@ -656,10 +634,6 @@ func checkIncompleteHygiene(downloadDir, releaseName, historyName, jobID string)
 		if !seen[cand] {
 			seen[cand] = true
 			checkDirs = append(checkDirs, cand)
-		}
-		if filepath.Base(downloadDir) == n && !seen[downloadDir] {
-			seen[downloadDir] = true
-			checkDirs = append(checkDirs, downloadDir)
 		}
 	}
 	for _, dir := range checkDirs {

@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"maps"
 	"net"
 	"os"
@@ -287,6 +288,7 @@ func (s *Server) waitOnAcceptError(err error, backoff *time.Duration) bool {
 	} else {
 		*backoff = min(*backoff*2, time.Second)
 	}
+	slog.Warn("localnntp accept error, retrying", "err", err, "backoff", *backoff)
 	t := time.NewTimer(*backoff)
 	defer t.Stop()
 	select {

@@ -92,5 +92,18 @@ go run ./scripts/localnntp verify \
   --download-dir /tmp/gonzbd-test/incomplete \
   --complete-dir /tmp/gonzbd-test/complete \
   --server "http://127.0.0.1:11191" \
-  --snapshot "crash1"
+  --snapshot "crash1" \
+  --expect-archive-cleanup
 ```
+
+Flags:
+- `--mode`: Verification mode (`crash` or `complete`, required).
+- `--manifest`: Path to `manifest.json` (required).
+- `--admin-dir`: Path to `gonzbd` admin directory (required).
+- `--download-dir`: Path to `gonzbd` incomplete download directory (required).
+- `--complete-dir`: Path to `gonzbd` complete directory (required for `complete` mode).
+- `--job-id`: Explicit job ID when multiple jobs exist in SQLite (optional).
+- `--server`: HTTP control URL of `localnntp serve` (required when `--snapshot-as` or `--snapshot` is set).
+- `--snapshot-as`: Snapshot name to record on the server in `crash` mode.
+- `--snapshot`: Snapshot name to compare against in `complete` mode.
+- `--expect-archive-cleanup`: Expect `.rar` and `.par2` files to be cleaned up from `complete_dir` (default: `true`).

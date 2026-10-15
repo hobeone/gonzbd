@@ -181,9 +181,10 @@ func (e *FaultEngine) Match(target ArticleTarget) (FaultRule, bool) {
 
 // MatchAction evaluates candidate rules in order against target, considering
 // only rules whose Action is in allowed (or any action when allowed is empty).
-// When MaxFires > 0, deterministic selector rules (Rate == 0) cap fires per
-// target MessageID when MessageID is non-empty, while probabilistic rules
-// (Rate > 0) cap total fires across the rule.
+// Rules that target specific articles (len(Parts) > 0 or len(MessageIDs) > 0)
+// with Rate == 0 enforce MaxFires per target MessageID when MessageID is
+// non-empty; whole-file/role rules and probabilistic rules enforce MaxFires
+// across the rule.
 func (e *FaultEngine) MatchAction(target ArticleTarget, allowed ...FaultAction) (FaultRule, bool) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
@@ -194,7 +195,8 @@ func (e *FaultEngine) MatchAction(target ArticleTarget, allowed ...FaultAction) 
 			continue
 		}
 		if r.MaxFires > 0 {
-			if r.Rate == 0 && target.MessageID != "" {
+			perArticleBudget := (len(r.Parts) > 0 || len(r.MessageIDs) > 0) && r.Rate == 0 && target.MessageID != ""
+			if perArticleBudget {
 				if r.firedByID[target.MessageID] >= r.MaxFires {
 					continue
 				}

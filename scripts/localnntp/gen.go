@@ -491,7 +491,7 @@ func GenerateRelease(cfg GenConfig) (*ReleaseManifest, error) {
 	}
 
 	nzbBytes := BuildNZB(manifest)
-	nzbPath := filepath.Join(cfg.OutDir, "release.nzb")
+	nzbPath := filepath.Join(cfg.OutDir, cfg.Name+".nzb")
 	if err := os.WriteFile(nzbPath, nzbBytes, 0o600); err != nil {
 		return nil, fmt.Errorf("save nzb: %w", err)
 	}

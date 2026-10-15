@@ -349,6 +349,19 @@ func TestFaultEngine_MaxFires(t *testing.T) {
 	if _, ok := statSafeEngine.Match(p3); !ok {
 		t.Fatal("expected subsequent Match() to still have its MaxFires=1 budget")
 	}
+
+	// Whole-file rule without parts=/msgid= (e.g. drop:part01.rar:max=1) fires once in total across the file.
+	wholeFileRule, err := ParseFaultSpec("drop:part01.rar:max=1")
+	if err != nil {
+		t.Fatalf("ParseFaultSpec: %v", err)
+	}
+	wholeFileEngine := NewFaultEngine(1, []FaultRule{wholeFileRule})
+	if _, ok := wholeFileEngine.Match(p1); !ok {
+		t.Fatal("expected whole-file max=1 rule to fire on first segment")
+	}
+	if _, ok := wholeFileEngine.Match(p2); ok {
+		t.Fatal("expected whole-file max=1 rule NOT to fire on second segment")
+	}
 }
 
 func TestValidateFaultRule(t *testing.T) {

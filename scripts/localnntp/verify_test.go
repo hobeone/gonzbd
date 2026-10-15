@@ -1113,10 +1113,10 @@ func TestVerify_ReviewFixesAndEdgeCases(t *testing.T) {
 	if id, name, err := resolveCrashJob(ctx, db, "", "myrel"); err != nil || id != "j1" || name != "myrel" {
 		t.Fatalf("resolveCrashJob single match failed: id=%q name=%q err=%v", id, name, err)
 	}
-	// Fallback to "release" name in filterMatchingCandidates
-	cands := []dispatchJobCandidate{{id: "jr", name: "release"}}
+	// Single unnamed candidate in filterMatchingCandidates matches as test fixture fallback
+	cands := []dispatchJobCandidate{{id: "jr", name: ""}}
 	if matched := filterMatchingCandidates(cands, "custom"); len(matched) != 1 || matched[0].id != "jr" {
-		t.Fatalf("expected fallback to 'release', got %+v", matched)
+		t.Fatalf("expected single unnamed candidate fallback, got %+v", matched)
 	}
 	// Empty dispatch_jobs returns no job found error
 	_, _ = db.Exec(`DELETE FROM dispatch_jobs`)
@@ -1137,10 +1137,10 @@ func TestVerify_ReviewFixesAndEdgeCases(t *testing.T) {
 	if h, err := resolveCompleteHistory(ctx, db, "", "myrel"); err != nil || h.jobID != "h1" {
 		t.Fatalf("expected single history match h1, got %+v err=%v", h, err)
 	}
-	// Fallback to "release" name in resolveCompleteHistory
-	_, _ = db.Exec(`UPDATE history SET name = 'release' WHERE nzo_id = 'h1'`)
+	// Single unnamed history row fallback in resolveCompleteHistory
+	_, _ = db.Exec(`UPDATE history SET name = '' WHERE nzo_id = 'h1'`)
 	if h, err := resolveCompleteHistory(ctx, db, "", "custom"); err != nil || h.jobID != "h1" {
-		t.Fatalf("expected fallback to 'release' in history, got %+v err=%v", h, err)
+		t.Fatalf("expected single unnamed history row fallback, got %+v err=%v", h, err)
 	}
 
 	// 5. candidateCompleteDirs when storage/path point to a file vs directory
@@ -1166,6 +1166,12 @@ func TestVerify_ReviewFixesAndEdgeCases(t *testing.T) {
 	_ = os.MkdirAll(filepath.Join(incDir, "myrel"), 0o755)
 	if err := checkIncompleteHygiene(incDir, "myrel", "myrel", "h1"); err == nil || !strings.Contains(err.Error(), "still exists") {
 		t.Fatalf("expected empty incomplete dir to fail hygiene check, got %v", err)
+	}
+	// When downloadDir's basename equals the job name ("myrel") and the job subdir is gone, verification must pass.
+	sameBaseDownloadDir := filepath.Join(tempDir, "dl-base", "myrel")
+	_ = os.MkdirAll(sameBaseDownloadDir, 0o755)
+	if err := checkIncompleteHygiene(sameBaseDownloadDir, "myrel", "myrel", "h1"); err != nil {
+		t.Fatalf("expected checkIncompleteHygiene to pass when downloadDir basename equals job name and job subdir is gone, got %v", err)
 	}
 
 	// 7. compareSnapshotRefetches detects faulted re-fetch via Requests map and handles error statuses
