@@ -316,3 +316,91 @@ func TestApplyRenames_ReportsOnlyWhatItAchieved(t *testing.T) {
 		}
 	}
 }
+
+func TestAssessment_Undelivered(t *testing.T) {
+	t.Parallel()
+
+	t.Run("empty delivered files returns unaccounted clone", func(t *testing.T) {
+		t.Parallel()
+		a := Assessment{
+			ID: Identification{
+				Files: []Identified{
+					{OnDisk: "extra.bin", Desc: FileDesc{FileName: "extra.bin", Set: "s1"}},
+				},
+				Unaccounted: []FileDesc{
+					{FileName: "missing.bin", Set: "s1"},
+				},
+			},
+		}
+		got := a.Undelivered()
+		if len(got) != 1 || got[0].FileName != "missing.bin" {
+			t.Errorf("Undelivered() = %+v, want [missing.bin]", got)
+		}
+	})
+
+	t.Run("identified files not in delivered are returned before unaccounted", func(t *testing.T) {
+		t.Parallel()
+		a := Assessment{
+			ID: Identification{
+				Files: []Identified{
+					{OnDisk: "delivered.rar", Desc: FileDesc{FileName: "delivered.rar", Set: "s1"}},
+					{OnDisk: "payload.bin", Desc: FileDesc{FileName: "payload.bin", Set: "s1"}},
+				},
+				Unaccounted: []FileDesc{
+					{FileName: "unaccounted.bin", Set: "s1"},
+				},
+			},
+			files: []AssembledFile{
+				{FileName: "delivered.rar", CRC32: 0x11111111},
+			},
+		}
+		got := a.Undelivered()
+		want := []string{"payload.bin", "unaccounted.bin"}
+		if len(got) != len(want) {
+			t.Fatalf("Undelivered() returned %d items, want %d: %+v", len(got), len(want), got)
+		}
+		for i, w := range want {
+			if got[i].FileName != w {
+				t.Errorf("Undelivered()[%d] = %q, want %q", i, got[i].FileName, w)
+			}
+		}
+	})
+
+	t.Run("unambiguous basename match counts as delivered", func(t *testing.T) {
+		t.Parallel()
+		a := Assessment{
+			ID: Identification{
+				Files: []Identified{
+					{OnDisk: "Screens/shot.jpg", Desc: FileDesc{FileName: "Screens/shot.jpg", Set: "s1"}},
+					{OnDisk: "other.bin", Desc: FileDesc{FileName: "other.bin", Set: "s1"}},
+				},
+			},
+			files: []AssembledFile{
+				{FileName: "shot.jpg", CRC32: 0x22222222},
+			},
+		}
+		got := a.Undelivered()
+		if len(got) != 1 || got[0].FileName != "other.bin" {
+			t.Errorf("Undelivered() = %+v, want [other.bin]", got)
+		}
+	})
+
+	t.Run("ambiguous basename does not match and is returned as undelivered", func(t *testing.T) {
+		t.Parallel()
+		a := Assessment{
+			ID: Identification{
+				Files: []Identified{
+					{OnDisk: "CD1/track.flac", Desc: FileDesc{FileName: "CD1/track.flac", Set: "s1"}},
+				},
+			},
+			files: []AssembledFile{
+				{FileName: "discA/track.flac", CRC32: 0x33333333},
+				{FileName: "discB/track.flac", CRC32: 0x44444444},
+			},
+		}
+		got := a.Undelivered()
+		if len(got) != 1 || got[0].FileName != "CD1/track.flac" {
+			t.Errorf("Undelivered() = %+v, want [CD1/track.flac]", got)
+		}
+	})
+}

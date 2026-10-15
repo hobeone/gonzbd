@@ -482,8 +482,8 @@ Both par2 engines are handed one candidate list, which `RepairStage.repairSets` 
    `ParError` of a failed one would skip the `unpack` that produces the
    files. Deferral is judged per par2 set (`deferredSets` in
    `stage_quickcheck.go`, recorded in `Job.deferredPar2Sets`), on the entries
-   identification did not account for, and a set that fails any condition is
-   repaired before `unpack` as usual:
+   no delivered file was identified as (`par2.Assessment.Undelivered`), and a
+   set that fails any condition is repaired before `unpack` as usual:
 
    - `unpack` will run for the job: the stage is enabled and the job's PP is at
      least `PPUnpack` (`shouldSkipForPP`). At PP=1, or with unpack disabled,
@@ -491,7 +491,7 @@ Both par2 engines are handed one candidate list, which `RepairStage.repairSets` 
    - the set has at least one entry nothing delivered was identified as, by
      name or by content. Entries it did identify — a sidecar `.nfo` it also
      protects — do not stop the deferral; they are verified with the rest;
-   - none of those unaccounted entries is itself named as an archive
+   - none of those undelivered entries is itself named as an archive
      (`unpack.Classify`). par2 names are the poster's real names, so such a
      set protects archives (Layout A), and an obfuscated archive damaged
      inside its first 16 KB is what matches nothing there;

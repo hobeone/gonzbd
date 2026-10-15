@@ -208,12 +208,14 @@ file internal/par2/assess.go
 [the join skips the exact-name lookup]
 file internal/par2/assess.go
 --- anchor
-		d, delivered := byName[f.OnDisk]
-		if !delivered {
-			d, delivered = byBase[joinKey(f.OnDisk)]
-		}
+	if d, ok := idx.byName[onDisk]; ok {
+		return d, true
+	}
+	d, ok := idx.byBase[joinKey(onDisk)]
+	return d, ok
 --- replace
-		d, delivered := byBase[joinKey(f.OnDisk)]
+	d, ok := idx.byBase[joinKey(onDisk)]
+	return d, ok
 --- end
 
 # Verification must join on the BASENAME. Joining on the full path misses a
