@@ -66,10 +66,18 @@ file internal/postproc/stage_par2cleanup.go
 		}
 --- end
 
-[findVerifiedPar2Backups skips backup size verification]
+[findVerifiedPar2Backups skips backup size upper bound]
 file internal/postproc/stage_par2cleanup.go
 --- anchor
-		if info, ierr := e.Info(); ierr == nil && info.Size() == spec.size {
+		if ierr != nil || info.Size() <= 0 || info.Size() > spec.size {
 --- replace
-		if info, ierr := e.Info(); ierr == nil && (info.Size() == spec.size || true) {
+		if ierr != nil || info.Size() <= 0 {
+--- end
+
+[findVerifiedPar2Backups skips aligned chunk content verification]
+file internal/postproc/stage_par2cleanup.go
+--- anchor
+		if sharesAlignedChunk(root, name, relDst, info.Size()) {
+--- replace
+		if sharesAlignedChunk(root, name, relDst, info.Size()) || true {
 --- end

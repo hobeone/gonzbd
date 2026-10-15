@@ -979,9 +979,11 @@ func TestRepairStage_ExternalPar2RecordsBackupAndCrashRerunCleansIt(t *testing.T
 		t.Fatalf("WriteFile target: %v", err)
 	}
 
-	// Pre-existing legitimate payload.bin.1 that must NOT be queued as a par2 backup.
+	// Pre-existing legitimate target.1 with the EXACT same byte size as target
+	// but unrelated content; must NOT be queued as a par2 backup.
 	preExistingDot1 := filepath.Join(dir, target+".1")
-	if err := os.WriteFile(preExistingDot1, []byte("pre-existing-legit-dot1"), 0o600); err != nil {
+	unrelatedSameSize := bytes.Repeat([]byte("pre-existing-legit-dot1!"), len(payload)/24+1)[:len(payload)]
+	if err := os.WriteFile(preExistingDot1, unrelatedSameSize, 0o600); err != nil {
 		t.Fatalf("WriteFile pre-existing .1: %v", err)
 	}
 
@@ -1078,6 +1080,7 @@ func TestRepairStage_ExternalPar2RecordsBackupAndCrashRerunCleansIt(t *testing.T
 
 func TestFindVerifiedPar2Backups(t *testing.T) {
 	t.Parallel()
+	_ = sharesAlignedChunk
 
 	log := slog.New(slog.DiscardHandler)
 	payload := make([]byte, 24*1024)
@@ -1090,6 +1093,10 @@ func TestFindVerifiedPar2Backups(t *testing.T) {
 	// damagedAt100 has the same total size as payload, but differs at offset 100 (first 16 KiB).
 	damagedAt100 := slices.Clone(payload)
 	damagedAt100[100] ^= 0xff
+	// unrelatedSameSize has the exact same size as payload, but shares no aligned chunk.
+	unrelatedSameSize := bytes.Repeat([]byte("unrelated-file-content!!"), len(payload)/24+1)[:len(payload)]
+	// truncatedBackup is a short backup (missing tail articles) whose first 16 KiB matches payload.
+	truncatedBackup := slices.Clone(payload[:18*1024])
 
 	tests := []struct {
 		name        string
@@ -1109,15 +1116,17 @@ func TestFindVerifiedPar2Backups(t *testing.T) {
 			want: []string{"archive.rar.2"},
 		},
 		{
-			name: "non-member X.1 with wrong size is ignored while matching-size X.2 is returned",
+			name: "unrelated same-size X.1 is ignored while offset-100 damaged X.2 and truncated X.3 are returned",
 			parMembers: map[string][]byte{
 				"archive.rar": payload,
 			},
 			extraOnDisk: map[string][]byte{
-				"archive.rar.1": []byte("wrong-size"),
+				"archive.rar.1": unrelatedSameSize,
 				"archive.rar.2": damagedAt100,
+				"archive.rar.3": truncatedBackup,
+				"archive.rar.4": append(slices.Clone(payload), []byte("extra-tail-bytes")...),
 			},
-			want: []string{"archive.rar.2"},
+			want: []string{"archive.rar.2", "archive.rar.3"},
 		},
 	}
 

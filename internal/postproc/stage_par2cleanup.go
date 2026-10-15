@@ -1,10 +1,13 @@
 package postproc
 
 import (
+	"bytes"
 	"context"
+	"io"
 	"log/slog"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync/atomic"
 
@@ -111,11 +114,12 @@ func (s *Par2CleanupStage) Run(ctx context.Context, job *Job) error {
 	// ".1", ".2" etc. (e.g. "movie.part01.rar" → "movie.part01.rar.1") and
 	// records them in job.par2Backups. Also scan for "<target>.<N>" backups
 	// alongside an existing par2-verified "<target>" (verified intact by the
-	// gates at lines 59–73) whose size matches "<target>"'s par2 description
-	// size, so a crash between repair and finalize still cleans them up on
-	// rerun when job.par2Backups is empty — even when the original damage was
-	// in the first 16 KiB. Promote them to pendingDeletions so subsequent
-	// stages (deobfuscate, unwanted_cleanup, extension_cleanup) skip them and
+	// stage gates above) whose size is at most "<target>"'s par2 description
+	// size and that share at least one aligned chunk with "<target>", so a
+	// crash between repair and finalize still cleans them up on rerun when
+	// job.par2Backups is empty without touching unrelated "<target>.<N>"
+	// files. Promote them to pendingDeletions so subsequent stages
+	// (deobfuscate, unwanted_cleanup, extension_cleanup) skip them and
 	// finalize deletes them after moving the job.
 	var backupCleaned int
 	candidates := append([]string(nil), job.par2Backups...)
@@ -143,10 +147,12 @@ type par2TargetSpec struct {
 	size    int64
 }
 
+const par2BackupSampleChunk int64 = 16 * 1024
+
 // findVerifiedPar2Backups scans dir for non-member "<target>.<N>" files where
 // "<target>" exists as a regular file whose 16 KiB MD5 matches its par2
-// FileDescription and the backup's byte size matches the par2 FileDescription
-// FileSize (#768).
+// FileDescription, the candidate's byte size is in (0, FileSize], and the
+// candidate shares at least one aligned chunk with "<target>" (#768).
 func findVerifiedPar2Backups(dir string, sets []par2.Set, opts fsutil.SanitizeOptions, parseOpts par2.ParseOptions, log *slog.Logger) []string {
 	if len(sets) == 0 {
 		return nil
@@ -203,9 +209,57 @@ func findVerifiedPar2Backups(dir string, sets []par2.Set, opts fsutil.SanitizeOp
 		if !isTarget || !par2.IsBackupNamedFor(root, name, relDst, spec.hash16k) {
 			continue
 		}
-		if info, ierr := e.Info(); ierr == nil && info.Size() == spec.size {
+		info, ierr := e.Info()
+		if ierr != nil || info.Size() <= 0 || info.Size() > spec.size {
+			continue
+		}
+		if sharesAlignedChunk(root, name, relDst, info.Size()) {
 			backups = append(backups, name)
 		}
 	}
 	return backups
+}
+
+// sharesAlignedChunk reports whether candidateName (of size candSize > 0) and
+// targetName share at least one byte-identical aligned chunk (up to 16 KiB) at
+// the start, second chunk, middle, or tail of candidateName (#768).
+func sharesAlignedChunk(root *os.Root, candidateName, targetName string, candSize int64) bool {
+	candFile, err := root.Open(candidateName)
+	if err != nil {
+		return false
+	}
+	defer candFile.Close() //nolint:errcheck // read-only close
+
+	targetFile, err := root.Open(targetName)
+	if err != nil {
+		return false
+	}
+	defer targetFile.Close() //nolint:errcheck // read-only close
+
+	offsets := [4]int64{
+		0,
+		par2BackupSampleChunk,
+		((candSize / 2) / par2BackupSampleChunk) * par2BackupSampleChunk,
+		max(candSize-par2BackupSampleChunk, par2BackupSampleChunk),
+	}
+	var candBuf, targetBuf [par2BackupSampleChunk]byte
+	for i, off := range offsets {
+		if off < 0 || off >= candSize {
+			continue
+		}
+		if i > 0 && slices.Contains(offsets[:i], off) {
+			continue
+		}
+		n := min(par2BackupSampleChunk, candSize-off)
+		if _, err := io.ReadFull(io.NewSectionReader(candFile, off, n), candBuf[:n]); err != nil {
+			continue
+		}
+		if _, err := io.ReadFull(io.NewSectionReader(targetFile, off, n), targetBuf[:n]); err != nil {
+			continue
+		}
+		if bytes.Equal(candBuf[:n], targetBuf[:n]) {
+			return true
+		}
+	}
+	return false
 }
