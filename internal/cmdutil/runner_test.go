@@ -1,8 +1,16 @@
 package cmdutil
 
 import (
+	"bufio"
 	"context"
+	"io"
+	"os"
+	"os/exec"
+	"strconv"
+	"strings"
+	"syscall"
 	"testing"
+	"time"
 )
 
 func TestBuildCommand_NoWrapping(t *testing.T) {
@@ -262,5 +270,87 @@ func TestBuildCommand_MalformedPriorityArgs(t *testing.T) {
 				t.Errorf("BuildCommand() with malformed priority %v expected error, got nil", tt.cfg)
 			}
 		})
+	}
+}
+
+func TestBuildCommand_ProcessGroupCancellationKillsChildren(t *testing.T) {
+	t.Parallel()
+
+	directCmd := exec.Command("true")
+	configureProcessGroup(directCmd)
+	if directCmd.SysProcAttr == nil || !directCmd.SysProcAttr.Setpgid || directCmd.Cancel == nil {
+		t.Fatal("configureProcessGroup did not set Setpgid and Cancel")
+	}
+
+	for _, cfg := range []CmdConfig{{}, {Nice: "-n 5"}} {
+		cmd, err := BuildCommand(t.Context(), cfg, "true")
+		if err != nil {
+			t.Fatalf("BuildCommand(%+v): %v", cfg, err)
+		}
+		if cmd.SysProcAttr == nil || !cmd.SysProcAttr.Setpgid {
+			t.Fatalf("BuildCommand(%+v): SysProcAttr.Setpgid = false, want true", cfg)
+		}
+		if cmd.Cancel == nil {
+			t.Fatalf("BuildCommand(%+v): Cancel is nil, want process-group killer", cfg)
+		}
+		// Calling Cancel before Start (Process == nil) must be a safe no-op.
+		if err := cmd.Cancel(); err != nil {
+			t.Fatalf("Cancel on unstarted command returned error: %v", err)
+		}
+	}
+
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+
+	// Pass an extra pipe write-end to the child process tree so we can
+	// observe grandchild termination deterministically via EOF without polling.
+	pipeR, pipeW, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("os.Pipe: %v", err)
+	}
+	defer pipeR.Close() //nolint:errcheck
+
+	cmd, err := BuildCommand(ctx, CmdConfig{}, "sh", "-c", "sleep 30 >/dev/null 2>&1 & echo $!; wait")
+	if err != nil {
+		t.Fatalf("BuildCommand: %v", err)
+	}
+	cmd.ExtraFiles = []*os.File{pipeW}
+	stdout, err := cmd.StdoutPipe()
+	if err != nil {
+		t.Fatalf("StdoutPipe: %v", err)
+	}
+	if err := cmd.Start(); err != nil {
+		_ = pipeW.Close()
+		t.Fatalf("Start: %v", err)
+	}
+	_ = pipeW.Close()
+
+	line, err := bufio.NewReader(stdout).ReadString('\n')
+	if err != nil {
+		t.Fatalf("ReadString child pid: %v", err)
+	}
+	childPID, err := strconv.Atoi(strings.TrimSpace(line))
+	if err != nil || childPID <= 0 {
+		t.Fatalf("invalid child PID %q: %v", line, err)
+	}
+	t.Cleanup(func() {
+		_ = syscall.Kill(childPID, syscall.SIGKILL)
+		_ = exec.Command("kill", "-9", strconv.Itoa(childPID)).Run()
+	})
+
+	cancel()
+	if err := cmd.Wait(); err == nil {
+		t.Fatal("Wait succeeded after context cancel; want signal failure")
+	}
+
+	eofCh := make(chan error, 1)
+	go func() {
+		_, rerr := io.ReadAll(pipeR)
+		eofCh <- rerr
+	}()
+	select {
+	case <-eofCh:
+	case <-time.After(500 * time.Millisecond):
+		t.Fatalf("child process %d still holding pipe open after context cancellation", childPID)
 	}
 }

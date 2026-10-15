@@ -352,6 +352,121 @@ func postSnapshot(ctx context.Context, controlURL, snapshotName string, recorded
 	return nil
 }
 
+func manifestFileAt(sortedFiles []ReleaseFile, idx int) *ReleaseFile {
+	if idx >= 0 && idx < len(sortedFiles) {
+		return &sortedFiles[idx]
+	}
+	return nil
+}
+
+func resolveRowFilename(fr durability.FileRow, rf *ReleaseFile, idx int) string {
+	if fr.Filename != "" {
+		return fr.Filename
+	}
+	if rf != nil && rf.DiskName != "" {
+		return rf.DiskName
+	}
+	return fmt.Sprintf("file_%d", idx)
+}
+
+func openCachedPartialFile(
+	downloadDir string,
+	candidateSubdirs []string,
+	openFiles map[int]*os.File,
+	fileIdx int,
+	filename string,
+) (*os.File, error) {
+	if f, ok := openFiles[fileIdx]; ok {
+		return f, nil
+	}
+	filePath, err := findPartialFile(downloadDir, candidateSubdirs, filename)
+	if err != nil {
+		return nil, err
+	}
+	opened, err := os.Open(filePath) //nolint:gosec // partial file within downloadDir
+	if err != nil {
+		return nil, fmt.Errorf("open partial file %s: %w", filePath, err)
+	}
+	openFiles[fileIdx] = opened
+	return opened, nil
+}
+
+func postProcCandidateNames(filename string, rf *ReleaseFile) []string {
+	names := []string{filename, filename + ".1"}
+	if rf != nil && rf.DiskName != "" && rf.DiskName != filename {
+		names = append(names, rf.DiskName, rf.DiskName+".1")
+	}
+	return names
+}
+
+func postProcAllowedCRCs(r durability.WrittenRow, rf *ReleaseFile) []uint32 {
+	crcs := []uint32{r.CRC32}
+	if rf == nil {
+		return crcs
+	}
+	for _, seg := range rf.Segments {
+		if seg.Offset == r.Offset && int64(seg.Length) == r.Length && seg.CRC32 != r.CRC32 {
+			crcs = append(crcs, seg.CRC32)
+		}
+	}
+	return crcs
+}
+
+func verifyCompletePostProcFallback(
+	downloadDir string,
+	candidateSubdirs []string,
+	filename string,
+	rf *ReleaseFile,
+	r durability.WrittenRow,
+) bool {
+	crcs := postProcAllowedCRCs(r, rf)
+	for _, cand := range postProcCandidateNames(filename, rf) {
+		filePath, err := findPartialFile(downloadDir, candidateSubdirs, cand)
+		if err != nil {
+			continue
+		}
+		if matchesAnyCRCOnDisk(filePath, cand, r, crcs) {
+			return true
+		}
+	}
+	return false
+}
+
+func matchesAnyCRCOnDisk(filePath, cand string, r durability.WrittenRow, crcs []uint32) bool {
+	f, err := os.Open(filePath) //nolint:gosec // verified candidate inside downloadDir
+	if err != nil {
+		return false
+	}
+	defer func() { _ = f.Close() }() //nolint:errcheck // read-only close
+	for _, crc := range crcs {
+		probe := r
+		probe.CRC32 = crc
+		if verifyWrittenRowOnDisk(f, cand, probe) == nil {
+			return true
+		}
+	}
+	return false
+}
+
+func verifyCrashRow(
+	downloadDir string,
+	candidateSubdirs []string,
+	openFiles map[int]*os.File,
+	fr durability.FileRow,
+	rf *ReleaseFile,
+	r durability.WrittenRow,
+) error {
+	filename := resolveRowFilename(fr, rf, r.FileIdx)
+	f, err := openCachedPartialFile(downloadDir, candidateSubdirs, openFiles, r.FileIdx, filename)
+	if err == nil {
+		err = verifyWrittenRowOnDisk(f, filename, r)
+	}
+	if err != nil && fr.Complete && verifyCompletePostProcFallback(downloadDir, candidateSubdirs, filename, rf, r) {
+		return nil
+	}
+	return err
+}
+
 func verifyCrash(ctx context.Context, db *sql.DB, m *ReleaseManifest, cfg VerifyConfig) (*VerifyReport, error) {
 	jobID, jobName, err := resolveCrashJob(ctx, db, cfg.JobID, m.Name)
 	if err != nil {
@@ -363,9 +478,9 @@ func verifyCrash(ctx context.Context, db *sql.DB, m *ReleaseManifest, cfg Verify
 	if err != nil {
 		return nil, fmt.Errorf("query job_files: %w", err)
 	}
-	fileNames := make(map[int]string, len(fRows))
+	fileRows := make(map[int]durability.FileRow, len(fRows))
 	for _, fr := range fRows {
-		fileNames[fr.FileIndex] = fr.Filename
+		fileRows[fr.FileIndex] = fr
 	}
 
 	written, err := store.WrittenRows(ctx, jobID)
@@ -390,29 +505,8 @@ func verifyCrash(ctx context.Context, db *sql.DB, m *ReleaseManifest, cfg Verify
 
 	var recordedIDs []string
 	for _, r := range written {
-		filename := fileNames[r.FileIdx]
-		if filename == "" && r.FileIdx >= 0 && r.FileIdx < len(sortedFiles) {
-			filename = sortedFiles[r.FileIdx].DiskName
-		}
-		if filename == "" {
-			filename = fmt.Sprintf("file_%d", r.FileIdx)
-		}
-
-		f, ok := openFiles[r.FileIdx]
-		if !ok {
-			filePath, err := findPartialFile(cfg.DownloadDir, candidateSubdirs, filename)
-			if err != nil {
-				return nil, err
-			}
-			opened, err := os.Open(filePath) //nolint:gosec // partial file within downloadDir
-			if err != nil {
-				return nil, fmt.Errorf("open partial file %s: %w", filePath, err)
-			}
-			openFiles[r.FileIdx] = opened
-			f = opened
-		}
-
-		if err := verifyWrittenRowOnDisk(f, filename, r); err != nil {
+		rf := manifestFileAt(sortedFiles, r.FileIdx)
+		if err := verifyCrashRow(cfg.DownloadDir, candidateSubdirs, openFiles, fileRows[r.FileIdx], rf, r); err != nil {
 			return nil, err
 		}
 

@@ -462,8 +462,8 @@ func recordRepairSuccess(ctx context.Context, log *slog.Logger, set par2.Set, jo
 }
 
 // par2BackupRe matches files that par2 creates as backups during repair:
-// a known archive/data extension followed by ".N" (e.g. ".rar.1", ".mkv.2").
-var par2BackupRe = regexp.MustCompile(`(?i)\.(rar|r\d+|7z|zip|mkv|avi|mp4|flac|mp3|srt|nfo)\.\d{1,3}$`)
+// an extension followed by a non-zero-padded ".N" suffix (e.g. ".rar.1", ".bin.2").
+var par2BackupRe = regexp.MustCompile(`(?i)\.[a-z0-9]{1,10}\.[1-9]\d{0,2}$`)
 
 // cleanupPar2Backups finds backup files created by par2 during repair so
 // Par2CleanupStage can record them for deletion at finalize (#768).

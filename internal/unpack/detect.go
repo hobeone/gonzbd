@@ -58,7 +58,7 @@ var legacyExtraPattern = regexp.MustCompile(`(?i)\.r\d+$`)
 var numericSuffixPattern = regexp.MustCompile(`\.(\d{3,})$`)
 
 // sevenSplitPattern matches 7z split volumes: .7z.001, .7z.002, …
-var sevenSplitPattern = regexp.MustCompile(`(?i)\.7z\.(\d+)$`)
+var sevenSplitPattern = regexp.MustCompile(`(?i)\.7z\.(\d{3,})$`)
 
 // Classify returns the ArchiveType of path based on filename extension.
 // Classification is done purely by filename; no magic-byte inspection is

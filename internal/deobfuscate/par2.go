@@ -138,6 +138,9 @@ func par2RenameFile(
 	newPath := filepath.Join(dir, relNewPath)
 
 	if relNewPath != relDst {
+		if isPar2BackupOf(e.Name(), trueName, relDst) {
+			return Rename{}, false, nil
+		}
 		finalPath, skip := resolveConflictingRename(log, root, e.Name(), relDst, path, e.Name(), desiredPath, newPath, hash)
 		if skip {
 			return Rename{}, false, nil
@@ -198,4 +201,33 @@ func resolveConflictingRename(
 		"renamed_to", filepath.Base(newPath),
 	)
 	return newPath, false
+}
+
+// isPar2BackupOf reports whether name is a numbered backup of trueName or
+// relDst created by external par2 repair (e.g. "ExtMovie.part03.rar.1",
+// "ExtMovie.part03.rar.2").
+func isPar2BackupOf(name, trueName, relDst string) bool {
+	return hasPar2BackupSuffix(name, relDst) || hasPar2BackupSuffix(name, filepath.Base(trueName))
+}
+
+func hasPar2BackupSuffix(name, base string) bool {
+	if base == "" || len(name) <= len(base)+1 {
+		return false
+	}
+	if !strings.EqualFold(name[:len(base)], base) || name[len(base)] != '.' {
+		return false
+	}
+	return isPar2BackupNumber(name[len(base)+1:])
+}
+
+func isPar2BackupNumber(suffix string) bool {
+	if suffix == "" || len(suffix) > 3 || suffix[0] < '1' || suffix[0] > '9' {
+		return false
+	}
+	for i := 1; i < len(suffix); i++ {
+		if suffix[i] < '0' || suffix[i] > '9' {
+			return false
+		}
+	}
+	return true
 }

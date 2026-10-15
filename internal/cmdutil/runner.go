@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os/exec"
 	"strings"
+	"syscall"
 )
 
 // CmdConfig controls process-priority wrapping for external commands.
@@ -45,7 +46,9 @@ func (c CmdConfig) IsEmpty() bool {
 //	nice <nice_args> ionice <ionice_args> <name> <args...>
 func BuildCommand(ctx context.Context, cfg CmdConfig, name string, args ...string) (*exec.Cmd, error) {
 	if cfg.IsEmpty() {
-		return exec.CommandContext(ctx, name, args...), nil //nolint:gosec // caller-supplied args
+		cmd := exec.CommandContext(ctx, name, args...) //nolint:gosec // caller-supplied args
+		configureProcessGroup(cmd)
+		return cmd, nil
 	}
 
 	fullArgs, err := buildPriorityArgs(cfg)
@@ -55,7 +58,20 @@ func BuildCommand(ctx context.Context, cfg CmdConfig, name string, args ...strin
 	fullArgs = append(fullArgs, name)
 	fullArgs = append(fullArgs, args...)
 
-	return exec.CommandContext(ctx, fullArgs[0], fullArgs[1:]...), nil //nolint:gosec // priority-wrapped command
+	cmd := exec.CommandContext(ctx, fullArgs[0], fullArgs[1:]...) //nolint:gosec // priority-wrapped command
+	configureProcessGroup(cmd)
+	return cmd, nil
+}
+
+func configureProcessGroup(cmd *exec.Cmd) {
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	cmd.Cancel = func() error {
+		if cmd.Process != nil {
+			//nolint:errcheck // best-effort kill; process group may have already exited
+			_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
+		}
+		return nil
+	}
 }
 
 // FormatCmdPrefix returns the nice/ionice prefix that BuildCommand would

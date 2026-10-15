@@ -284,3 +284,41 @@ func TestSortedNumericParts(t *testing.T) {
 		}
 	})
 }
+
+// TestGroupArchives_Single7zNotShadowedByPar2Backup pins that numbered backup
+// files created by external par2 repair (e.g. "archive.7z.1", "archive.7z.2")
+// are not classified as split 7z volumes (.7z.001) and do not shadow the
+// repaired single "archive.7z" in groupArchives or Classify.
+func TestGroupArchives_Single7zNotShadowedByPar2Backup(t *testing.T) {
+	t.Parallel()
+
+	if got := Classify("/dir/archive.7z.1"); got != UnknownArchive {
+		t.Errorf("Classify(archive.7z.1) = %v, want UnknownArchive", got)
+	}
+	if got := Classify("/dir/archive.7z.12"); got != UnknownArchive {
+		t.Errorf("Classify(archive.7z.12) = %v, want UnknownArchive", got)
+	}
+	if got := Classify("/dir/archive.7z.001"); got != SevenZipArchive {
+		t.Errorf("Classify(archive.7z.001) = %v, want SevenZipArchive", got)
+	}
+
+	got := groupArchives([]string{
+		"/dir/archive.7z",
+		"/dir/archive.7z.1",
+		"/dir/archive.7z.2",
+	})
+	want := []Archive{
+		{
+			Type:     SevenZipArchive,
+			Name:     "archive",
+			MainFile: "/dir/archive.7z",
+			Parts:    []string{"/dir/archive.7z"},
+		},
+	}
+	if len(got) != len(want) {
+		t.Fatalf("len(got) = %d (%+v), want %d", len(got), got, len(want))
+	}
+	if got[0].MainFile != want[0].MainFile || !slices.Equal(got[0].Parts, want[0].Parts) {
+		t.Errorf("got[0] = %+v, want %+v", got[0], want[0])
+	}
+}

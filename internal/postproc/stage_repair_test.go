@@ -294,6 +294,32 @@ func TestCleanupPar2Backups_PreservesIfOriginalMissing(t *testing.T) {
 	}
 }
 
+func TestCleanupPar2Backups_ArbitraryExtensionsAndNoZeroPaddedSplit(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	for _, name := range []string{
+		"payload.bin",
+		"payload.bin.1",
+		"disc.iso",
+		"disc.iso.2",
+		"movie.mkv",
+		"movie.mkv.001", // zero-padded split part, NOT a par2 .1 backup
+	} {
+		if err := os.WriteFile(filepath.Join(dir, name), []byte("data"), 0o600); err != nil {
+			t.Fatalf("WriteFile %s: %v", name, err)
+		}
+	}
+
+	log := slog.New(slog.DiscardHandler)
+	removed := cleanupPar2Backups(dir, log)
+	slices.Sort(removed)
+	want := []string{"disc.iso.2", "payload.bin.1"}
+	if !slices.Equal(removed, want) {
+		t.Errorf("cleanupPar2Backups = %v, want %v", removed, want)
+	}
+}
+
 // ---------------------------------------------------------------------------
 // handleRepairResult — focused unit tests for all 5 outcome branches
 // ---------------------------------------------------------------------------
