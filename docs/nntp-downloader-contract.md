@@ -279,7 +279,11 @@ Each `nntp.Conn` supports pipelined NNTP commands, bounded by a semaphore
 - **Response consumption**: A single `runReader` goroutine pops the FIFO head,
   reads the response (including dot-stuffed body for BODY commands), fills the
   result, and closes the `pendingCmd.done` channel. It then releases the
-  semaphore slot.
+  semaphore slot. While at least one command is in flight (`itr.beginCmd`
+  through `itr.endCmd`), `idleTimeoutReader` arms a per-read socket deadline
+  (`ServerConfig.Timeout`); when the last in-flight command completes, the read
+  deadline is disarmed (`SetReadDeadline(time.Time{})`) so an idle connection
+  parked in `runReader` between commands does not time out on silence.
 - **Response identity**: FIFO position alone does not establish that a response
   answers the command it was popped against. `pendingCmd.msgID` carries the
   Message-ID the command asked for — `newArticleCmd` emits it and the wire bytes

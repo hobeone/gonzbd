@@ -5,6 +5,7 @@ import (
 	"errors"
 	"io"
 	"net"
+	"os"
 	"strings"
 	"testing"
 	"time"
@@ -175,6 +176,71 @@ func TestIdleTimeoutReader_ResetsDeadline(t *testing.T) {
 	_, err = itr.Read(buf)
 	if err == nil {
 		t.Error("expected timeout error on third read, got nil")
+	}
+}
+
+func TestIdleTimeoutReader_GatedOnInFlight(t *testing.T) {
+	t.Parallel()
+
+	// Nil receiver calls are safe no-ops.
+	var nilITR *idleTimeoutReader
+	nilITR.beginCmd()
+	nilITR.endCmd()
+
+	server, client := net.Pipe()
+	defer server.Close()
+	defer client.Close()
+
+	const timeout = 60 * time.Millisecond
+	itr := &idleTimeoutReader{nc: client, timeout: timeout}
+	itr.endHandshake()
+
+	// 1. With inFlight == 0 after endHandshake, Read disarms the deadline and
+	// survives a pause longer than 2x timeout before bytes arrive.
+	go func() {
+		time.Sleep(150 * time.Millisecond)
+		_, _ = server.Write([]byte("ok"))
+	}()
+	buf := make([]byte, 2)
+	n, err := itr.Read(buf)
+	if err != nil {
+		t.Fatalf("idle Read after endHandshake failed: %v", err)
+	}
+	if string(buf[:n]) != "ok" {
+		t.Fatalf("idle Read got %q, want %q", buf[:n], "ok")
+	}
+
+	// 2. While a Read is already parked with inFlight == 0, beginCmd transitions
+	// inFlight 0 -> 1 and arms the read deadline on the parked socket read.
+	done := make(chan error, 1)
+	go func() {
+		_, rerr := itr.Read(buf)
+		done <- rerr
+	}()
+	time.Sleep(30 * time.Millisecond)
+	itr.beginCmd()
+	select {
+	case rerr := <-done:
+		if !errors.Is(rerr, os.ErrDeadlineExceeded) {
+			t.Fatalf("parked Read after beginCmd err = %v, want os.ErrDeadlineExceeded", rerr)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("parked Read did not time out after beginCmd armed the deadline")
+	}
+
+	// 3. endCmd decrements inFlight back to 0 and disarms the deadline so a
+	// subsequent delayed write succeeds without timing out.
+	itr.endCmd()
+	go func() {
+		time.Sleep(150 * time.Millisecond)
+		_, _ = server.Write([]byte("hi"))
+	}()
+	n, err = itr.Read(buf)
+	if err != nil {
+		t.Fatalf("Read after endCmd failed: %v", err)
+	}
+	if string(buf[:n]) != "hi" {
+		t.Fatalf("Read after endCmd got %q, want %q", buf[:n], "hi")
 	}
 }
 

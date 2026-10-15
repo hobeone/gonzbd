@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"os"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -1411,5 +1412,124 @@ func TestIdleTimeoutReaderForcesDeadlineWhenHandshakeCtxAlreadyDone(t *testing.T
 	case <-time.After(2 * time.Second):
 		t.Fatal("Read did not return promptly for an already-done handshakeCtx — " +
 			"the idle re-arm was left free to overwrite the forced deadline")
+	}
+}
+
+// TestConnSurvivesIdlePeriodLongerThanTimeoutBetweenCommands pins that a
+// Ready Conn with no commands in flight does not arm a read deadline on the
+// idle socket. Before this fix, runReader immediately called readResponseLine
+// at the top of its loop after completing a command, which re-armed
+// idleTimeoutReader's per-read deadline on an idle connection and killed it
+// with os.ErrDeadlineExceeded whenever the gap between commands exceeded
+// ServerConfig.Timeout (for example while the server was under penalty or on a
+// backup server between missing articles).
+func TestConnSurvivesIdlePeriodLongerThanTimeoutBetweenCommands(t *testing.T) {
+	t.Parallel()
+
+	ms := newMockServer(t, func(mc *mockConn) {
+		mc.send("200 ready")
+		mc.expect("CAPABILITIES")
+		mc.sendCaps()
+
+		mc.expect("BODY <first@host>")
+		mc.send("222 0 <first@host> body")
+		mc.send("first-body")
+		mc.send(".")
+
+		line, err := mc.r.ReadString('\n')
+		if err != nil {
+			return
+		}
+		if strings.TrimRight(line, "\r\n") == "BODY <second@host>" {
+			mc.send("222 0 <second@host> body")
+			mc.send("second-body")
+			mc.send(".")
+		}
+		_, _ = mc.r.ReadString('\n')
+	})
+
+	cfg := makeCfg(ms.addr)
+	conn, err := Dial(t.Context(), checked(t, cfg), withDialerTimeout(100*time.Millisecond))
+	if err != nil {
+		t.Fatalf("Dial: %v", err)
+	}
+	t.Cleanup(func() { _ = conn.Close() })
+
+	body1, err := conn.Fetch(t.Context(), "first@host")
+	if err != nil {
+		t.Fatalf("first Fetch: %v", err)
+	}
+	if string(body1) != "first-body\n" {
+		t.Fatalf("first Fetch body = %q, want %q", body1, "first-body\n")
+	}
+
+	// Sit idle with zero commands in flight for 2.5x the 100ms read timeout.
+	time.Sleep(250 * time.Millisecond)
+
+	body2, err := conn.Fetch(t.Context(), "second@host")
+	if err != nil {
+		t.Fatalf("second Fetch after 250ms idle gap failed: %v", err)
+	}
+	if string(body2) != "second-body\n" {
+		t.Fatalf("second Fetch body = %q, want %q", body2, "second-body\n")
+	}
+}
+
+// TestConnArmsReadDeadlineWhenCommandSubmittedAfterIdle pins the active-side
+// counterpart to TestConnSurvivesIdlePeriodLongerThanTimeoutBetweenCommands:
+// once a connection has parked in runReader with its read deadline disarmed
+// (inFlight == 0), submitting a new command must arm the read deadline on the
+// already-parked socket read so a server that accepts the command and sends no
+// response byte still times out after ServerConfig.Timeout.
+func TestConnArmsReadDeadlineWhenCommandSubmittedAfterIdle(t *testing.T) {
+	t.Parallel()
+
+	release := make(chan struct{})
+	t.Cleanup(func() { close(release) })
+
+	ms := newMockServer(t, func(mc *mockConn) {
+		mc.send("200 ready")
+		mc.expect("CAPABILITIES")
+		mc.sendCaps()
+
+		mc.expect("BODY <first@host>")
+		mc.send("222 0 <first@host> body")
+		mc.send("first-body")
+		mc.send(".")
+
+		mc.expect("BODY <stalled@host>")
+		<-release // never send a response byte for the second command
+	})
+
+	cfg := makeCfg(ms.addr)
+	conn, err := Dial(t.Context(), checked(t, cfg), withDialerTimeout(100*time.Millisecond))
+	if err != nil {
+		t.Fatalf("Dial: %v", err)
+	}
+	t.Cleanup(func() { _ = conn.Close() })
+
+	if _, err := conn.Fetch(t.Context(), "first@host"); err != nil {
+		t.Fatalf("first Fetch: %v", err)
+	}
+
+	// Let runReader loop back to readResponseLine with inFlight == 0 and disarm.
+	time.Sleep(50 * time.Millisecond)
+
+	done := make(chan error, 1)
+	go func() {
+		_, err := conn.Fetch(t.Context(), "stalled@host")
+		done <- err
+	}()
+
+	select {
+	case err := <-done:
+		if err == nil {
+			t.Fatal("Fetch(stalled@host) succeeded against a silent server, want a timeout error")
+		}
+		if !errors.Is(err, os.ErrDeadlineExceeded) {
+			t.Fatalf("Fetch(stalled@host) err = %v, want errors.Is(err, os.ErrDeadlineExceeded)", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("Fetch(stalled@host) did not time out within 2s: submitting a command on an idle connection failed to arm the read deadline")
 	}
 }

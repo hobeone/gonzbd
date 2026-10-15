@@ -89,11 +89,9 @@ type Conn struct {
 	// Empty for plain-text connections.
 	sslInfo string
 
-	// readTimeout is the idle read deadline applied before each response
-	// read. If no data arrives within this period, the socket errors and
-	// the connection is torn down. Prevents runReader from blocking
-	// indefinitely on silently-dead connections.
-	readTimeout time.Duration
+	// itr tracks in-flight command count after handshake and arms the
+	// per-read socket deadline only while at least one command is in flight.
+	itr *idleTimeoutReader
 
 	// handshakeStartedHook, when non-nil, runs inside handshake once
 	// setupHandshakeDeadline has armed its ctx watcher — the earliest point
@@ -317,17 +315,17 @@ func Dial(ctx context.Context, srv config.Server, opts ...DialOption) (*Conn, er
 	}
 
 	c := &Conn{
-		log:         l,
-		cfg:         cfg,
-		nc:          nc,
-		bw:          bufio.NewWriter(nc),
-		br:          bufio.NewReaderSize(br, dopts.readBuf),
-		state:       StateDisconnected,
-		sem:         make(chan struct{}, dopts.pipelining),
-		readerDone:  make(chan struct{}),
-		ctx:         ctxConn,
-		cancel:      cancelConn,
-		readTimeout: dopts.dialer.Timeout, // kept for reference; actual idle enforced by idleTimeoutReader
+		log:        l,
+		cfg:        cfg,
+		nc:         nc,
+		bw:         bufio.NewWriter(nc),
+		br:         bufio.NewReaderSize(br, dopts.readBuf),
+		state:      StateDisconnected,
+		sem:        make(chan struct{}, dopts.pipelining),
+		readerDone: make(chan struct{}),
+		ctx:        ctxConn,
+		cancel:     cancelConn,
+		itr:        itr,
 
 		handshakeStartedHook: dopts.handshakeStartedHook,
 	}
@@ -368,7 +366,7 @@ func Dial(ctx context.Context, srv config.Server, opts ...DialOption) (*Conn, er
 		lr.ctx = ctxConn // handshake done; steady-state reads use the connection's own lifetime, not the handshake's bound
 	}
 	if itr != nil {
-		itr.handshakeCtx = nil // handshake done; idle reads no longer force-unblock on the handshake's ctx
+		itr.endHandshake() // handshake done; steady-state reads arm deadlines only while a command is in flight
 	}
 
 	// setupHandshakeDeadline's AfterFunc can fire concurrently with
@@ -717,10 +715,51 @@ type idleTimeoutReader struct {
 	// statement, which establishes a happens-before edge (Go memory
 	// model, goroutine creation) — so the field needs no lock or atomic.
 	handshakeCtx context.Context
+
+	mu             sync.Mutex
+	gateOnInFlight bool
+	inFlight       int
+}
+
+func (r *idleTimeoutReader) endHandshake() {
+	r.handshakeCtx = nil
+	r.gateOnInFlight = true
+}
+
+func (r *idleTimeoutReader) beginCmd() {
+	if r == nil {
+		return
+	}
+	r.mu.Lock()
+	wasIdle := r.inFlight == 0
+	r.inFlight++
+	if wasIdle {
+		_ = r.nc.SetReadDeadline(time.Now().Add(r.timeout)) //nolint:errcheck // best-effort arm when first command enters flight
+	}
+	r.mu.Unlock()
+}
+
+func (r *idleTimeoutReader) endCmd() {
+	if r == nil {
+		return
+	}
+	r.mu.Lock()
+	if r.inFlight > 0 {
+		r.inFlight--
+		if r.inFlight == 0 && r.gateOnInFlight {
+			_ = r.nc.SetReadDeadline(time.Time{}) //nolint:errcheck // best-effort disarm when last command completes
+		}
+	}
+	r.mu.Unlock()
 }
 
 func (r *idleTimeoutReader) Read(p []byte) (int, error) {
-	_ = r.nc.SetReadDeadline(time.Now().Add(r.timeout)) //nolint:errcheck // best-effort; actual idle enforced by Read
+	r.mu.Lock()
+	if r.gateOnInFlight && r.inFlight == 0 {
+		_ = r.nc.SetReadDeadline(time.Time{}) //nolint:errcheck // best-effort disarm while no command is in flight
+	} else {
+		_ = r.nc.SetReadDeadline(time.Now().Add(r.timeout)) //nolint:errcheck // best-effort; actual idle enforced by Read
+	}
 	if ctx := r.handshakeCtx; ctx != nil {
 		if err := ctx.Err(); err != nil {
 			// ctx ended at or before this point: force the pending read
@@ -729,5 +768,6 @@ func (r *idleTimeoutReader) Read(p []byte) (int, error) {
 			_ = r.nc.SetReadDeadline(time.Now()) //nolint:errcheck // best-effort unblock, mirrors setupHandshakeDeadline
 		}
 	}
+	r.mu.Unlock()
 	return r.nc.Read(p)
 }
