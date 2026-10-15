@@ -1,7 +1,10 @@
 package deobfuscate_test
 
 import (
+	"bytes"
 	"context"
+	"crypto/md5"
+	"encoding/binary"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -461,4 +464,144 @@ func createFile(t *testing.T, dir, name string, size int) string {
 		t.Fatalf("createFile %s: %v", path, err)
 	}
 	return path
+}
+
+func writeTestPar2File(t *testing.T, dir, fileName string, fileSize uint64, hash16k [16]byte) {
+	t.Helper()
+	fileNameBytes := []byte(fileName)
+	if pad := (4 - len(fileNameBytes)%4) % 4; pad > 0 {
+		fileNameBytes = append(fileNameBytes, make([]byte, pad)...)
+	}
+	bodyLen := uint64(16 + 16 + 16 + 8 + len(fileNameBytes))
+	packetLen := 64 + bodyLen
+	buf := make([]byte, packetLen)
+	copy(buf[0:8], []byte("PAR2\x00PKT"))
+	binary.LittleEndian.PutUint64(buf[8:16], packetLen)
+	copy(buf[48:64], []byte{'P', 'A', 'R', ' ', '2', '.', '0', '\x00', 'F', 'i', 'l', 'e', 'D', 'e', 's', 'c'})
+	copy(buf[64+16+16:64+32+16], hash16k[:])
+	binary.LittleEndian.PutUint64(buf[64+48:64+56], fileSize)
+	copy(buf[64+56:], fileNameBytes)
+	ph := md5.New() //nolint:gosec // MD5 is PAR2 spec; not used for security
+	ph.Write(buf[32:64])
+	ph.Write(buf[64:])
+	copy(buf[16:32], ph.Sum(nil))
+
+	parPath := filepath.Join(dir, fileName+".par2")
+	if err := os.WriteFile(parPath, buf, 0o644); err != nil {
+		t.Fatalf("WriteFile PAR2: %v", err)
+	}
+}
+
+func TestPar2Rename_SkipsSizeMismatchOnShared16kPrefix(t *testing.T) {
+	t.Parallel()
+
+	prefix := bytes.Repeat([]byte("A"), 16384)
+	hash16k := md5.Sum(prefix) //nolint:gosec // MD5 is PAR2 spec
+
+	const (
+		oneMiB   = 1024 * 1024
+		threeMiB = 3 * 1024 * 1024
+	)
+
+	t.Run("joined file par2 does not rename split 001 part", func(t *testing.T) {
+		t.Parallel()
+		dir := t.TempDir()
+
+		// 1. Create a 1 MiB split .001 part sharing the 16k prefix.
+		partData := append(append([]byte(nil), prefix...), make([]byte, oneMiB-len(prefix))...)
+		part001 := filepath.Join(dir, "Movie.Split.bin.001")
+		if err := os.WriteFile(part001, partData, 0o644); err != nil {
+			t.Fatalf("WriteFile part001: %v", err)
+		}
+
+		// 2. Create an obfuscated 3 MiB file that matches the par2 size and 16k hash.
+		joinedData := append(append([]byte(nil), prefix...), make([]byte, threeMiB-len(prefix))...)
+		obfPath := filepath.Join(dir, "abcdef1234567890abcdef1234567890.bin")
+		if err := os.WriteFile(obfPath, joinedData, 0o644); err != nil {
+			t.Fatalf("WriteFile obfPath: %v", err)
+		}
+
+		// 3. Create PAR2 protecting the joined file (3 MiB).
+		writeTestPar2File(t, dir, "Movie.Split.bin", threeMiB, hash16k)
+
+		root, err := os.OpenRoot(dir)
+		if err != nil {
+			t.Fatalf("OpenRoot: %v", err)
+		}
+		defer root.Close()
+
+		renames, err := deobfuscate.Par2Rename(t.Context(), slog.Default(), root, dir, fsutil.SanitizeOptions{})
+		if err != nil {
+			t.Fatalf("Par2Rename: %v", err)
+		}
+
+		// Movie.Split.bin.001 must not be renamed because its size (1 MiB) != par2 size (3 MiB).
+		if _, err := os.Stat(part001); err != nil {
+			t.Errorf("Movie.Split.bin.001 missing or renamed: %v", err)
+		}
+
+		// The obfuscated 3 MiB file must be renamed to Movie.Split.bin.
+		wantTarget := filepath.Join(dir, "Movie.Split.bin")
+		if _, err := os.Stat(wantTarget); err != nil {
+			t.Errorf("expected %s to exist: %v", wantTarget, err)
+		}
+
+		if len(renames) != 1 {
+			t.Fatalf("len(renames) = %d, want 1; renames = %+v", len(renames), renames)
+		}
+		if renames[0].From != obfPath || renames[0].To != wantTarget {
+			t.Errorf("renames[0] = %+v, want From=%q To=%q", renames[0], obfPath, wantTarget)
+		}
+	})
+
+	t.Run("split part par2 does not rename joined file", func(t *testing.T) {
+		t.Parallel()
+		dir := t.TempDir()
+
+		// 1. Create a 3 MiB joined file sharing the 16k prefix.
+		joinedData := append(append([]byte(nil), prefix...), make([]byte, threeMiB-len(prefix))...)
+		joinedPath := filepath.Join(dir, "Movie.Split.bin")
+		if err := os.WriteFile(joinedPath, joinedData, 0o644); err != nil {
+			t.Fatalf("WriteFile joinedPath: %v", err)
+		}
+
+		// 2. Create an obfuscated 1 MiB file that matches the par2 size and 16k hash.
+		partData := append(append([]byte(nil), prefix...), make([]byte, oneMiB-len(prefix))...)
+		obfPath := filepath.Join(dir, "9876543210abcdef9876543210abcdef.bin")
+		if err := os.WriteFile(obfPath, partData, 0o644); err != nil {
+			t.Fatalf("WriteFile obfPath: %v", err)
+		}
+
+		// 3. Create PAR2 protecting the split part (1 MiB).
+		writeTestPar2File(t, dir, "Movie.Split.bin.001", oneMiB, hash16k)
+
+		root, err := os.OpenRoot(dir)
+		if err != nil {
+			t.Fatalf("OpenRoot: %v", err)
+		}
+		defer root.Close()
+
+		renames, err := deobfuscate.Par2Rename(t.Context(), slog.Default(), root, dir, fsutil.SanitizeOptions{})
+		if err != nil {
+			t.Fatalf("Par2Rename: %v", err)
+		}
+
+		// Movie.Split.bin must not be renamed because its size (3 MiB) != par2 size (1 MiB).
+		if _, err := os.Stat(joinedPath); err != nil {
+			t.Errorf("Movie.Split.bin missing or renamed: %v", err)
+		}
+
+		// The obfuscated 1 MiB file must be renamed to Movie.Split.bin.001.
+		wantTarget := filepath.Join(dir, "Movie.Split.bin.001")
+		if _, err := os.Stat(wantTarget); err != nil {
+			t.Errorf("expected %s to exist: %v", wantTarget, err)
+		}
+
+		if len(renames) != 1 {
+			t.Fatalf("len(renames) = %d, want 1; renames = %+v", len(renames), renames)
+		}
+		if renames[0].From != obfPath || renames[0].To != wantTarget {
+			t.Errorf("renames[0] = %+v, want From=%q To=%q", renames[0], obfPath, wantTarget)
+		}
+	})
 }

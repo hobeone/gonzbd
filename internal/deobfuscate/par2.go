@@ -14,7 +14,8 @@ import (
 )
 
 // Par2Rename scans dir for .par2 files, builds a mapping of 16KB MD5 hashes
-// to original filenames, and renames any obfuscated files that match.
+// to PAR2 file descriptions, and renames any obfuscated files that match
+// both the 16KB hash and file size.
 // It opens root for dir once and confines all filesystem operations.
 func Par2Rename(ctx context.Context, log *slog.Logger, root *os.Root, dir string, opts fsutil.SanitizeOptions) ([]Rename, error) {
 	return Par2RenameExcluding(ctx, log, root, dir, opts, nil)
@@ -51,14 +52,14 @@ func Par2RenameExcluding(_ context.Context, log *slog.Logger, root *os.Root, dir
 		return nil, nil
 	}
 
-	hashToName := buildHashToNameMap(log, par2Files)
-	if len(hashToName) == 0 {
+	hashToDesc := buildHashToNameMap(log, par2Files)
+	if len(hashToDesc) == 0 {
 		return nil, nil
 	}
 
 	var renames []Rename
 	for _, e := range filtered {
-		r, renamed, err := par2RenameFile(log, root, dir, e, hashToName, opts)
+		r, renamed, err := par2RenameFile(log, root, dir, e, hashToDesc, opts)
 		if err != nil {
 			return renames, err
 		}
@@ -83,8 +84,8 @@ func findPar2Files(entries []fs.DirEntry, dir string) []string {
 	return par2Files
 }
 
-func buildHashToNameMap(log *slog.Logger, par2Files []string) map[[16]byte]string {
-	hashToName := make(map[[16]byte]string)
+func buildHashToNameMap(log *slog.Logger, par2Files []string) map[[16]byte]par2.FileDesc {
+	hashToDesc := make(map[[16]byte]par2.FileDesc)
 	for _, p := range par2Files {
 		descs, err := par2.ParseFileDescriptions(p)
 		if err != nil {
@@ -92,10 +93,10 @@ func buildHashToNameMap(log *slog.Logger, par2Files []string) map[[16]byte]strin
 			continue
 		}
 		for _, d := range descs {
-			hashToName[d.Hash16k] = d.FileName
+			hashToDesc[d.Hash16k] = d
 		}
 	}
-	return hashToName
+	return hashToDesc
 }
 
 func par2RenameFile(
@@ -103,7 +104,7 @@ func par2RenameFile(
 	root *os.Root,
 	dir string,
 	e fs.DirEntry,
-	hashToName map[[16]byte]string,
+	hashToDesc map[[16]byte]par2.FileDesc,
 	opts fsutil.SanitizeOptions,
 ) (Rename, bool, error) {
 	if !e.Type().IsRegular() {
@@ -124,10 +125,22 @@ func par2RenameFile(
 		return Rename{}, false, nil
 	}
 
-	trueName, ok := hashToName[hash]
-	if !ok || e.Name() == trueName {
+	desc, ok := hashToDesc[hash]
+	if !ok || e.Name() == desc.FileName {
 		return Rename{}, false, nil
 	}
+
+	if desc.FileSize > 0 {
+		info, err := e.Info()
+		if err != nil {
+			return Rename{}, false, nil //nolint:nilerr // unreadable entry skips rename
+		}
+		if info.Size() < 0 || uint64(info.Size()) != desc.FileSize { //nolint:gosec // size is non-negative
+			return Rename{}, false, nil
+		}
+	}
+
+	trueName := desc.FileName
 
 	// Perform rename; GetUniqueRelPath adds a numeric suffix if the
 	// par2-recorded target already exists on disk.

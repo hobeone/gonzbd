@@ -1,6 +1,8 @@
 package unpack
 
 import (
+	"fmt"
+	"path/filepath"
 	"slices"
 	"testing"
 )
@@ -321,4 +323,111 @@ func TestGroupArchives_Single7zNotShadowedByPar2Backup(t *testing.T) {
 	if got[0].MainFile != want[0].MainFile || !slices.Equal(got[0].Parts, want[0].Parts) {
 		t.Errorf("got[0] = %+v, want %+v", got[0], want[0])
 	}
+}
+
+func TestGroupArchives_PreservesSplitArchiveCase(t *testing.T) {
+	t.Parallel()
+
+	files := []string{
+		"/dir/Movie.Split.bin.002",
+		"/dir/Movie.Split.bin.001",
+	}
+
+	got := groupArchives(files)
+	if len(got) != 1 {
+		t.Fatalf("len(got) = %d, want 1", len(got))
+	}
+	if got[0].Type != SplitArchive {
+		t.Errorf("Type = %v, want SplitArchive", got[0].Type)
+	}
+	if got[0].Name != "Movie.Split.bin" {
+		t.Errorf("Name = %q, want %q", got[0].Name, "Movie.Split.bin")
+	}
+	if got[0].MainFile != "/dir/Movie.Split.bin.001" {
+		t.Errorf("MainFile = %q, want %q", got[0].MainFile, "/dir/Movie.Split.bin.001")
+	}
+	wantParts := []string{"/dir/Movie.Split.bin.001", "/dir/Movie.Split.bin.002"}
+	if !slices.Equal(got[0].Parts, wantParts) {
+		t.Errorf("Parts = %v, want %v", got[0].Parts, wantParts)
+	}
+}
+
+func TestGroupArchives_DistinctSubdirectoriesDoNotCollide(t *testing.T) {
+	t.Parallel()
+
+	t.Run("all archive families in distinct subdirectories", func(t *testing.T) {
+		t.Parallel()
+		files := []string{
+			// new-style multi-part rar
+			"/dir/sub1/movie.part01.rar",
+			"/dir/sub1/movie.part02.rar",
+			"/dir/sub2/movie.part01.rar",
+			"/dir/sub2/movie.part02.rar",
+
+			// legacy rar
+			"/dir/sub1/show.rar",
+			"/dir/sub1/show.r00",
+			"/dir/sub2/show.rar",
+			"/dir/sub2/show.r00",
+
+			// seven split
+			"/dir/sub1/data.7z.001",
+			"/dir/sub1/data.7z.002",
+			"/dir/sub2/data.7z.001",
+			"/dir/sub2/data.7z.002",
+
+			// seven single
+			"/dir/sub1/single.7z",
+			"/dir/sub2/single.7z",
+
+			// split parts
+			"/dir/sub1/split.001",
+			"/dir/sub1/split.002",
+			"/dir/sub2/split.001",
+			"/dir/sub2/split.002",
+
+			// tar single
+			"/dir/sub1/backup.tar",
+			"/dir/sub2/backup.tar",
+		}
+
+		got := groupArchives(files)
+		// Each of the 6 types should yield 2 archives (one in sub1, one in sub2) = 12 archives total.
+		if len(got) != 12 {
+			t.Fatalf("len(got) = %d, want 12; got = %+v", len(got), got)
+		}
+
+		// Verify every archive's Parts are within the same directory as its MainFile.
+		for _, a := range got {
+			dir := filepath.Dir(a.MainFile)
+			for _, p := range a.Parts {
+				if filepath.Dir(p) != dir {
+					t.Errorf("archive %s (%s) has part from different dir %s (want %s)", a.Name, a.MainFile, p, dir)
+				}
+			}
+		}
+	})
+
+	t.Run("deterministic sorting across 16 subdirectories with same name", func(t *testing.T) {
+		t.Parallel()
+		// Go's pdqsort switches from insertion sort to quicksort partitions when
+		// n > 12. Use 16 subdirectories in reverse order to ensure pdqsort partitions
+		// and exercises the MainFile tie-breaker in slices.SortFunc.
+		var files []string
+		for i := 16; i >= 1; i-- {
+			files = append(files, fmt.Sprintf("/dir/sub%02d/release.part01.rar", i))
+		}
+
+		got := groupArchives(files)
+		if len(got) != 16 {
+			t.Fatalf("len(got) = %d, want 16", len(got))
+		}
+
+		for i := range 16 {
+			wantMain := fmt.Sprintf("/dir/sub%02d/release.part01.rar", i+1)
+			if got[i].MainFile != wantMain {
+				t.Errorf("[%d] MainFile = %q, want %q", i, got[i].MainFile, wantMain)
+			}
+		}
+	})
 }
