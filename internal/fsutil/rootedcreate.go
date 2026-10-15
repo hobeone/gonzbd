@@ -16,10 +16,24 @@ import (
 // RootedCreateTempPerm for sibling temporary files before atomic rename.
 const TempFilePrefix = ".gonzbd-tmp-"
 
+// par2engine temp-file markers (github.com/hobeone/par2engine/par2 repair.go:335
+// in v1.1.2: target + repairTempMarker + rand.Text()[:16] + repairTempExt, where
+// crypto/rand.Text produces 16 uppercase base32 characters A-Z2-7).
+const (
+	par2TempMarker = ".par2engine-"
+	par2TempExt    = ".tmp"
+	par2TempSuffix = len(par2TempMarker) + 16 + len(par2TempExt)
+)
+
 // IsTempFile reports whether name (a base filename, not a path) matches the
 // ".gonzbd-tmp-<16 lowercase hex>" pattern created by RootedCreateTemp and
-// RootedCreateTempPerm.
+// RootedCreateTempPerm, or the "<target>.par2engine-<16 uppercase base32>.tmp"
+// pattern created by par2engine's out-of-place Decoder.Repair pipeline.
 func IsTempFile(name string) bool {
+	return isGonzbdTempFile(name) || isPar2EngineTempFile(name)
+}
+
+func isGonzbdTempFile(name string) bool { //noalign: covered via IsTempFile in rootedcreate_test.go and temp_file.spec
 	if !strings.HasPrefix(name, TempFilePrefix) {
 		return false
 	}
@@ -30,6 +44,24 @@ func IsTempFile(name string) bool {
 	for i := range len(suffix) {
 		c := suffix[i]
 		if (c < '0' || c > '9') && (c < 'a' || c > 'f') {
+			return false
+		}
+	}
+	return true
+}
+
+func isPar2EngineTempFile(name string) bool { //noalign: covered via IsTempFile in rootedcreate_test.go and temp_file.spec
+	if len(name) <= par2TempSuffix || !strings.HasSuffix(name, par2TempExt) {
+		return false
+	}
+	markerStart := len(name) - par2TempSuffix
+	if name[markerStart:markerStart+len(par2TempMarker)] != par2TempMarker {
+		return false
+	}
+	token := name[markerStart+len(par2TempMarker) : len(name)-len(par2TempExt)]
+	for i := range len(token) {
+		c := token[i]
+		if (c < 'A' || c > 'Z') && (c < '2' || c > '7') {
 			return false
 		}
 	}
