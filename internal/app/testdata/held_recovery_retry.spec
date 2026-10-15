@@ -49,6 +49,22 @@ file internal/app/job_finalizer.go
 	return false
 --- end
 
+[a queued retry still reports post-processing complete]
+file internal/app/job_finalizer.go
+--- anchor
+	if !retry || !f.retryWithHeldVolumes(ppJob.Job.ID()) {
+		select {
+		case app.postProcComplete <- PostProcComplete{JobID: ppJob.Job.ID()}:
+		default:
+		}
+--- replace
+	select {
+	case app.postProcComplete <- PostProcComplete{JobID: ppJob.Job.ID()}:
+	default:
+	}
+	if !retry || !f.retryWithHeldVolumes(ppJob.Job.ID()) {
+--- end
+
 [a retry that could not start suppresses the failure notification]
 file internal/app/job_finalizer.go
 --- anchor

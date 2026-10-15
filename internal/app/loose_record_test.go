@@ -1083,7 +1083,7 @@ func (a *lrApp) deliverAll(t *testing.T, j *job.Job, nA, nB int) {
 
 // lrWaitFinalized waits for the finalizer to report the job's
 // post-processing complete and returns its history entry's status.
-// persistAndCommit sends PostProcComplete after it has filed the entry,
+// finalize sends PostProcComplete after persistAndCommit has filed the entry,
 // flushed the recorder and called RemoveJob; it is the one sender
 // (`git grep -n 'postProcComplete <-' -- '*.go' ':!*_test.go'` returns 1 line).
 func (a *lrApp) lrWaitFinalized(t *testing.T, id string) string {

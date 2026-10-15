@@ -103,6 +103,10 @@ func (f *jobFinalizer) finalize(ppJob *postproc.Job) {
 	// After persistAndCommit has returned, so its transition lock is released
 	// and the retry it filed the entry for can claim the ID.
 	if !retry || !f.retryWithHeldVolumes(ppJob.Job.ID()) {
+		select {
+		case app.postProcComplete <- PostProcComplete{JobID: ppJob.Job.ID()}:
+		default:
+		}
 		f.fireCompletionNotification(entry)
 	}
 
@@ -342,10 +346,6 @@ func (f *jobFinalizer) persistAndCommit(log *slog.Logger, entry history.Entry, p
 		if persistErr != nil {
 			app.emit(Event{Type: "queue_updated"})
 			return persistErr
-		}
-		select {
-		case app.postProcComplete <- PostProcComplete{JobID: ppJob.Job.ID()}:
-		default:
 		}
 		// job_finalized signals a queue→history transition so both stores
 		// refresh from a single trigger and reach the new state together.
