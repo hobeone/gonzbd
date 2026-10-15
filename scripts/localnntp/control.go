@@ -2,12 +2,89 @@
 package main
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"net/http"
+	"time"
 )
+
+type durationValue time.Duration
+
+func (d *durationValue) UnmarshalJSON(b []byte) error {
+	trimmed := bytes.TrimSpace(b)
+	if len(trimmed) == 0 || bytes.Equal(trimmed, []byte("null")) {
+		*d = 0
+		return nil
+	}
+	if trimmed[0] == '"' {
+		var s string
+		if err := json.Unmarshal(trimmed, &s); err != nil {
+			return err
+		}
+		if s == "" {
+			*d = 0
+			return nil
+		}
+		parsed, err := time.ParseDuration(s)
+		if err != nil {
+			return fmt.Errorf("invalid duration %q: %w", s, err)
+		}
+		*d = durationValue(parsed)
+		return nil
+	}
+	var ns int64
+	if err := json.Unmarshal(trimmed, &ns); err != nil {
+		return fmt.Errorf("duration must be a string (e.g. \"5s\") or integer nanoseconds: %w", err)
+	}
+	*d = durationValue(time.Duration(ns))
+	return nil
+}
+
+type faultRequest struct {
+	Spec         *string       `json:"spec,omitempty"`
+	Action       FaultAction   `json:"action,omitempty"`
+	MessageIDs   []string      `json:"message_ids,omitempty"`
+	FileMatch    string        `json:"file_match,omitempty"`
+	Role         FileRole      `json:"role,omitempty"`
+	Parts        []int         `json:"parts,omitempty"`
+	Rate         float64       `json:"rate,omitempty"`
+	CorruptBytes int           `json:"corrupt_bytes,omitempty"`
+	TimeoutAfter durationValue `json:"timeout_after,omitempty"`
+	MaxFires     int           `json:"max_fires,omitempty"`
+}
+
+func decodeFaultRequest(r io.Reader) (FaultRule, error) {
+	dec := json.NewDecoder(r)
+	dec.DisallowUnknownFields()
+	var req faultRequest
+	if err := dec.Decode(&req); err != nil {
+		return FaultRule{}, fmt.Errorf("invalid json: %w", err)
+	}
+	if req.Spec != nil {
+		if *req.Spec == "" {
+			return FaultRule{}, errors.New("spec must be a non-empty string")
+		}
+		return ParseFaultSpec(*req.Spec)
+	}
+	rule := FaultRule{
+		Action:       req.Action,
+		MessageIDs:   req.MessageIDs,
+		FileMatch:    req.FileMatch,
+		Role:         req.Role,
+		Parts:        req.Parts,
+		Rate:         req.Rate,
+		CorruptBytes: req.CorruptBytes,
+		TimeoutAfter: time.Duration(req.TimeoutAfter),
+		MaxFires:     req.MaxFires,
+	}
+	if err := ValidateFaultRule(&rule); err != nil {
+		return FaultRule{}, err
+	}
+	return rule, nil
+}
 
 // NewControlHandler constructs an HTTP handler routing the localnntp control API.
 func NewControlHandler(srv *Server) http.Handler {
@@ -19,39 +96,10 @@ func NewControlHandler(srv *Server) http.Handler {
 	})
 
 	mux.HandleFunc("POST /faults", func(w http.ResponseWriter, r *http.Request) {
-		var raw map[string]any
-		if err := json.NewDecoder(r.Body).Decode(&raw); err != nil {
-			http.Error(w, fmt.Sprintf("invalid json: %v", err), http.StatusBadRequest)
+		rule, err := decodeFaultRequest(r.Body)
+		if err != nil {
+			http.Error(w, fmt.Sprintf("invalid fault rule: %v", err), http.StatusBadRequest)
 			return
-		}
-
-		var rule FaultRule
-		if specVal, ok := raw["spec"]; ok {
-			specStr, isStr := specVal.(string)
-			if !isStr || specStr == "" {
-				http.Error(w, "spec must be a non-empty string", http.StatusBadRequest)
-				return
-			}
-			parsed, err := ParseFaultSpec(specStr)
-			if err != nil {
-				http.Error(w, fmt.Sprintf("invalid fault spec: %v", err), http.StatusBadRequest)
-				return
-			}
-			rule = parsed
-		} else {
-			ruleBytes, err := json.Marshal(raw)
-			if err != nil {
-				http.Error(w, fmt.Sprintf("marshal json rule: %v", err), http.StatusBadRequest)
-				return
-			}
-			if err := json.Unmarshal(ruleBytes, &rule); err != nil {
-				http.Error(w, fmt.Sprintf("invalid fault rule: %v", err), http.StatusBadRequest)
-				return
-			}
-			if rule.Action == "" {
-				http.Error(w, "missing action in fault rule", http.StatusBadRequest)
-				return
-			}
 		}
 
 		srv.Faults().AddRule(rule)

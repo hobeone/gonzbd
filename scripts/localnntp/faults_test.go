@@ -309,6 +309,69 @@ func TestFaultEngine_MaxFires(t *testing.T) {
 	if len(rules) != 1 || rules[0].Fired != 2 {
 		t.Fatalf("expected Fired == 2, got %v", rules)
 	}
+
+	// Multi-part rule with MaxFires=1 caps per-article (MessageID) so both part 1 and part 2 fire once each.
+	perArtEngine := NewFaultEngine(1, []FaultRule{
+		{
+			Action:    FaultDrop,
+			FileMatch: "part01.rar",
+			Parts:     []int{1, 2},
+			MaxFires:  1,
+		},
+	})
+	p1 := ArticleTarget{MessageID: "seg1@test", DiskName: "part01.rar", PartNum: 1}
+	p2 := ArticleTarget{MessageID: "seg2@test", DiskName: "part01.rar", PartNum: 2}
+	if _, ok := perArtEngine.Match(p1); !ok {
+		t.Fatal("expected part 1 first request to match")
+	}
+	if _, ok := perArtEngine.Match(p1); ok {
+		t.Fatal("expected part 1 second request to be skipped after max=1")
+	}
+	if _, ok := perArtEngine.Match(p2); !ok {
+		t.Fatal("expected part 2 first request to match independently under max=1")
+	}
+	if _, ok := perArtEngine.Match(p2); ok {
+		t.Fatal("expected part 2 second request to be skipped after max=1")
+	}
+
+	// MatchAction only evaluates and spends budget on allowed actions.
+	statSafeEngine := NewFaultEngine(1, []FaultRule{
+		{
+			Action:    FaultCorruptPayload,
+			FileMatch: "part02.rar",
+			MaxFires:  1,
+		},
+	})
+	p3 := ArticleTarget{MessageID: "seg3@test", DiskName: "part02.rar", PartNum: 1}
+	if _, ok := statSafeEngine.MatchAction(p3, FaultDrop); ok {
+		t.Fatal("expected MatchAction(FaultDrop) not to match FaultCorruptPayload")
+	}
+	if _, ok := statSafeEngine.Match(p3); !ok {
+		t.Fatal("expected subsequent Match() to still have its MaxFires=1 budget")
+	}
+}
+
+func TestValidateFaultRule(t *testing.T) {
+	t.Parallel()
+	if err := ValidateFaultRule(nil); err == nil {
+		t.Error("expected error for nil rule")
+	}
+	badRules := []FaultRule{
+		{Action: "bogus", FileMatch: "a"},
+		{Action: FaultDrop, Role: "bogus_role"},
+		{Action: FaultDrop, Parts: []int{0}},
+		{Action: FaultDrop, Rate: -0.1},
+		{Action: FaultDrop, Rate: 1.5},
+		{Action: FaultCorruptPayload, FileMatch: "a", CorruptBytes: -1},
+		{Action: FaultStall, FileMatch: "a", TimeoutAfter: -time.Second},
+		{Action: FaultDrop, FileMatch: "a", MaxFires: -1},
+		{Action: FaultDrop}, // no selector
+	}
+	for i := range badRules {
+		if err := ValidateFaultRule(&badRules[i]); err == nil {
+			t.Errorf("case %d: expected error for %+v", i, badRules[i])
+		}
+	}
 }
 
 func TestFaultEngine_RulesCopyAndClear(t *testing.T) {
@@ -564,13 +627,22 @@ func TestRateLimiter(t *testing.T) {
 		t.Errorf("paced wait too short: %v, expected at least 20ms", elapsed)
 	}
 
-	// 4. Context cancellation
+	// 4. Context cancellation (pre-canceled and mid-wait refund)
 	cancelCtx, cancel := context.WithCancel(context.Background())
 	cancel() // cancel immediately
 	err := rl.Wait(cancelCtx, 500*1000)
 	if !errors.Is(err, context.Canceled) {
 		t.Fatalf("expected context.Canceled, got %v", err)
 	}
+
+	rl.SetRateMBps(1.0) // 1 MB/s -> 500 KB is 500ms
+	midCtx, midCancel := context.WithTimeout(context.Background(), 15*time.Millisecond)
+	defer midCancel()
+	err = rl.Wait(midCtx, 500*1000)
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("expected context.DeadlineExceeded during wait, got %v", err)
+	}
+	rl.SetRateMBps(20.0)
 
 	// 5. Concurrency
 	var wg sync.WaitGroup

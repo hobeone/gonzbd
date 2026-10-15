@@ -32,13 +32,15 @@ func createTestDB(t *testing.T, dir string) *sql.DB {
 	schema := `
 	CREATE TABLE dispatch_jobs (
 		id TEXT PRIMARY KEY,
-		sort_key INTEGER
+		sort_key INTEGER,
+		name TEXT NOT NULL DEFAULT ''
 	);
 	CREATE TABLE job_files (
 		job_id TEXT,
 		file_index INTEGER,
-		filename TEXT,
-		complete INTEGER,
+		filename TEXT NOT NULL DEFAULT '',
+		complete INTEGER NOT NULL DEFAULT 0,
+		fetch_policy INTEGER NOT NULL DEFAULT 0,
 		PRIMARY KEY(job_id, file_index)
 	);
 	CREATE TABLE written_articles (
@@ -53,6 +55,7 @@ func createTestDB(t *testing.T, dir string) *sql.DB {
 	CREATE TABLE history (
 		id INTEGER PRIMARY KEY AUTOINCREMENT,
 		nzo_id TEXT UNIQUE,
+		name TEXT NOT NULL DEFAULT '',
 		status TEXT,
 		storage TEXT,
 		path TEXT,
@@ -420,7 +423,7 @@ func TestVerify_Crash_Errors(t *testing.T) {
 		jobSubdir := filepath.Join(downloadDir, "job-sub")
 		_ = os.MkdirAll(jobSubdir, 0o755)
 		_ = os.WriteFile(filepath.Join(jobSubdir, "sub.rar"), []byte("sub"), 0o600)
-		p, err := findPartialFile(downloadDir, "job-sub", "sub.rar")
+		p, err := findPartialFile(downloadDir, []string{"job-sub"}, "sub.rar")
 		if err != nil || !strings.HasSuffix(p, filepath.Join("job-sub", "sub.rar")) {
 			t.Fatalf("findPartialFile jobSubdir failed: p=%s err=%v", p, err)
 		}
@@ -428,12 +431,18 @@ func TestVerify_Crash_Errors(t *testing.T) {
 		nestedSubdir := filepath.Join(downloadDir, "nested", "deep")
 		_ = os.MkdirAll(nestedSubdir, 0o755)
 		_ = os.WriteFile(filepath.Join(nestedSubdir, "deep.rar"), []byte("deep"), 0o600)
-		p, err = findPartialFile(downloadDir, "", "deep.rar")
+		p, err = findPartialFile(downloadDir, []string{"nested"}, "deep.rar")
 		if err != nil || !strings.HasSuffix(p, filepath.Join("nested", "deep", "deep.rar")) {
 			t.Fatalf("findPartialFile walk failed: p=%s err=%v", p, err)
 		}
 
-		_, err = findPartialFile(downloadDir, "", "nonexistent.rar")
+		// Stale file in an unrelated sibling job directory must NOT be returned.
+		_, err = findPartialFile(downloadDir, []string{"current-job"}, "deep.rar")
+		if err == nil {
+			t.Fatal("expected error when partial file only exists in unrelated sibling subdir")
+		}
+
+		_, err = findPartialFile(downloadDir, nil, "nonexistent.rar")
 		if err == nil {
 			t.Fatal("expected error for nonexistent partial file")
 		}
@@ -1011,4 +1020,190 @@ func TestCLI_Run(t *testing.T) {
 			t.Fatal("expected non-zero exit code for verification failure")
 		}
 	})
+}
+
+func TestVerify_ReviewFixesAndEdgeCases(t *testing.T) {
+	ctx := context.Background()
+	tempDir := t.TempDir()
+	manifest := &ReleaseManifest{
+		Name:     "myrel",
+		PartSize: 4,
+		ExpectedOutputs: []ExpectedOutput{
+			{Name: "payload.bin", Size: 4, SHA256: fmt.Sprintf("%x", sha256.Sum256([]byte("data")))},
+		},
+		Files: []ReleaseFile{
+			{
+				FileIndex:   0,
+				DiskName:    "myrel.part02.rar",
+				NZBFilename: "myrel.part02.rar",
+				Role:        RoleRARVolume,
+				TotalSize:   4,
+				Segments:    []SegmentMeta{{MessageID: "seg-p2@test", PartNum: 1, Length: 4}},
+			},
+			{
+				FileIndex:   1,
+				DiskName:    "myrel.part01.rar",
+				NZBFilename: "myrel.part01.rar",
+				Role:        RoleRARVolume,
+				TotalSize:   4,
+				Segments:    []SegmentMeta{{MessageID: "seg-p1@test", PartNum: 1, Length: 4}},
+			},
+		},
+	}
+	manifestPath := filepath.Join(tempDir, "manifest.json")
+	if err := SaveManifest(manifestPath, manifest); err != nil {
+		t.Fatal(err)
+	}
+
+	// 1. sortedManifestFiles puts part01 before part02 using job.SortJobFiles
+	sorted := sortedManifestFiles(manifest)
+	if len(sorted) != 2 || sorted[0].DiskName != "myrel.part01.rar" {
+		t.Fatalf("sortedManifestFiles unexpected order: %+v", sorted)
+	}
+	if sortedManifestFiles(nil) != nil {
+		t.Fatal("expected nil from sortedManifestFiles(nil)")
+	}
+
+	// 2. --snapshot-as and --snapshot require --server
+	if _, err := Verify(ctx, VerifyConfig{
+		Mode:         "crash",
+		ManifestPath: manifestPath,
+		AdminDir:     tempDir,
+		SnapshotAs:   "snap1",
+	}); err == nil || !strings.Contains(err.Error(), "--snapshot-as requires --server") {
+		t.Fatalf("expected --snapshot-as error, got %v", err)
+	}
+	if _, err := Verify(ctx, VerifyConfig{
+		Mode:            "complete",
+		ManifestPath:    manifestPath,
+		AdminDir:        tempDir,
+		CompareSnapshot: "snap1",
+	}); err == nil || !strings.Contains(err.Error(), "--snapshot requires --server") {
+		t.Fatalf("expected --snapshot error, got %v", err)
+	}
+
+	// 3. resolveExplicitCrashJob & resolveCrashJob edge cases
+	adminDir := filepath.Join(tempDir, "admin-multi")
+	_ = os.MkdirAll(adminDir, 0o755)
+	db := createTestDB(t, adminDir)
+	_, _ = db.Exec(`ALTER TABLE dispatch_jobs ADD COLUMN name TEXT DEFAULT ''`)
+	_, _ = db.Exec(`INSERT INTO dispatch_jobs (id, sort_key, name) VALUES ('j1', 1, 'myrel'), ('j2', 2, 'myrel')`)
+
+	if _, _, err := resolveExplicitCrashJob(ctx, db, "j1"); err != nil {
+		t.Fatalf("resolveExplicitCrashJob j1: %v", err)
+	}
+	if _, _, err := resolveExplicitCrashJob(ctx, db, "nonexistent"); err == nil {
+		t.Fatal("expected error for nonexistent explicit job id")
+	}
+	_, _ = db.Exec(`INSERT INTO job_files (job_id, file_index, filename, complete) VALUES ('j-files-only', 0, 'a.rar', 0)`)
+	if id, _, err := resolveExplicitCrashJob(ctx, db, "j-files-only"); err != nil || id != "j-files-only" {
+		t.Fatalf("resolveExplicitCrashJob via job_files failed: id=%q err=%v", id, err)
+	}
+
+	// Multiple matching jobs in dispatch_jobs without --job-id fails closed
+	if _, _, err := resolveCrashJob(ctx, db, "", "myrel"); err == nil || !strings.Contains(err.Error(), "multiple jobs") {
+		t.Fatalf("expected multiple jobs error, got %v", err)
+	}
+	// Non-matching release name fails closed
+	if _, _, err := resolveCrashJob(ctx, db, "", "other-rel"); err == nil || !strings.Contains(err.Error(), "no job matching") {
+		t.Fatalf("expected no job matching error, got %v", err)
+	}
+	// Exact single match succeeds
+	_, _ = db.Exec(`DELETE FROM dispatch_jobs WHERE id = 'j2'`)
+	if id, name, err := resolveCrashJob(ctx, db, "", "myrel"); err != nil || id != "j1" || name != "myrel" {
+		t.Fatalf("resolveCrashJob single match failed: id=%q name=%q err=%v", id, name, err)
+	}
+	// Fallback to "release" name in filterMatchingCandidates
+	cands := []dispatchJobCandidate{{id: "jr", name: "release"}}
+	if matched := filterMatchingCandidates(cands, "custom"); len(matched) != 1 || matched[0].id != "jr" {
+		t.Fatalf("expected fallback to 'release', got %+v", matched)
+	}
+	// Empty dispatch_jobs returns no job found error
+	_, _ = db.Exec(`DELETE FROM dispatch_jobs`)
+	if _, _, err := resolveCrashJob(ctx, db, "", "myrel"); err == nil || !strings.Contains(err.Error(), "no job found") {
+		t.Fatalf("expected no job found error from empty dispatch_jobs, got %v", err)
+	}
+
+	// 4. resolveCompleteHistory edge cases
+	_, _ = db.Exec(`ALTER TABLE history ADD COLUMN name TEXT DEFAULT ''`)
+	_, _ = db.Exec(`INSERT INTO history (nzo_id, name, status, storage) VALUES ('h1', 'myrel', 'Completed', '/tmp/a'), ('h2', 'myrel', 'Completed', '/tmp/b')`)
+	if _, err := resolveCompleteHistory(ctx, db, "", "myrel"); err == nil || !strings.Contains(err.Error(), "multiple history rows") {
+		t.Fatalf("expected multiple history rows error, got %v", err)
+	}
+	if _, err := resolveCompleteHistory(ctx, db, "", "unmatched"); err == nil || !strings.Contains(err.Error(), "no history row matching") {
+		t.Fatalf("expected no history row matching error, got %v", err)
+	}
+	_, _ = db.Exec(`DELETE FROM history WHERE nzo_id = 'h2'`)
+	if h, err := resolveCompleteHistory(ctx, db, "", "myrel"); err != nil || h.jobID != "h1" {
+		t.Fatalf("expected single history match h1, got %+v err=%v", h, err)
+	}
+	// Fallback to "release" name in resolveCompleteHistory
+	_, _ = db.Exec(`UPDATE history SET name = 'release' WHERE nzo_id = 'h1'`)
+	if h, err := resolveCompleteHistory(ctx, db, "", "custom"); err != nil || h.jobID != "h1" {
+		t.Fatalf("expected fallback to 'release' in history, got %+v err=%v", h, err)
+	}
+
+	// 5. candidateCompleteDirs when storage/path point to a file vs directory
+	completeDir := filepath.Join(tempDir, "complete-cand")
+	_ = os.MkdirAll(completeDir, 0o755)
+	fileStorage := filepath.Join(completeDir, "payload.bin")
+	_ = os.WriteFile(fileStorage, []byte("data"), 0o600)
+	dirs := candidateCompleteDirs(completeDir, "myrel", historyRecord{
+		jobID:   "h1",
+		name:    "myrel",
+		storage: fileStorage,
+		path:    fileStorage,
+	})
+	if len(dirs) == 0 || dirs[0] != completeDir {
+		t.Fatalf("expected parent dir of fileStorage, got %v", dirs)
+	}
+
+	// 6. SkipArchiveCleanup allows .rar/.par2 in completeDir, while empty incomplete dir still fails
+	if err := checkCompleteHygiene([]string{completeDir}, true); err != nil {
+		t.Fatalf("checkCompleteHygiene with SkipArchiveCleanup=true failed: %v", err)
+	}
+	incDir := filepath.Join(tempDir, "inc-empty")
+	_ = os.MkdirAll(filepath.Join(incDir, "myrel"), 0o755)
+	if err := checkIncompleteHygiene(incDir, "myrel", "myrel", "h1"); err == nil || !strings.Contains(err.Error(), "still exists") {
+		t.Fatalf("expected empty incomplete dir to fail hygiene check, got %v", err)
+	}
+
+	// 7. compareSnapshotRefetches detects faulted re-fetch via Requests map and handles error statuses
+	srv, err := NewServer(ServerConfig{
+		ReleaseDir: tempDir,
+		Manifest:   manifest,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv.recordRequest("seg-p1@test")
+	srv.TakeSnapshot("snap-req", []string{"seg-p1@test"})
+	// Simulate a post-crash re-fetch that hit a fault (so Requests increases while ServedClean does not).
+	srv.recordRequest("seg-p1@test")
+
+	ctrlSrv := httptest.NewServer(NewControlHandler(srv))
+	defer ctrlSrv.Close()
+
+	refetched, err := compareSnapshotRefetches(ctx, ctrlSrv.URL, "snap-req")
+	if err != nil {
+		t.Fatalf("compareSnapshotRefetches: %v", err)
+	}
+	if len(refetched) != 1 || refetched[0] != "seg-p1@test" {
+		t.Fatalf("expected seg-p1@test in refetchedIDs, got %v", refetched)
+	}
+	if _, err := compareSnapshotRefetches(ctx, ctrlSrv.URL, "missing-snap"); err == nil {
+		t.Fatal("expected error for missing snapshot")
+	}
+	if err := postSnapshot(ctx, ctrlSrv.URL, "", []string{"seg-p1@test"}); err == nil {
+		t.Fatal("expected error when posting snapshot with empty name")
+	}
+
+	// Closed DB error paths for queryDispatchCandidates and queryHistoryRecords
+	_ = db.Close()
+	if _, err := queryDispatchCandidates(ctx, db); err == nil {
+		t.Fatal("expected error from queryDispatchCandidates on closed DB")
+	}
+	if _, err := queryHistoryRecords(ctx, db, "h1"); err == nil {
+		t.Fatal("expected error from queryHistoryRecords on closed DB")
+	}
 }

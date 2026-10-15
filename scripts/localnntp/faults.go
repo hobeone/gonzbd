@@ -6,6 +6,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"maps"
 	"math/rand/v2"
 	"slices"
 	"strconv"
@@ -42,6 +43,7 @@ type FaultRule struct {
 	TimeoutAfter time.Duration `json:"timeout_after,omitempty"`
 	MaxFires     int           `json:"max_fires,omitempty"`
 	Fired        int           `json:"fired"`
+	firedByID    map[string]int
 }
 
 // ArticleTarget describes an article segment being requested or processed.
@@ -64,20 +66,76 @@ func normalizeMessageIDs(ids []string) []string {
 	if len(ids) == 0 {
 		return nil
 	}
-	out := make([]string, len(ids))
-	for i, id := range ids {
-		out[i] = extractMessageID(id)
+	out := make([]string, 0, len(ids))
+	for _, id := range ids {
+		if clean := extractMessageID(id); clean != "" {
+			out = append(out, clean)
+		}
+	}
+	if len(out) == 0 {
+		return nil
 	}
 	return out
+}
+
+func cloneFaultRule(r FaultRule) FaultRule {
+	c := r
+	c.MessageIDs = normalizeMessageIDs(r.MessageIDs)
+	c.Parts = slices.Clone(r.Parts)
+	c.firedByID = maps.Clone(r.firedByID)
+	return c
+}
+
+// ValidateFaultRule checks that r has a known action, valid parameter ranges,
+// and at least one selector or positive rate. It normalizes MessageIDs and
+// resets runtime fire counters.
+func ValidateFaultRule(r *FaultRule) error {
+	if r == nil {
+		return errors.New("fault rule is nil")
+	}
+	switch r.Action {
+	case FaultDrop, FaultCorruptPayload, FaultCorruptWire, FaultDropMidBody, FaultStall:
+	default:
+		return fmt.Errorf("unknown fault action %q", r.Action)
+	}
+	if r.Role != "" {
+		switch r.Role {
+		case RoleRARVolume, RolePar2Index, RolePar2Volume, RoleSidecar:
+		default:
+			return fmt.Errorf("unknown file role %q", r.Role)
+		}
+	}
+	for _, p := range r.Parts {
+		if p <= 0 {
+			return fmt.Errorf("part number must be positive, got %d", p)
+		}
+	}
+	if r.Rate < 0 || r.Rate > 1.0 {
+		return fmt.Errorf("rate must be in [0, 1], got %f", r.Rate)
+	}
+	if r.CorruptBytes < 0 {
+		return fmt.Errorf("corrupt_bytes cannot be negative: %d", r.CorruptBytes)
+	}
+	if r.TimeoutAfter < 0 {
+		return fmt.Errorf("timeout_after cannot be negative: %v", r.TimeoutAfter)
+	}
+	if r.MaxFires < 0 {
+		return fmt.Errorf("max_fires cannot be negative: %d", r.MaxFires)
+	}
+	r.MessageIDs = normalizeMessageIDs(r.MessageIDs)
+	r.Fired = 0
+	r.firedByID = nil
+	if len(r.MessageIDs) == 0 && r.FileMatch == "" && r.Role == "" && len(r.Parts) == 0 && r.Rate <= 0 {
+		return errors.New("fault rule requires at least one selector (file_match, role, message_ids, parts) or positive rate")
+	}
+	return nil
 }
 
 // NewFaultEngine creates a thread-safe FaultEngine seeded with seed and initial rules.
 func NewFaultEngine(seed uint64, rules []FaultRule) *FaultEngine {
 	copied := make([]FaultRule, len(rules))
 	for i, r := range rules {
-		copied[i] = r
-		copied[i].MessageIDs = normalizeMessageIDs(r.MessageIDs)
-		copied[i].Parts = slices.Clone(r.Parts)
+		copied[i] = cloneFaultRule(r)
 	}
 	return &FaultEngine{
 		rules: copied,
@@ -92,9 +150,7 @@ func (e *FaultEngine) Rules() []FaultRule {
 
 	out := make([]FaultRule, len(e.rules))
 	for i, r := range e.rules {
-		out[i] = r
-		out[i].MessageIDs = slices.Clone(r.MessageIDs)
-		out[i].Parts = slices.Clone(r.Parts)
+		out[i] = cloneFaultRule(r)
 	}
 	return out
 }
@@ -104,9 +160,9 @@ func (e *FaultEngine) AddRule(r FaultRule) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 
-	c := r
-	c.MessageIDs = normalizeMessageIDs(r.MessageIDs)
-	c.Parts = slices.Clone(r.Parts)
+	c := cloneFaultRule(r)
+	c.Fired = 0
+	c.firedByID = nil
 	e.rules = append(e.rules, c)
 }
 
@@ -120,13 +176,31 @@ func (e *FaultEngine) ClearRules() {
 // Match evaluates candidate rules in order against target. If a rule matches,
 // its Fired counter is incremented and a copy with applied defaults is returned.
 func (e *FaultEngine) Match(target ArticleTarget) (FaultRule, bool) {
+	return e.MatchAction(target)
+}
+
+// MatchAction evaluates candidate rules in order against target, considering
+// only rules whose Action is in allowed (or any action when allowed is empty).
+// When MaxFires > 0, deterministic selector rules (Rate == 0) cap fires per
+// target MessageID when MessageID is non-empty, while probabilistic rules
+// (Rate > 0) cap total fires across the rule.
+func (e *FaultEngine) MatchAction(target ArticleTarget, allowed ...FaultAction) (FaultRule, bool) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 
 	for i := range e.rules {
 		r := &e.rules[i]
-		if r.MaxFires > 0 && r.Fired >= r.MaxFires {
+		if len(allowed) > 0 && !slices.Contains(allowed, r.Action) {
 			continue
+		}
+		if r.MaxFires > 0 {
+			if r.Rate == 0 && target.MessageID != "" {
+				if r.firedByID[target.MessageID] >= r.MaxFires {
+					continue
+				}
+			} else if r.Fired >= r.MaxFires {
+				continue
+			}
 		}
 
 		hasSelector := len(r.MessageIDs) > 0 || r.FileMatch != "" || r.Role != "" || len(r.Parts) > 0 || r.Rate > 0
@@ -151,9 +225,13 @@ func (e *FaultEngine) Match(target ArticleTarget) (FaultRule, bool) {
 		}
 
 		r.Fired++
-		matched := *r
-		matched.MessageIDs = slices.Clone(r.MessageIDs)
-		matched.Parts = slices.Clone(r.Parts)
+		if target.MessageID != "" {
+			if r.firedByID == nil {
+				r.firedByID = make(map[string]int)
+			}
+			r.firedByID[target.MessageID]++
+		}
+		matched := cloneFaultRule(*r)
 		if matched.CorruptBytes <= 0 {
 			matched.CorruptBytes = 16
 		}
@@ -262,8 +340,8 @@ func ParseFaultSpec(spec string) (FaultRule, error) {
 		}
 	}
 
-	if len(rule.MessageIDs) == 0 && rule.FileMatch == "" && rule.Role == "" && len(rule.Parts) == 0 && rule.Rate <= 0 {
-		return FaultRule{}, errors.New("fault spec requires at least one selector (file, role, msgid, parts) or rate")
+	if err := ValidateFaultRule(&rule); err != nil {
+		return FaultRule{}, err
 	}
 
 	return rule, nil
@@ -392,11 +470,12 @@ func NewRateLimiter(rateMBps float64) *RateLimiter {
 	}
 }
 
-// SetRateMBps updates the rate limit.
+// SetRateMBps updates the rate limit and clears any pending reservation backlog.
 func (r *RateLimiter) SetRateMBps(rateMBps float64) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.rateMBps = rateMBps
+	r.nextFree = time.Time{}
 }
 
 // RateMBps returns the current rate limit in MB/s.
@@ -430,7 +509,8 @@ func (r *RateLimiter) Wait(ctx context.Context, nBytes int) error {
 	durationSeconds := float64(nBytes) / (rate * 1e6)
 	transmissionDuration := time.Duration(durationSeconds * float64(time.Second))
 	r.nextFree = r.nextFree.Add(transmissionDuration)
-	delay := r.nextFree.Sub(now)
+	reservedEnd := r.nextFree
+	delay := reservedEnd.Sub(now)
 	r.mu.Unlock()
 
 	if delay <= 0 {
@@ -442,6 +522,12 @@ func (r *RateLimiter) Wait(ctx context.Context, nBytes int) error {
 
 	select {
 	case <-ctx.Done():
+		r.mu.Lock()
+		if rem := time.Until(reservedEnd); rem > 0 {
+			refund := min(rem, transmissionDuration)
+			r.nextFree = r.nextFree.Add(-refund)
+		}
+		r.mu.Unlock()
 		return ctx.Err()
 	case <-timer.C:
 		return nil

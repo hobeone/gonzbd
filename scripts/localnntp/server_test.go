@@ -313,13 +313,21 @@ func TestServer_NNTPProtocol(t *testing.T) {
 		t.Fatalf("STAT missing response: %s", line)
 	}
 
-	// ARTICLE valid
+	// ARTICLE valid (verify RFC 3977 headers + blank line separator before body)
 	if _, err := c.Write([]byte("ARTICLE <single-part-1@localnntp.test>\r\n")); err != nil {
 		t.Fatalf("write ARTICLE: %v", err)
 	}
 	line, err = reader.ReadString('\n')
 	if err != nil || !strings.HasPrefix(line, "220 ") {
 		t.Fatalf("ARTICLE valid response: %s", line)
+	}
+	hdrLine, err := reader.ReadString('\n')
+	if err != nil || strings.TrimRight(hdrLine, "\r\n") != "Message-ID: <single-part-1@localnntp.test>" {
+		t.Fatalf("ARTICLE expected Message-ID header, got %q (err %v)", hdrLine, err)
+	}
+	sepLine, err := reader.ReadString('\n')
+	if err != nil || strings.TrimRight(sepLine, "\r\n") != "" {
+		t.Fatalf("ARTICLE expected blank header/body separator line, got %q (err %v)", sepLine, err)
 	}
 	// read until terminator
 	for {
@@ -872,7 +880,7 @@ func TestControl_API(t *testing.T) {
 	}
 	_ = resp.Body.Close()
 
-	// POST /faults with missing action -> 400
+	// POST /faults (missing action -> 400)
 	resp, err = client.Post(ts.URL+"/faults", "application/json", strings.NewReader(`{"file_match": "test"}`))
 	if err != nil {
 		t.Fatalf("POST /faults missing action: %v", err)
@@ -881,6 +889,77 @@ func TestControl_API(t *testing.T) {
 		t.Fatalf("expected 400 for missing action, got %d", resp.StatusCode)
 	}
 	_ = resp.Body.Close()
+
+	// POST /faults (unknown action -> 400)
+	resp, err = client.Post(ts.URL+"/faults", "application/json", strings.NewReader(`{"action": "typo", "file_match": "test"}`))
+	if err != nil {
+		t.Fatalf("POST /faults unknown action: %v", err)
+	}
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("expected 400 for unknown action, got %d", resp.StatusCode)
+	}
+	_ = resp.Body.Close()
+
+	// POST /faults (no selector -> 400)
+	resp, err = client.Post(ts.URL+"/faults", "application/json", strings.NewReader(`{"action": "drop"}`))
+	if err != nil {
+		t.Fatalf("POST /faults no selector: %v", err)
+	}
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("expected 400 for no selector, got %d", resp.StatusCode)
+	}
+	_ = resp.Body.Close()
+
+	// POST /faults (structured JSON with string timeout_after -> 200)
+	resp, err = client.Post(ts.URL+"/faults", "application/json", strings.NewReader(`{"action": "stall", "file_match": "single.bin", "timeout_after": "250ms", "max_fires": 1}`))
+	if err != nil {
+		t.Fatalf("POST /faults string timeout_after: %v", err)
+	}
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200 for string timeout_after, got %d", resp.StatusCode)
+	}
+	_ = resp.Body.Close()
+
+	// POST /faults (structured JSON with integer nanoseconds timeout_after -> 200)
+	resp, err = client.Post(ts.URL+"/faults", "application/json", strings.NewReader(`{"action": "stall", "file_match": "single.bin", "timeout_after": 50000000}`))
+	if err != nil {
+		t.Fatalf("POST /faults int timeout_after: %v", err)
+	}
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200 for int timeout_after, got %d", resp.StatusCode)
+	}
+	_ = resp.Body.Close()
+
+	// POST /faults (structured JSON with empty string and null timeout_after -> 200)
+	for _, bodyStr := range []string{
+		`{"action": "drop", "file_match": "single.bin", "timeout_after": ""}`,
+		`{"action": "drop", "file_match": "single.bin", "timeout_after": null}`,
+	} {
+		resp, err = client.Post(ts.URL+"/faults", "application/json", strings.NewReader(bodyStr))
+		if err != nil {
+			t.Fatalf("POST /faults null/empty timeout_after: %v", err)
+		}
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("expected 200, got %d", resp.StatusCode)
+		}
+		_ = resp.Body.Close()
+	}
+
+	// POST /faults (invalid duration string and invalid duration type -> 400)
+	for _, badDur := range []string{
+		`{"action": "stall", "file_match": "single.bin", "timeout_after": "not-a-dur"}`,
+		`{"action": "stall", "file_match": "single.bin", "timeout_after": true}`,
+		`{"action": "drop", "file_match": "single.bin", "unknown_field": 1}`,
+	} {
+		resp, err = client.Post(ts.URL+"/faults", "application/json", strings.NewReader(badDur))
+		if err != nil {
+			t.Fatalf("POST /faults bad duration: %v", err)
+		}
+		if resp.StatusCode != http.StatusBadRequest {
+			t.Fatalf("expected 400 for %s, got %d", badDur, resp.StatusCode)
+		}
+		_ = resp.Body.Close()
+	}
 }
 
 func TestNewServer_Validation(t *testing.T) {
@@ -1008,7 +1087,7 @@ func (e *errFailingWriter) Write(_ []byte) (int, error) {
 }
 
 func TestServer_SendAndDotStuff_Unit(t *testing.T) {
-	srv := &Server{}
+	srv := &Server{limiter: NewRateLimiter(0)}
 	errW := &errFailingWriter{}
 	// Small buffer so Fprintf fails immediately and hits `return err` branch
 	bwSmall := bufio.NewWriterSize(errW, 2)
@@ -1022,17 +1101,18 @@ func TestServer_SendAndDotStuff_Unit(t *testing.T) {
 		t.Errorf("expected error from failing writer flush")
 	}
 
-	// Immediate write failure for sendDotStuffed
-	if err := sendDotStuffed(bwSmall, []byte("body")); err == nil {
-		t.Errorf("expected error from sendDotStuffed with failing writer")
+	// Immediate write failure for writeRateLimited
+	if _, err := srv.writeRateLimited(context.Background(), bwSmall, []byte("body that exceeds small buffer")); err == nil {
+		t.Errorf("expected error from writeRateLimited with failing writer")
 	}
 
-	// Successful sendDotStuffed with leading dot and line without newline
+	// Successful FormatDotStuffedWire + writeRateLimited with leading dot and line without newline
 	var buf bytes.Buffer
 	goodBW := bufio.NewWriter(&buf)
 	raw := []byte(".dotline\r\nsecond line\nthird-no-newline")
-	if err := sendDotStuffed(goodBW, raw); err != nil {
-		t.Fatalf("sendDotStuffed: %v", err)
+	wire := FormatDotStuffedWire(raw)
+	if _, err := srv.writeRateLimited(context.Background(), goodBW, wire); err != nil {
+		t.Fatalf("writeRateLimited: %v", err)
 	}
 	got := buf.String()
 	if !strings.Contains(got, "..dotline\r\n") {
@@ -1191,5 +1271,111 @@ func TestServer_ArticlesPack_FastPath(t *testing.T) {
 	_, err = connMissing.Fetch(ctx, "missing-disk@localnntp.test")
 	if !errors.Is(err, nntp.ErrNoArticle) {
 		t.Fatalf("expected ErrNoArticle for missing disk file, got: %v", err)
+	}
+}
+
+func TestServer_StatDoesNotConsumeBodyFaultAndAcceptBackoff(t *testing.T) {
+	dir := t.TempDir()
+	manifest := createTestRelease(t, dir)
+
+	srv, err := NewServer(ServerConfig{
+		ReleaseDir: dir,
+		Manifest:   manifest,
+	})
+	if err != nil {
+		t.Fatalf("NewServer: %v", err)
+	}
+	if err := srv.Start(); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	defer func() { _ = srv.Close() }()
+
+	// Rule: max_fires=1 corrupt-payload on single-part-1.
+	// STAT must NOT consume max_fires=1.
+	srv.Faults().AddRule(FaultRule{
+		Action:     FaultCorruptPayload,
+		MessageIDs: []string{"single-part-1@localnntp.test"},
+		MaxFires:   1,
+	})
+
+	conn := dialNNTP(t, srv, "", "")
+	ctx := t.Context()
+
+	if err := conn.Stat(ctx, "single-part-1@localnntp.test"); err != nil {
+		t.Fatalf("Stat before BODY failed: %v", err)
+	}
+	if srv.Faults().Rules()[0].Fired != 0 {
+		t.Fatalf("STAT should not consume body-only fault budget, Fired=%d", srv.Faults().Rules()[0].Fired)
+	}
+
+	// Now BODY should trigger the corrupt-payload fault once.
+	body1, err := conn.Fetch(ctx, "single-part-1@localnntp.test")
+	if err != nil {
+		t.Fatalf("Fetch 1: %v", err)
+	}
+	art1, err := decoder.DecodeArticle(body1)
+	if err != nil {
+		t.Fatalf("DecodeArticle 1: %v", err)
+	}
+	wantSingle := []byte("hello single part release payload for testing 1234567890!")
+	if bytes.Equal(art1.Data, wantSingle) {
+		t.Fatalf("expected first BODY to be corrupted")
+	}
+
+	// Second BODY should be clean because max_fires=1 is now exhausted.
+	body2, err := conn.Fetch(ctx, "single-part-1@localnntp.test")
+	if err != nil {
+		t.Fatalf("Fetch 2: %v", err)
+	}
+	art2, err := decoder.DecodeArticle(body2)
+	if err != nil {
+		t.Fatalf("DecodeArticle 2: %v", err)
+	}
+	if !bytes.Equal(art2.Data, wantSingle) {
+		t.Fatalf("expected second BODY to be clean")
+	}
+
+	// Exercise waitOnAcceptError branches directly.
+	var backoff time.Duration
+	if !srv.waitOnAcceptError(errors.New("transient"), &backoff) {
+		t.Fatalf("expected true on transient error")
+	}
+	if backoff != 5*time.Millisecond {
+		t.Fatalf("expected 5ms initial backoff, got %v", backoff)
+	}
+	if !srv.waitOnAcceptError(errors.New("transient 2"), &backoff) {
+		t.Fatalf("expected true on second transient error")
+	}
+	if backoff != 10*time.Millisecond {
+		t.Fatalf("expected 10ms doubled backoff, got %v", backoff)
+	}
+	if srv.waitOnAcceptError(net.ErrClosed, &backoff) {
+		t.Fatalf("expected false on net.ErrClosed")
+	}
+
+	// Test serveFastPath ReadAt error when packFile is truncated.
+	truncatedPack, err := os.Create(filepath.Join(dir, "truncated.pack"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = truncatedPack.Close() }()
+	srvTrunc := &Server{
+		limiter:  NewRateLimiter(0),
+		packFile: truncatedPack,
+	}
+	var outBuf bytes.Buffer
+	bw := bufio.NewWriter(&outBuf)
+	var wireBuf []byte
+	loc := segmentLoc{WireOffset: 100, WireLength: 50}
+	if !srvTrunc.serveFastPath(ctx, bw, "id@test", loc, false, &wireBuf) {
+		t.Fatalf("expected serveFastPath to send 430 and return true on ReadAt EOF")
+	}
+	if !strings.Contains(outBuf.String(), "430 ") {
+		t.Fatalf("expected 430 response on ReadAt error, got %q", outBuf.String())
+	}
+
+	_ = srv.Close()
+	if srv.waitOnAcceptError(errors.New("after close"), &backoff) {
+		t.Fatalf("expected false after server closed")
 	}
 }

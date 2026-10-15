@@ -281,6 +281,7 @@ func classifyReleaseFile(name string) (role FileRole, vol int) {
 	if m := reRARPart.FindStringSubmatch(name); len(m) > 1 {
 		v, err := strconv.Atoi(m[1])
 		if err != nil {
+			// Digit submatch overflowed int; still classify as RAR volume.
 			return RoleRARVolume, 0
 		}
 		return RoleRARVolume, v
@@ -288,6 +289,7 @@ func classifyReleaseFile(name string) (role FileRole, vol int) {
 	if m := rePar2Vol.FindStringSubmatch(name); len(m) > 1 {
 		v, err := strconv.Atoi(m[1])
 		if err != nil {
+			// Digit submatch overflowed int; still classify as PAR2 volume.
 			return RolePar2Volume, 0
 		}
 		return RolePar2Volume, v
@@ -329,11 +331,11 @@ func GenerateRelease(cfg GenConfig) (*ReleaseManifest, error) {
 	if cfg.PartSize <= 0 {
 		return nil, errors.New("part size must be positive")
 	}
+	if cfg.Par2Redundancy < 0 {
+		return nil, errors.New("par2 redundancy cannot be negative")
+	}
 	if cfg.Name == "" {
 		cfg.Name = "release"
-	}
-	if cfg.Par2Redundancy <= 0 {
-		cfg.Par2Redundancy = 10
 	}
 	if cfg.Par2Volumes <= 0 {
 		cfg.Par2Volumes = 4
@@ -410,20 +412,22 @@ func GenerateRelease(cfg GenConfig) (*ReleaseManifest, error) {
 	}
 	slices.Sort(rarFiles)
 
-	par2Path := cfg.Name + ".par2"
-	par2Args := make([]string, 0, 5+len(rarFiles))
-	par2Args = append(par2Args,
-		"create",
-		"-q",
-		fmt.Sprintf("-r%d", cfg.Par2Redundancy),
-		fmt.Sprintf("-n%d", cfg.Par2Volumes),
-		par2Path,
-	)
-	par2Args = append(par2Args, rarFiles...)
-	par2Cmd := exec.Command("par2", par2Args...) //nolint:gosec // CLI tool invoking par2 with controlled args
-	par2Cmd.Dir = filesDir
-	if out, err := par2Cmd.CombinedOutput(); err != nil {
-		return nil, fmt.Errorf("par2 command failed (%w): %s", err, string(out))
+	if cfg.Par2Redundancy > 0 {
+		par2Path := cfg.Name + ".par2"
+		par2Args := make([]string, 0, 5+len(rarFiles))
+		par2Args = append(par2Args,
+			"create",
+			"-q",
+			fmt.Sprintf("-r%d", cfg.Par2Redundancy),
+			fmt.Sprintf("-n%d", cfg.Par2Volumes),
+			par2Path,
+		)
+		par2Args = append(par2Args, rarFiles...)
+		par2Cmd := exec.Command("par2", par2Args...) //nolint:gosec // CLI tool invoking par2 with controlled args
+		par2Cmd.Dir = filesDir
+		if out, err := par2Cmd.CombinedOutput(); err != nil {
+			return nil, fmt.Errorf("par2 command failed (%w): %s", err, string(out))
+		}
 	}
 
 	if cfg.IncludeSidecar {
@@ -476,6 +480,7 @@ func GenerateRelease(cfg GenConfig) (*ReleaseManifest, error) {
 	manifest := &ReleaseManifest{
 		Name:            cfg.Name,
 		PartSize:        cfg.PartSize,
+		Volumes:         len(rarFiles),
 		ExpectedOutputs: expectedOutputs,
 		Files:           releaseFiles,
 	}

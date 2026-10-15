@@ -210,15 +210,16 @@ func runVerify(ctx context.Context, args []string, stdout, stderr io.Writer) int
 	fs.SetOutput(stderr)
 
 	var (
-		mode         = fs.String("mode", "", "verification mode ('crash' or 'complete') (required)")
-		manifestPath = fs.String("manifest", "", "path to release manifest.json (required)")
-		adminDir     = fs.String("admin-dir", "", "path to gonzbd admin directory (required)")
-		downloadDir  = fs.String("download-dir", "", "path to gonzbd incomplete download directory (required)")
-		completeDir  = fs.String("complete-dir", "", "path to gonzbd complete directory (required for complete mode)")
-		jobID        = fs.String("job-id", "", "optional specific job ID to verify")
-		serverURL    = fs.String("server", "", "optional HTTP control API URL (e.g. http://127.0.0.1:11191)")
-		snapshotAs   = fs.String("snapshot-as", "", "optional snapshot name to record on crash")
-		snapshot     = fs.String("snapshot", "", "optional snapshot name to compare against upon completion")
+		mode                 = fs.String("mode", "", "verification mode ('crash' or 'complete') (required)")
+		manifestPath         = fs.String("manifest", "", "path to release manifest.json (required)")
+		adminDir             = fs.String("admin-dir", "", "path to gonzbd admin directory (required)")
+		downloadDir          = fs.String("download-dir", "", "path to gonzbd incomplete download directory (required)")
+		completeDir          = fs.String("complete-dir", "", "path to gonzbd complete directory (required for complete mode)")
+		jobID                = fs.String("job-id", "", "optional specific job ID to verify")
+		serverURL            = fs.String("server", "", "optional HTTP control API URL (e.g. http://127.0.0.1:11191)")
+		snapshotAs           = fs.String("snapshot-as", "", "optional snapshot name to record on crash")
+		snapshot             = fs.String("snapshot", "", "optional snapshot name to compare against upon completion")
+		expectArchiveCleanup = fs.Bool("expect-archive-cleanup", true, "fail if .rar or .par2 files remain in complete dir")
 	)
 
 	if err := fs.Parse(args); err != nil {
@@ -231,15 +232,16 @@ func runVerify(ctx context.Context, args []string, stdout, stderr io.Writer) int
 	}
 
 	cfg := VerifyConfig{
-		Mode:             *mode,
-		ManifestPath:     *manifestPath,
-		AdminDir:         *adminDir,
-		DownloadDir:      *downloadDir,
-		CompleteDir:      *completeDir,
-		JobID:            *jobID,
-		ServerControlURL: *serverURL,
-		SnapshotAs:       *snapshotAs,
-		CompareSnapshot:  *snapshot,
+		Mode:               *mode,
+		ManifestPath:       *manifestPath,
+		AdminDir:           *adminDir,
+		DownloadDir:        *downloadDir,
+		CompleteDir:        *completeDir,
+		JobID:              *jobID,
+		ServerControlURL:   *serverURL,
+		SnapshotAs:         *snapshotAs,
+		CompareSnapshot:    *snapshot,
+		SkipArchiveCleanup: !*expectArchiveCleanup,
 	}
 
 	report, err := Verify(ctx, cfg)

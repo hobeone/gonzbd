@@ -59,6 +59,7 @@ type ReleaseFile struct {
 type ReleaseManifest struct {
 	Name            string           `json:"name"`
 	PartSize        int              `json:"part_size"`
+	Volumes         int              `json:"volumes,omitempty"`
 	ExpectedOutputs []ExpectedOutput `json:"expected_outputs"`
 	Files           []ReleaseFile    `json:"files"`
 }

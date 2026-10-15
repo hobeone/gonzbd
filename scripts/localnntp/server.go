@@ -3,7 +3,6 @@ package main
 
 import (
 	"bufio"
-	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -37,11 +36,12 @@ type ServerConfig struct {
 	Users map[string]string
 }
 
-// Snapshot captures a point-in-time state of served clean articles and recorded IDs.
+// Snapshot captures a point-in-time state of served clean articles, article requests, and recorded IDs.
 type Snapshot struct {
 	Name        string         `json:"name"`
 	CreatedAt   time.Time      `json:"created_at"`
 	ServedClean map[string]int `json:"served_clean"`
+	Requests    map[string]int `json:"requests"`
 	RecordedIDs []string       `json:"recorded_ids,omitempty"`
 }
 
@@ -52,6 +52,7 @@ type ServerStats struct {
 	BytesSentTotal   int64               `json:"bytes_sent_total"`
 	RateMBps         float64             `json:"rate_mbps"`
 	ServedClean      map[string]int      `json:"served_clean"`
+	Requests         map[string]int      `json:"requests"`
 	Rules            []FaultRule         `json:"rules"`
 	Snapshots        map[string]Snapshot `json:"snapshots,omitempty"`
 }
@@ -91,6 +92,7 @@ type Server struct {
 
 	statsMu     sync.Mutex
 	servedClean map[string]int
+	requests    map[string]int
 	snapshots   map[string]Snapshot
 }
 
@@ -148,6 +150,7 @@ func NewServer(cfg ServerConfig) (*Server, error) {
 		packFile:    packFile,
 		done:        make(chan struct{}),
 		servedClean: make(map[string]int),
+		requests:    make(map[string]int),
 		snapshots:   make(map[string]Snapshot),
 	}, nil
 }
@@ -201,6 +204,7 @@ func (s *Server) Limiter() *RateLimiter {
 func (s *Server) Stats() ServerStats {
 	s.statsMu.Lock()
 	scClone := maps.Clone(s.servedClean)
+	reqClone := maps.Clone(s.requests)
 	snapsClone := make(map[string]Snapshot, len(s.snapshots))
 	for k, v := range s.snapshots {
 		snapsClone[k] = cloneSnapshot(v)
@@ -213,6 +217,7 @@ func (s *Server) Stats() ServerStats {
 		BytesSentTotal:   s.bytesSentTotal.Load(),
 		RateMBps:         s.limiter.RateMBps(),
 		ServedClean:      scClone,
+		Requests:         reqClone,
 		Rules:            s.faults.Rules(),
 		Snapshots:        snapsClone,
 	}
@@ -223,12 +228,11 @@ func (s *Server) TakeSnapshot(name string, recordedIDs []string) Snapshot {
 	s.statsMu.Lock()
 	defer s.statsMu.Unlock()
 
-	scClone := maps.Clone(s.servedClean)
-
 	snap := Snapshot{
 		Name:        name,
 		CreatedAt:   time.Now().UTC(),
-		ServedClean: scClone,
+		ServedClean: maps.Clone(s.servedClean),
+		Requests:    maps.Clone(s.requests),
 		RecordedIDs: slices.Clone(recordedIDs),
 	}
 	s.snapshots[name] = snap
@@ -252,6 +256,7 @@ func cloneSnapshot(s Snapshot) Snapshot {
 		Name:        s.Name,
 		CreatedAt:   s.CreatedAt,
 		ServedClean: maps.Clone(s.ServedClean),
+		Requests:    maps.Clone(s.Requests),
 		RecordedIDs: slices.Clone(s.RecordedIDs),
 	}
 }
@@ -262,17 +267,47 @@ func (s *Server) recordServedClean(id string) {
 	s.statsMu.Unlock()
 }
 
+func (s *Server) recordRequest(id string) {
+	s.statsMu.Lock()
+	s.requests[id]++
+	s.statsMu.Unlock()
+}
+
+func (s *Server) waitOnAcceptError(err error, backoff *time.Duration) bool {
+	if errors.Is(err, net.ErrClosed) {
+		return false
+	}
+	select {
+	case <-s.done:
+		return false
+	default:
+	}
+	if *backoff <= 0 {
+		*backoff = 5 * time.Millisecond
+	} else {
+		*backoff = min(*backoff*2, time.Second)
+	}
+	t := time.NewTimer(*backoff)
+	defer t.Stop()
+	select {
+	case <-t.C:
+		return true
+	case <-s.done:
+		return false
+	}
+}
+
 func (s *Server) acceptLoop() {
+	var backoff time.Duration
 	for {
 		c, err := s.ln.Accept()
 		if err != nil {
-			select {
-			case <-s.done:
-				return
-			default:
+			if !s.waitOnAcceptError(err, &backoff) {
 				return
 			}
+			continue
 		}
+		backoff = 0
 		s.wg.Go(func() {
 			s.serveConn(c)
 		})
@@ -455,13 +490,44 @@ func (s *Server) handleStat(bw *bufio.Writer, cs *connState, rawID string) bool 
 		PartNum:     loc.PartNum,
 	}
 
-	rule, hasFault := s.faults.Match(target)
-	if hasFault && rule.Action == FaultDrop {
+	if _, hasFault := s.faults.MatchAction(target, FaultDrop); hasFault {
 		s.faultsFiredTotal.Add(1)
 		return s.send(bw, "430 no article with that message-id") == nil
 	}
 
 	return s.send(bw, fmt.Sprintf("223 0 <%s>", cleanID)) == nil
+}
+
+func writeStatusAndHeaders(bw *bufio.Writer, cleanID string, isArticle bool) error {
+	statusLine := fmt.Sprintf("222 0 <%s> body follows\r\n", cleanID)
+	if isArticle {
+		statusLine = fmt.Sprintf("220 0 <%s> article follows\r\nMessage-ID: <%s>\r\n\r\n", cleanID, cleanID)
+	}
+	if _, err := bw.WriteString(statusLine); err != nil {
+		return err
+	}
+	return bw.Flush()
+}
+
+func (s *Server) writeRateLimited(ctx context.Context, bw *bufio.Writer, payload []byte) (int, error) {
+	const chunkSize = 32 * 1024
+	total := 0
+	for len(payload) > 0 {
+		chunk := payload[:min(len(payload), chunkSize)]
+		if err := s.limiter.Wait(ctx, len(chunk)); err != nil {
+			return total, err
+		}
+		n, err := bw.Write(chunk)
+		total += n
+		if err != nil {
+			return total, err
+		}
+		payload = payload[len(chunk):]
+	}
+	if err := bw.Flush(); err != nil {
+		return total, err
+	}
+	return total, nil
 }
 
 func (s *Server) handleBodyOrArticle(ctx context.Context, bw *bufio.Writer, cs *connState, rawID string, isArticle bool, wireBuf *[]byte) bool {
@@ -473,6 +539,7 @@ func (s *Server) handleBodyOrArticle(ctx context.Context, bw *bufio.Writer, cs *
 	if !ok {
 		return s.send(bw, "430 no article with that message-id") == nil
 	}
+	s.recordRequest(cleanID)
 
 	target := ArticleTarget{
 		MessageID:   cleanID,
@@ -490,14 +557,7 @@ func (s *Server) handleBodyOrArticle(ctx context.Context, bw *bufio.Writer, cs *
 
 	if hasFault && rule.Action == FaultStall {
 		s.faultsFiredTotal.Add(1)
-		statusLine := fmt.Sprintf("222 0 <%s> body follows\r\n", cleanID)
-		if isArticle {
-			statusLine = fmt.Sprintf("220 0 <%s> article follows\r\n", cleanID)
-		}
-		if _, err := bw.WriteString(statusLine); err != nil {
-			return false
-		}
-		if err := bw.Flush(); err != nil {
+		if err := writeStatusAndHeaders(bw, cleanID, isArticle); err != nil {
 			return false
 		}
 		timer := time.NewTimer(rule.TimeoutAfter)
@@ -510,42 +570,39 @@ func (s *Server) handleBodyOrArticle(ctx context.Context, bw *bufio.Writer, cs *
 		return false
 	}
 
-	// Fast path: pre-encoded wire packfile when no fault is matched.
 	if !hasFault && s.packFile != nil && loc.WireLength > 0 {
-		if cap(*wireBuf) < loc.WireLength {
-			*wireBuf = make([]byte, loc.WireLength)
-		} else {
-			*wireBuf = (*wireBuf)[:loc.WireLength]
-		}
-		buf := *wireBuf
-		if _, err := s.packFile.ReadAt(buf, loc.WireOffset); err != nil {
-			return s.send(bw, "430 no article with that message-id") == nil
-		}
-
-		if err := s.limiter.Wait(ctx, loc.WireLength); err != nil {
-			return false
-		}
-
-		statusLine := fmt.Sprintf("222 0 <%s> body follows\r\n", cleanID)
-		if isArticle {
-			statusLine = fmt.Sprintf("220 0 <%s> article follows\r\n", cleanID)
-		}
-		if _, err := bw.WriteString(statusLine); err != nil {
-			return false
-		}
-		if _, err := bw.Write(buf); err != nil {
-			return false
-		}
-		if err := bw.Flush(); err != nil {
-			return false
-		}
-
-		s.bytesSentTotal.Add(int64(loc.WireLength))
-		s.servedCleanTotal.Add(1)
-		s.recordServedClean(cleanID)
-		return true
+		return s.serveFastPath(ctx, bw, cleanID, loc, isArticle, wireBuf)
 	}
 
+	return s.serveSlowOrFaultPath(ctx, bw, cleanID, loc, isArticle, hasFault, rule)
+}
+
+func (s *Server) serveFastPath(ctx context.Context, bw *bufio.Writer, cleanID string, loc segmentLoc, isArticle bool, wireBuf *[]byte) bool {
+	if cap(*wireBuf) < loc.WireLength {
+		*wireBuf = make([]byte, loc.WireLength)
+	} else {
+		*wireBuf = (*wireBuf)[:loc.WireLength]
+	}
+	buf := *wireBuf
+	if _, err := s.packFile.ReadAt(buf, loc.WireOffset); err != nil {
+		return s.send(bw, "430 no article with that message-id") == nil
+	}
+
+	if err := writeStatusAndHeaders(bw, cleanID, isArticle); err != nil {
+		return false
+	}
+	sent, err := s.writeRateLimited(ctx, bw, buf)
+	s.bytesSentTotal.Add(int64(sent))
+	if err != nil {
+		return false
+	}
+
+	s.servedCleanTotal.Add(1)
+	s.recordServedClean(cleanID)
+	return true
+}
+
+func (s *Server) serveSlowOrFaultPath(ctx context.Context, bw *bufio.Writer, cleanID string, loc segmentLoc, isArticle, hasFault bool, rule FaultRule) bool {
 	filePath := filepath.Join(s.cfg.ReleaseDir, "files", loc.DiskName)
 	f, err := os.Open(filePath) //nolint:gosec // path is operator-configured release dir
 	if err != nil {
@@ -573,39 +630,28 @@ func (s *Server) handleBodyOrArticle(ctx context.Context, bw *bufio.Writer, cs *
 		body = CorruptWireBody(body, rule.CorruptBytes)
 	}
 
-	if err := s.limiter.Wait(ctx, len(body)); err != nil {
-		return false
-	}
-
 	if hasFault && rule.Action == FaultDropMidBody {
 		s.faultsFiredTotal.Add(1)
-		statusLine := fmt.Sprintf("222 0 <%s> body follows\r\n", cleanID)
-		if isArticle {
-			statusLine = fmt.Sprintf("220 0 <%s> article follows\r\n", cleanID)
-		}
-		if _, err := bw.WriteString(statusLine); err != nil {
+		if err := writeStatusAndHeaders(bw, cleanID, isArticle); err != nil {
 			return false
 		}
 		half := body[:len(body)/2]
-		if _, err := bw.Write(half); err != nil {
-			return false
-		}
-		_ = bw.Flush() //nolint:errcheck // flushing partial payload before closing connection
+		sent, _ := s.writeRateLimited(ctx, bw, half) //nolint:errcheck // closing mid-body intentionally
+		_ = bw.Flush()                               //nolint:errcheck // best-effort flush before closing connection
+		s.bytesSentTotal.Add(int64(sent))
 		return false
 	}
 
-	statusLine := fmt.Sprintf("222 0 <%s> body follows\r\n", cleanID)
-	if isArticle {
-		statusLine = fmt.Sprintf("220 0 <%s> article follows\r\n", cleanID)
-	}
-	if _, err := bw.WriteString(statusLine); err != nil {
+	if err := writeStatusAndHeaders(bw, cleanID, isArticle); err != nil {
 		return false
 	}
-	if err := sendDotStuffed(bw, body); err != nil {
+	wireBytes := FormatDotStuffedWire(body)
+	sent, err := s.writeRateLimited(ctx, bw, wireBytes)
+	s.bytesSentTotal.Add(int64(sent))
+	if err != nil {
 		return false
 	}
 
-	s.bytesSentTotal.Add(int64(len(body)))
 	if hasFault && (rule.Action == FaultCorruptPayload || rule.Action == FaultCorruptWire) {
 		s.faultsFiredTotal.Add(1)
 	} else if !hasFault {
@@ -618,40 +664,6 @@ func (s *Server) handleBodyOrArticle(ctx context.Context, bw *bufio.Writer, cs *
 
 func (s *Server) send(bw *bufio.Writer, line string) error {
 	if _, err := fmt.Fprintf(bw, "%s\r\n", line); err != nil {
-		return err
-	}
-	return bw.Flush()
-}
-
-func sendDotStuffed(bw *bufio.Writer, body []byte) error {
-	remaining := body
-	for len(remaining) > 0 {
-		idx := bytes.IndexByte(remaining, '\n')
-		var lineBytes []byte
-		if idx < 0 {
-			lineBytes = remaining
-			remaining = nil
-		} else {
-			lineBytes = remaining[:idx]
-			remaining = remaining[idx+1:]
-			if len(lineBytes) > 0 && lineBytes[len(lineBytes)-1] == '\r' {
-				lineBytes = lineBytes[:len(lineBytes)-1]
-			}
-		}
-
-		if len(lineBytes) > 0 && lineBytes[0] == '.' {
-			if _, err := bw.WriteString("."); err != nil {
-				return err
-			}
-		}
-		if _, err := bw.Write(lineBytes); err != nil {
-			return err
-		}
-		if _, err := bw.WriteString("\r\n"); err != nil {
-			return err
-		}
-	}
-	if _, err := bw.WriteString(".\r\n"); err != nil {
 		return err
 	}
 	return bw.Flush()

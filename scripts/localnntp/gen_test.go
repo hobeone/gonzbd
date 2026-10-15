@@ -399,6 +399,7 @@ func TestGenerateRelease_DefaultsAndCompression(t *testing.T) {
 		PayloadSize:    256 << 10,
 		Volumes:        2,
 		PartSize:       64 << 10,
+		Par2Redundancy: 10,
 		Compress:       true,
 		Seed:           9999,
 		IncludeSidecar: false,
@@ -410,6 +411,34 @@ func TestGenerateRelease_DefaultsAndCompression(t *testing.T) {
 	}
 	if manifest.Name != "release" {
 		t.Errorf("manifest.Name = %q, want default 'release'", manifest.Name)
+	}
+	if manifest.Volumes < 1 {
+		t.Errorf("manifest.Volumes = %d, want >= 1", manifest.Volumes)
+	}
+
+	// Test Par2Redundancy == 0 produces no .par2 files
+	dirNoPar2 := filepath.Join(t.TempDir(), "rel_nopar2")
+	manifestNoPar2, err := GenerateRelease(GenConfig{
+		OutDir:         dirNoPar2,
+		PayloadSize:    128 << 10,
+		Volumes:        2,
+		PartSize:       64 << 10,
+		Par2Redundancy: 0,
+		Seed:           1111,
+		IncludeSidecar: false,
+	})
+	if err != nil {
+		t.Fatalf("GenerateRelease Par2Redundancy=0: %v", err)
+	}
+	for _, f := range manifestNoPar2.Files {
+		if f.Role == RolePar2Index || f.Role == RolePar2Volume {
+			t.Errorf("unexpected par2 file %s when Par2Redundancy=0", f.DiskName)
+		}
+	}
+
+	// Test negative Par2Redundancy returns error
+	if _, err := GenerateRelease(GenConfig{OutDir: t.TempDir(), PayloadSize: 1024, Volumes: 1, PartSize: 1024, Par2Redundancy: -5}); err == nil {
+		t.Error("expected error for negative Par2Redundancy")
 	}
 
 	// Test invalid OutDir (e.g. /dev/null/impossible)
