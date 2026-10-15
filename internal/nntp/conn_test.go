@@ -1415,14 +1415,15 @@ func TestIdleTimeoutReaderForcesDeadlineWhenHandshakeCtxAlreadyDone(t *testing.T
 	}
 }
 
+func setReadTimeout(c *Conn, d time.Duration) {
+	c.itr.mu.Lock()
+	c.itr.timeout = d
+	c.itr.mu.Unlock()
+}
+
 // TestConnSurvivesIdlePeriodLongerThanTimeoutBetweenCommands pins that a
-// Ready Conn with no commands in flight does not arm a read deadline on the
-// idle socket. Before this fix, runReader immediately called readResponseLine
-// at the top of its loop after completing a command, which re-armed
-// idleTimeoutReader's per-read deadline on an idle connection and killed it
-// with os.ErrDeadlineExceeded whenever the gap between commands exceeded
-// ServerConfig.Timeout (for example while the server was under penalty or on a
-// backup server between missing articles).
+// Ready Conn with no commands in flight disarms its socket read deadline and
+// survives an idle gap longer than ServerConfig.Timeout between commands.
 func TestConnSurvivesIdlePeriodLongerThanTimeoutBetweenCommands(t *testing.T) {
 	t.Parallel()
 
@@ -1449,11 +1450,12 @@ func TestConnSurvivesIdlePeriodLongerThanTimeoutBetweenCommands(t *testing.T) {
 	})
 
 	cfg := makeCfg(ms.addr)
-	conn, err := Dial(t.Context(), checked(t, cfg), withDialerTimeout(100*time.Millisecond))
+	conn, err := Dial(t.Context(), checked(t, cfg), withDialerTimeout(2*time.Second))
 	if err != nil {
 		t.Fatalf("Dial: %v", err)
 	}
 	t.Cleanup(func() { _ = conn.Close() })
+	setReadTimeout(conn, 60*time.Millisecond)
 
 	body1, err := conn.Fetch(t.Context(), "first@host")
 	if err != nil {
@@ -1463,12 +1465,12 @@ func TestConnSurvivesIdlePeriodLongerThanTimeoutBetweenCommands(t *testing.T) {
 		t.Fatalf("first Fetch body = %q, want %q", body1, "first-body\n")
 	}
 
-	// Sit idle with zero commands in flight for 2.5x the 100ms read timeout.
-	time.Sleep(250 * time.Millisecond)
+	// Sit idle with zero commands in flight for 5x the 60ms read timeout.
+	time.Sleep(300 * time.Millisecond)
 
 	body2, err := conn.Fetch(t.Context(), "second@host")
 	if err != nil {
-		t.Fatalf("second Fetch after 250ms idle gap failed: %v", err)
+		t.Fatalf("second Fetch after 300ms idle gap failed: %v", err)
 	}
 	if string(body2) != "second-body\n" {
 		t.Fatalf("second Fetch body = %q, want %q", body2, "second-body\n")
@@ -1502,18 +1504,19 @@ func TestConnArmsReadDeadlineWhenCommandSubmittedAfterIdle(t *testing.T) {
 	})
 
 	cfg := makeCfg(ms.addr)
-	conn, err := Dial(t.Context(), checked(t, cfg), withDialerTimeout(100*time.Millisecond))
+	conn, err := Dial(t.Context(), checked(t, cfg), withDialerTimeout(2*time.Second))
 	if err != nil {
 		t.Fatalf("Dial: %v", err)
 	}
 	t.Cleanup(func() { _ = conn.Close() })
+	setReadTimeout(conn, 80*time.Millisecond)
 
 	if _, err := conn.Fetch(t.Context(), "first@host"); err != nil {
 		t.Fatalf("first Fetch: %v", err)
 	}
 
 	// Let runReader loop back to readResponseLine with inFlight == 0 and disarm.
-	time.Sleep(50 * time.Millisecond)
+	time.Sleep(40 * time.Millisecond)
 
 	done := make(chan error, 1)
 	go func() {
@@ -1532,4 +1535,280 @@ func TestConnArmsReadDeadlineWhenCommandSubmittedAfterIdle(t *testing.T) {
 	case <-time.After(2 * time.Second):
 		t.Fatal("Fetch(stalled@host) did not time out within 2s: submitting a command on an idle connection failed to arm the read deadline")
 	}
+}
+
+type failOnceWriteConn struct {
+	net.Conn
+	failNextWrite atomic.Bool
+}
+
+func (f *failOnceWriteConn) Write(p []byte) (int, error) {
+	if f.failNextWrite.CompareAndSwap(true, false) {
+		return 0, errors.New("synthetic write failure")
+	}
+	return f.Conn.Write(p)
+}
+
+// TestConnWriteErrorRollsBackInFlightDeadline pins that when submit's Write or
+// Flush fails after beginCmd, unappendPending rolls back inFlight via endCmd
+// so the connection's read deadline is disarmed again during a subsequent idle
+// period.
+func TestConnWriteErrorRollsBackInFlightDeadline(t *testing.T) {
+	t.Parallel()
+
+	ms := newMockServer(t, func(mc *mockConn) {
+		mc.send("200 ready")
+		mc.expect("CAPABILITIES")
+		mc.sendCaps()
+
+		line, err := mc.r.ReadString('\n')
+		if err != nil {
+			return
+		}
+		if strings.TrimRight(line, "\r\n") == "BODY <after-err@host>" {
+			mc.send("222 0 <after-err@host> body")
+			mc.send("recovered-body")
+			mc.send(".")
+		}
+		_, _ = mc.r.ReadString('\n')
+	})
+
+	cfg := makeCfg(ms.addr)
+	conn, err := Dial(t.Context(), checked(t, cfg), withDialerTimeout(2*time.Second))
+	if err != nil {
+		t.Fatalf("Dial: %v", err)
+	}
+	t.Cleanup(func() { _ = conn.Close() })
+	setReadTimeout(conn, 60*time.Millisecond)
+
+	wrapper := &failOnceWriteConn{Conn: conn.nc}
+	wrapper.failNextWrite.Store(true)
+	conn.bw = bufio.NewWriter(wrapper)
+
+	if _, err := conn.Fetch(t.Context(), "fail-write@host"); err == nil {
+		t.Fatal("expected Fetch to fail when Write errors")
+	}
+	conn.bw.Reset(conn.nc)
+
+	// Sit idle for > 3x the 60ms read timeout. If unappendPending did not call
+	// endCmd, inFlight remained 1 and the parked read timed out here.
+	time.Sleep(200 * time.Millisecond)
+
+	body, err := conn.Fetch(t.Context(), "after-err@host")
+	if err != nil {
+		t.Fatalf("Fetch after write error and 200ms idle gap failed: %v", err)
+	}
+	if string(body) != "recovered-body\n" {
+		t.Fatalf("body = %q, want %q", body, "recovered-body\n")
+	}
+}
+
+func TestConnIdleReadDeadline_EdgeCases(t *testing.T) {
+	t.Parallel()
+
+	t.Run("pipelining=2 one completes and second stalls", func(t *testing.T) {
+		t.Parallel()
+		release := make(chan struct{})
+		t.Cleanup(func() { close(release) })
+
+		ms := newMockServer(t, func(mc *mockConn) {
+			mc.send("200 ready")
+			mc.expect("CAPABILITIES")
+			mc.sendCaps()
+
+			line1, err := mc.r.ReadString('\n')
+			if err != nil {
+				return
+			}
+			_, err = mc.r.ReadString('\n')
+			if err != nil {
+				return
+			}
+			l, r := strings.IndexByte(line1, '<'), strings.IndexByte(line1, '>')
+			if l < 0 || r <= l {
+				return
+			}
+			firstID := line1[l+1 : r]
+			mc.send(fmt.Sprintf("222 0 <%s> body", firstID))
+			mc.send("body-1")
+			mc.send(".")
+			<-release // never answer second command
+		})
+
+		cfg := makeCfg(ms.addr)
+		cfg.PipeliningRequests = 2
+		conn, err := Dial(t.Context(), checked(t, cfg), withDialerTimeout(2*time.Second))
+		if err != nil {
+			t.Fatalf("Dial: %v", err)
+		}
+		t.Cleanup(func() { _ = conn.Close() })
+		setReadTimeout(conn, 80*time.Millisecond)
+
+		errCh := make(chan error, 2)
+		go func() {
+			_, ferr := conn.Fetch(t.Context(), "p1@host")
+			errCh <- ferr
+		}()
+		go func() {
+			_, ferr := conn.Fetch(t.Context(), "p2@host")
+			errCh <- ferr
+		}()
+
+		if ferr := <-errCh; ferr != nil {
+			t.Fatalf("first pipelined Fetch failed: %v", ferr)
+		}
+		select {
+		case ferr := <-errCh:
+			if !errors.Is(ferr, os.ErrDeadlineExceeded) {
+				t.Fatalf("second pipelined Fetch err = %v, want os.ErrDeadlineExceeded", ferr)
+			}
+		case <-time.After(2 * time.Second):
+			t.Fatal("second pipelined Fetch did not time out after first completed")
+		}
+	})
+
+	t.Run("server closes while idle", func(t *testing.T) {
+		t.Parallel()
+		closedByServer := make(chan struct{})
+
+		ms := newMockServer(t, func(mc *mockConn) {
+			mc.send("200 ready")
+			mc.expect("CAPABILITIES")
+			mc.sendCaps()
+
+			mc.expect("BODY <first@host>")
+			mc.send("222 0 <first@host> body")
+			mc.send("first-body")
+			mc.send(".")
+
+			_ = mc.c.Close()
+			close(closedByServer)
+		})
+
+		cfg := makeCfg(ms.addr)
+		conn, err := Dial(t.Context(), checked(t, cfg), withDialerTimeout(2*time.Second))
+		if err != nil {
+			t.Fatalf("Dial: %v", err)
+		}
+		t.Cleanup(func() { _ = conn.Close() })
+		setReadTimeout(conn, 500*time.Millisecond)
+
+		if _, err := conn.Fetch(t.Context(), "first@host"); err != nil {
+			t.Fatalf("first Fetch: %v", err)
+		}
+		<-closedByServer
+		time.Sleep(30 * time.Millisecond)
+
+		start := time.Now()
+		_, err = conn.Fetch(t.Context(), "second@host")
+		elapsed := time.Since(start)
+		if err == nil {
+			t.Fatal("expected error after server closed idle connection")
+		}
+		if elapsed >= 250*time.Millisecond {
+			t.Fatalf("Fetch after server close took %v, want prompt failure (<250ms)", elapsed)
+		}
+	})
+
+	t.Run("cancelled caller context mid-Fetch then idle gap then next Fetch", func(t *testing.T) {
+		t.Parallel()
+		sendLateReply := make(chan struct{})
+
+		ms := newMockServer(t, func(mc *mockConn) {
+			mc.send("200 ready")
+			mc.expect("CAPABILITIES")
+			mc.sendCaps()
+
+			mc.expect("BODY <orphan@host>")
+			<-sendLateReply
+			mc.send("222 0 <orphan@host> body")
+			mc.send("orphan-body")
+			mc.send(".")
+
+			line, err := mc.r.ReadString('\n')
+			if err != nil {
+				return
+			}
+			if strings.TrimRight(line, "\r\n") == "BODY <next@host>" {
+				mc.send("222 0 <next@host> body")
+				mc.send("next-body")
+				mc.send(".")
+			}
+			_, _ = mc.r.ReadString('\n')
+		})
+
+		cfg := makeCfg(ms.addr)
+		conn, err := Dial(t.Context(), checked(t, cfg), withDialerTimeout(2*time.Second))
+		if err != nil {
+			t.Fatalf("Dial: %v", err)
+		}
+		t.Cleanup(func() { _ = conn.Close() })
+		setReadTimeout(conn, 80*time.Millisecond)
+
+		callCtx, cancelCall := context.WithTimeout(t.Context(), 20*time.Millisecond)
+		defer cancelCall()
+		_, err = conn.Fetch(callCtx, "orphan@host")
+		if !errors.Is(err, context.DeadlineExceeded) {
+			t.Fatalf("orphan Fetch err = %v, want context.DeadlineExceeded", err)
+		}
+		close(sendLateReply)
+
+		// Wait for late response to be drained + 3x the 80ms read timeout idle gap.
+		time.Sleep(260 * time.Millisecond)
+
+		body, err := conn.Fetch(t.Context(), "next@host")
+		if err != nil {
+			t.Fatalf("next Fetch after orphaned command and idle gap failed: %v", err)
+		}
+		if string(body) != "next-body\n" {
+			t.Fatalf("next Fetch body = %q, want %q", body, "next-body\n")
+		}
+	})
+
+	t.Run("50 back-to-back Fetches then idle gap then Fetch", func(t *testing.T) {
+		t.Parallel()
+		const cycles = 50
+
+		ms := newMockServer(t, func(mc *mockConn) {
+			mc.send("200 ready")
+			mc.expect("CAPABILITIES")
+			mc.sendCaps()
+
+			for range cycles + 1 {
+				line, err := mc.r.ReadString('\n')
+				if err != nil {
+					return
+				}
+				l, r := strings.IndexByte(line, '<'), strings.IndexByte(line, '>')
+				if l < 0 || r <= l {
+					return
+				}
+				id := line[l+1 : r]
+				mc.send(fmt.Sprintf("222 0 <%s> body", id))
+				mc.send("ok")
+				mc.send(".")
+			}
+			_, _ = mc.r.ReadString('\n')
+		})
+
+		cfg := makeCfg(ms.addr)
+		conn, err := Dial(t.Context(), checked(t, cfg), withDialerTimeout(2*time.Second))
+		if err != nil {
+			t.Fatalf("Dial: %v", err)
+		}
+		t.Cleanup(func() { _ = conn.Close() })
+		setReadTimeout(conn, 80*time.Millisecond)
+
+		for i := range cycles {
+			if _, err := conn.Fetch(t.Context(), fmt.Sprintf("art-%d@host", i)); err != nil {
+				t.Fatalf("Fetch %d: %v", i, err)
+			}
+		}
+
+		time.Sleep(240 * time.Millisecond)
+
+		if _, err := conn.Fetch(t.Context(), "final@host"); err != nil {
+			t.Fatalf("Fetch after 50 cycles and 240ms idle gap failed: %v", err)
+		}
+	})
 }

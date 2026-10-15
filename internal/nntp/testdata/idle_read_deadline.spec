@@ -1,5 +1,5 @@
 pkg ./internal/nntp/
-run TestConnSurvivesIdlePeriodLongerThanTimeoutBetweenCommands|TestConnArmsReadDeadlineWhenCommandSubmittedAfterIdle|TestIdleTimeoutReader_GatedOnInFlight
+run TestConnSurvivesIdlePeriodLongerThanTimeoutBetweenCommands|TestConnArmsReadDeadlineWhenCommandSubmittedAfterIdle|TestConnWriteErrorRollsBackInFlightDeadline|TestIdleTimeoutReader_GatedOnInFlight
 
 [Dial does not switch idleTimeoutReader to in-flight gating after handshake]
 file internal/nntp/conn.go
@@ -17,33 +17,72 @@ file internal/nntp/conn.go
 file internal/nntp/conn.go
 --- anchor
 	if wasIdle {
-		_ = r.nc.SetReadDeadline(time.Now().Add(r.timeout)) //nolint:errcheck // best-effort arm when first command enters flight
+		deadline = time.Now().Add(r.timeout)
+		err = r.setReadDeadline(deadline)
 	}
 --- replace
 	if false && wasIdle {
-		_ = r.nc.SetReadDeadline(time.Now().Add(r.timeout)) //nolint:errcheck // best-effort arm when first command enters flight
+		deadline = time.Now().Add(r.timeout)
+		err = r.setReadDeadline(deadline)
 	}
+--- end
+
+[endCmd underflow guard removed]
+file internal/nntp/conn.go
+--- anchor
+	if r.inFlight <= 0 {
+		underflow = true
+	} else {
+--- replace
+	if false && r.inFlight <= 0 {
+		underflow = true
+	} else {
 --- end
 
 [endCmd does not decrement inFlight]
 file internal/nntp/conn.go
 --- anchor
-	if r.inFlight > 0 {
+	} else {
 		r.inFlight--
+		if r.inFlight == 0 && r.gateOnInFlight {
 --- replace
-	if false && r.inFlight > 0 {
-		r.inFlight--
+	} else {
+		if r.inFlight == 0 && r.gateOnInFlight {
+--- end
+
+[endCmd does not disarm deadline when last command completes]
+file internal/nntp/conn.go
+--- anchor
+		if r.inFlight == 0 && r.gateOnInFlight {
+			err = r.setReadDeadline(time.Time{})
+		}
+--- replace
+		if false && r.inFlight == 0 && r.gateOnInFlight {
+			err = r.setReadDeadline(time.Time{})
+		}
+--- end
+
+[endCmd disarms deadline even before endHandshake]
+file internal/nntp/conn.go
+--- anchor
+		if r.inFlight == 0 && r.gateOnInFlight {
+			err = r.setReadDeadline(time.Time{})
+		}
+--- replace
+		if r.inFlight == 0 {
+			err = r.setReadDeadline(time.Time{})
+		}
 --- end
 
 [idleTimeoutReader.Read always arms timeout even when inFlight is zero]
 file internal/nntp/conn.go
 --- anchor
 	if r.gateOnInFlight && r.inFlight == 0 {
-		_ = r.nc.SetReadDeadline(time.Time{}) //nolint:errcheck // best-effort disarm while no command is in flight
+		err = r.setReadDeadline(time.Time{})
 	} else {
 --- replace
 	if false && r.gateOnInFlight && r.inFlight == 0 {
-		_ = r.nc.SetReadDeadline(time.Time{}) //nolint:errcheck // best-effort disarm while no command is in flight
+		err = r.setReadDeadline(time.Time{})
 	} else {
 --- end
 
@@ -62,9 +101,22 @@ file internal/nntp/pipeline.go
 file internal/nntp/pipeline.go
 --- anchor
 	c.pending = append(c.pending, pc)
-	c.pendingLock.Unlock()
 	c.itr.beginCmd()
+	c.pendingLock.Unlock()
 --- replace
 	c.pending = append(c.pending, pc)
 	c.pendingLock.Unlock()
+--- end
+
+[unappendPending does not call endCmd on write rollback]
+file internal/nntp/pipeline.go
+--- anchor
+	if removed {
+		c.pending = c.pending[:n-1]
+		c.itr.endCmd()
+	}
+--- replace
+	if removed {
+		c.pending = c.pending[:n-1]
+	}
 --- end

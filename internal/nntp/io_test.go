@@ -2,8 +2,10 @@ package nntp
 
 import (
 	"bufio"
+	"bytes"
 	"errors"
 	"io"
+	"log/slog"
 	"net"
 	"os"
 	"strings"
@@ -179,6 +181,14 @@ func TestIdleTimeoutReader_ResetsDeadline(t *testing.T) {
 	}
 }
 
+type failingDeadlineConn struct {
+	net.Conn
+}
+
+func (f *failingDeadlineConn) SetReadDeadline(_ time.Time) error {
+	return errors.New("synthetic SetReadDeadline failure")
+}
+
 func TestIdleTimeoutReader_GatedOnInFlight(t *testing.T) {
 	t.Parallel()
 
@@ -191,8 +201,31 @@ func TestIdleTimeoutReader_GatedOnInFlight(t *testing.T) {
 	defer server.Close()
 	defer client.Close()
 
+	var logBuf bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&logBuf, nil))
 	const timeout = 60 * time.Millisecond
-	itr := &idleTimeoutReader{nc: client, timeout: timeout}
+	itr := &idleTimeoutReader{nc: client, timeout: timeout, log: logger}
+
+	// 0. Before endHandshake (gateOnInFlight == false), calling beginCmd +
+	// endCmd while a Read is parked must NOT disarm the handshake deadline.
+	buf := make([]byte, 2)
+	hsDone := make(chan error, 1)
+	go func() {
+		_, rerr := itr.Read(buf)
+		hsDone <- rerr
+	}()
+	time.Sleep(15 * time.Millisecond)
+	itr.beginCmd()
+	itr.endCmd()
+	select {
+	case rerr := <-hsDone:
+		if !errors.Is(rerr, os.ErrDeadlineExceeded) {
+			t.Fatalf("handshake Read after endCmd err = %v, want os.ErrDeadlineExceeded", rerr)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("handshake Read did not time out: endCmd disarmed deadline before endHandshake")
+	}
+
 	itr.endHandshake()
 
 	// 1. With inFlight == 0 after endHandshake, Read disarms the deadline and
@@ -201,7 +234,6 @@ func TestIdleTimeoutReader_GatedOnInFlight(t *testing.T) {
 		time.Sleep(150 * time.Millisecond)
 		_, _ = server.Write([]byte("ok"))
 	}()
-	buf := make([]byte, 2)
 	n, err := itr.Read(buf)
 	if err != nil {
 		t.Fatalf("idle Read after endHandshake failed: %v", err)
@@ -210,14 +242,23 @@ func TestIdleTimeoutReader_GatedOnInFlight(t *testing.T) {
 		t.Fatalf("idle Read got %q, want %q", buf[:n], "ok")
 	}
 
-	// 2. While a Read is already parked with inFlight == 0, beginCmd transitions
-	// inFlight 0 -> 1 and arms the read deadline on the parked socket read.
+	// 2. Calling endCmd with inFlight == 0 records an underflow (log + counter)
+	// and does not let inFlight go negative, so a subsequent beginCmd still
+	// transitions 0 -> 1 and arms the read deadline on a parked Read.
+	itr.endCmd()
+	if got := itr.underflows.Load(); got != 1 {
+		t.Fatalf("underflows = %d, want 1", got)
+	}
+	if !strings.Contains(logBuf.String(), "endCmd called with no commands in flight") {
+		t.Fatalf("expected underflow error log, got %q", logBuf.String())
+	}
+
 	done := make(chan error, 1)
 	go func() {
 		_, rerr := itr.Read(buf)
 		done <- rerr
 	}()
-	time.Sleep(30 * time.Millisecond)
+	time.Sleep(20 * time.Millisecond)
 	itr.beginCmd()
 	select {
 	case rerr := <-done:
@@ -228,19 +269,46 @@ func TestIdleTimeoutReader_GatedOnInFlight(t *testing.T) {
 		t.Fatal("parked Read did not time out after beginCmd armed the deadline")
 	}
 
-	// 3. endCmd decrements inFlight back to 0 and disarms the deadline so a
-	// subsequent delayed write succeeds without timing out.
+	// 3. While a Read is already parked with an armed deadline (inFlight == 1),
+	// calling endCmd disarms the socket deadline on that parked Read so it stays
+	// blocked past 2x timeout and succeeds when bytes arrive later.
+	parkedAfterBegin := make(chan error, 1)
+	go func() {
+		_, rerr := itr.Read(buf)
+		parkedAfterBegin <- rerr
+	}()
+	time.Sleep(15 * time.Millisecond)
 	itr.endCmd()
 	go func() {
 		time.Sleep(150 * time.Millisecond)
 		_, _ = server.Write([]byte("hi"))
 	}()
-	n, err = itr.Read(buf)
-	if err != nil {
-		t.Fatalf("Read after endCmd failed: %v", err)
+	select {
+	case rerr := <-parkedAfterBegin:
+		if rerr != nil {
+			t.Fatalf("parked Read after endCmd failed (endCmd did not disarm deadline): %v", rerr)
+		}
+		if string(buf) != "hi" {
+			t.Fatalf("parked Read after endCmd got %q, want %q", buf, "hi")
+		}
+	case <-time.After(time.Second):
+		t.Fatal("parked Read after endCmd did not complete")
 	}
-	if string(buf[:n]) != "hi" {
-		t.Fatalf("Read after endCmd got %q, want %q", buf[:n], "hi")
+
+	// 4. Non-ErrClosed SetReadDeadline errors are logged at Warn by logDeadlineErr.
+	logBuf.Reset()
+	errITR := &idleTimeoutReader{
+		nc:      &failingDeadlineConn{Conn: client},
+		timeout: timeout,
+		log:     logger,
+	}
+	dlErr := errITR.setReadDeadline(time.Now())
+	if dlErr == nil {
+		t.Fatal("expected setReadDeadline error from failingDeadlineConn")
+	}
+	errITR.logDeadlineErr(time.Now(), dlErr)
+	if !strings.Contains(logBuf.String(), "nntp: failed to set socket read deadline") {
+		t.Fatalf("expected Warn log on SetReadDeadline error, got %q", logBuf.String())
 	}
 }
 

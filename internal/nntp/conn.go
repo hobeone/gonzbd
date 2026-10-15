@@ -89,8 +89,8 @@ type Conn struct {
 	// Empty for plain-text connections.
 	sslInfo string
 
-	// itr tracks in-flight command count after handshake and arms the
-	// per-read socket deadline only while at least one command is in flight.
+	// itr gates the per-read socket deadline on in-flight commands once the
+	// handshake has completed; nil when dopts.dialer.Timeout <= 0.
 	itr *idleTimeoutReader
 
 	// handshakeStartedHook, when non-nil, runs inside handshake once
@@ -207,9 +207,12 @@ type dialOptions struct {
 func newDialOptions(srv config.Server) (*dialOptions, error) {
 	cfg := srv.Config()
 	opts := &dialOptions{
-		host:       cfg.Host,
-		port:       cfg.Port,
-		useTLS:     cfg.SSL,
+		host:   cfg.Host,
+		port:   cfg.Port,
+		useTLS: cfg.SSL,
+		// KeepAlive is left at zero so Go's stdlib default TCP keepalive probes
+		// remain enabled; steady-state connections disarm their read deadline
+		// while no command is in flight and rely on TCP keepalive for idle liveness.
 		dialer:     &net.Dialer{Timeout: time.Duration(cfg.Timeout) * time.Second},
 		pipelining: cfg.PipeliningRequests,
 		readBuf:    256 * 1024,
@@ -294,7 +297,7 @@ func Dial(ctx context.Context, srv config.Server, opts ...DialOption) (*Conn, er
 	var itr *idleTimeoutReader
 	var br io.Reader = nc
 	if dopts.dialer.Timeout > 0 {
-		itr = &idleTimeoutReader{nc: nc, timeout: dopts.dialer.Timeout, handshakeCtx: handshakeCtx}
+		itr = &idleTimeoutReader{nc: nc, timeout: dopts.dialer.Timeout, log: l, handshakeCtx: handshakeCtx}
 		br = itr
 	}
 	// lr is nil unless a limiter or recorder is configured; when non-nil
@@ -691,14 +694,19 @@ func (c *Conn) Close() error {
 	return c.closeErr
 }
 
-// idleTimeoutReader wraps a net.Conn and resets the read deadline before
-// every Read call, turning an absolute socket deadline into an idle
-// timeout. This is critical when speed limiting is active: a large
-// article body may take many minutes to transfer, but each individual
-// Read should complete within the timeout period.
+// idleTimeoutReader wraps a net.Conn to bound active reads without timing out
+// an idle connection between commands:
+//   - During the handshake (before endHandshake), every Read arms a per-read
+//     deadline of r.timeout so greeting, auth, and capability reads cannot hang.
+//   - After endHandshake, Read arms r.timeout only while inFlight > 0 (tracked
+//     via beginCmd and endCmd) and clears the deadline (time.Time{}) when
+//     inFlight == 0. A multi-read article body still receives a sliding
+//     per-read timeout, while an idle connection parked in runReader blocks
+//     without a deadline (so a silently vanished peer is not detected here).
 type idleTimeoutReader struct {
 	nc      net.Conn
 	timeout time.Duration
+	log     *slog.Logger
 
 	// handshakeCtx, while non-nil, is the handshake's own aggregate-bound
 	// context (Dial's local handshakeCtx). Read checks it after re-arming
@@ -710,64 +718,117 @@ type idleTimeoutReader struct {
 	// after the re-arm is still caught because the AfterFunc then fires
 	// later and is not overwritten by anything.
 	//
-	// Dial sets this field before the handshake's first read and clears
-	// it before starting the reader goroutine with a plain `go`
+	// Dial sets handshakeCtx before the handshake's first read and calls
+	// endHandshake (which clears handshakeCtx and sets gateOnInFlight) on
+	// the Dial goroutine before starting runReader with a plain `go`
 	// statement, which establishes a happens-before edge (Go memory
-	// model, goroutine creation) — so the field needs no lock or atomic.
-	handshakeCtx context.Context
-
-	mu             sync.Mutex
+	// model, goroutine creation) — so neither field is mutated concurrently
+	// with steady-state reads.
+	handshakeCtx   context.Context
 	gateOnInFlight bool
-	inFlight       int
+
+	// mu guards inFlight and serializes socket read-deadline updates across
+	// beginCmd, endCmd, and Read.
+	//
+	// inFlight counts commands from pending-FIFO append (beginCmd) until the
+	// full response — including any dot-stuffed body — has been consumed by
+	// runReader or rolled back by unappendPending (endCmd). It cannot be
+	// derived from len(c.pending) because popPending removes the FIFO head
+	// as soon as the status line is read, before readDotStuffedBody reads the
+	// article body; deriving the gate from len(c.pending) would disarm the
+	// read deadline mid-body whenever pipelining == 1.
+	mu         sync.Mutex
+	inFlight   int
+	underflows atomic.Int64
 }
 
+// endHandshake transitions the reader from unconditional per-read deadlines
+// (used during Dial's synchronous handshake) to in-flight-gated deadlines.
+// Must be called on the Dial goroutine before `go c.runReader()` starts.
 func (r *idleTimeoutReader) endHandshake() {
 	r.handshakeCtx = nil
 	r.gateOnInFlight = true
+}
+
+func (r *idleTimeoutReader) setReadDeadline(d time.Time) error {
+	return r.nc.SetReadDeadline(d)
+}
+
+func (r *idleTimeoutReader) logDeadlineErr(d time.Time, err error) {
+	if err != nil && !errors.Is(err, net.ErrClosed) && r.log != nil {
+		r.log.Warn("nntp: failed to set socket read deadline", "deadline", d, "error", err)
+	}
 }
 
 func (r *idleTimeoutReader) beginCmd() {
 	if r == nil {
 		return
 	}
+	var (
+		deadline time.Time
+		err      error
+	)
 	r.mu.Lock()
 	wasIdle := r.inFlight == 0
 	r.inFlight++
 	if wasIdle {
-		_ = r.nc.SetReadDeadline(time.Now().Add(r.timeout)) //nolint:errcheck // best-effort arm when first command enters flight
+		deadline = time.Now().Add(r.timeout)
+		err = r.setReadDeadline(deadline)
 	}
 	r.mu.Unlock()
+	r.logDeadlineErr(deadline, err)
 }
 
 func (r *idleTimeoutReader) endCmd() {
 	if r == nil {
 		return
 	}
+	var (
+		underflow bool
+		err       error
+	)
 	r.mu.Lock()
-	if r.inFlight > 0 {
+	if r.inFlight <= 0 {
+		underflow = true
+	} else {
 		r.inFlight--
 		if r.inFlight == 0 && r.gateOnInFlight {
-			_ = r.nc.SetReadDeadline(time.Time{}) //nolint:errcheck // best-effort disarm when last command completes
+			err = r.setReadDeadline(time.Time{})
 		}
 	}
 	r.mu.Unlock()
+	if underflow {
+		count := r.underflows.Add(1)
+		if r.log != nil {
+			r.log.Error("nntp: endCmd called with no commands in flight", "underflows", count)
+		}
+		return
+	}
+	r.logDeadlineErr(time.Time{}, err)
 }
 
 func (r *idleTimeoutReader) Read(p []byte) (int, error) {
+	var (
+		deadline time.Time
+		err      error
+	)
 	r.mu.Lock()
 	if r.gateOnInFlight && r.inFlight == 0 {
-		_ = r.nc.SetReadDeadline(time.Time{}) //nolint:errcheck // best-effort disarm while no command is in flight
+		err = r.setReadDeadline(time.Time{})
 	} else {
-		_ = r.nc.SetReadDeadline(time.Now().Add(r.timeout)) //nolint:errcheck // best-effort; actual idle enforced by Read
+		deadline = time.Now().Add(r.timeout)
+		err = r.setReadDeadline(deadline)
 	}
 	if ctx := r.handshakeCtx; ctx != nil {
-		if err := ctx.Err(); err != nil {
+		if ctxErr := ctx.Err(); ctxErr != nil {
 			// ctx ended at or before this point: force the pending read
 			// to unblock now instead of trusting the AfterFunc goroutine
 			// to still overwrite the re-arm above before Read blocks.
-			_ = r.nc.SetReadDeadline(time.Now()) //nolint:errcheck // best-effort unblock, mirrors setupHandshakeDeadline
+			deadline = time.Now()
+			err = r.setReadDeadline(deadline)
 		}
 	}
 	r.mu.Unlock()
+	r.logDeadlineErr(deadline, err)
 	return r.nc.Read(p)
 }

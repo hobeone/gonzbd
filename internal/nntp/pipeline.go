@@ -272,8 +272,8 @@ func (c *Conn) submit(pc *pendingCmd, cmd []byte) error {
 		return c.closeError()
 	}
 	c.pending = append(c.pending, pc)
-	c.pendingLock.Unlock()
 	c.itr.beginCmd()
+	c.pendingLock.Unlock()
 
 	if _, err := c.bw.Write(cmd); err != nil {
 		c.unappendPending(pc)
@@ -298,11 +298,9 @@ func (c *Conn) unappendPending(pc *pendingCmd) {
 	removed := n > 0 && c.pending[n-1] == pc
 	if removed {
 		c.pending = c.pending[:n-1]
-	}
-	c.pendingLock.Unlock()
-	if removed {
 		c.itr.endCmd()
 	}
+	c.pendingLock.Unlock()
 }
 
 // popPending removes and returns the head of the pending FIFO, or nil

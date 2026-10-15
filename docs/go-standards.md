@@ -343,7 +343,7 @@ These rules are distilled from real bugs found across dozens of audit and harden
 
 - **Use tombstone sets to reject late/duplicate messages.** After a file is completed and closed, late duplicate articles can re-open it, leaking FDs. Maintain a tombstone set to reject them. The assembler's are `completed`, keyed on `(jobID, fileIdx)`, and `cancelledJobs`, keyed on job ID, both held by `Assembler.worker`; `processRequest` sends an article for a file in `completed` to `handleLateDuplicate` rather than reopening it. (`seenDone` and `seenFailed` on `fileWriter` are a different thing: per-file duplicate sets for a file still open, keyed on `ArtIdx`.)
 
-- **Add idle read deadlines on long-lived network sockets.** NNTP connections without read deadlines hang silently when the remote end disappears. Use `SetReadDeadline` and reset on each successful read.
+- **Arm read deadlines on network sockets while a request is outstanding.** NNTP connections without read deadlines hang silently when the remote end disappears mid-command. Use `SetReadDeadline` during the handshake and while at least one command is in flight (`idleTimeoutReader` in `internal/nntp`), and disarm the read deadline when no command is in flight so idle connections rely on Go's default TCP keepalive for liveness rather than timing out on normal inter-command silence.
 
 - **SQLite per-connection pragmas belong in the DSN, not in post-connect hooks.** Setting connection-scoped pragmas (`foreign_keys(1)`, `busy_timeout(5000)`, `synchronous(FULL)`) and `_txlock=immediate` via `_pragma=` in the DSN ensures every connection (including pool-created ones) has them from the start, while database-scoped `journal_mode=WAL` runs once at `Open`.
 
