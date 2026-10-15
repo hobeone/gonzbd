@@ -149,13 +149,14 @@ type Job struct {
 	Job *job.Job
 
 	// Ingest / Queue metadata needed by post-processing stages:
-	Filename  string
-	NZBBackup string
-	Category  string
-	Password  string
-	Script    string
-	PP        int
-	URL       string
+	Filename      string
+	NZBBackup     string
+	Category      string
+	Password      string
+	MetaPasswords []string // MetaPasswords holds all <meta type="password"> entries from the NZB header, tried in order after Password.
+	Script        string
+	PP            int
+	URL           string
 
 	// DownloadDir is the absolute path where the assembler wrote the job's
 	// files — the working directory for in-place stages (par2, unpack,

@@ -1,5 +1,5 @@
 pkg ./internal/app/
-run TestBuildIngestJob_NZBMetaDefaults$
+run TestBuildIngestJob_NZBMetaDefaults$|TestAllMeta$|TestReadNZBMetaPasswords$
 
 [BuildIngestJob stops falling back to meta category when option is empty]
 file internal/app/ingest.go
@@ -23,7 +23,7 @@ file internal/app/ingest.go
 	password := opts.Password
 --- end
 
-[firstMeta stops matching case-insensitively]
+[allMeta stops matching case-insensitively]
 file internal/app/ingest.go
 --- anchor
 	for _, k := range keys {
@@ -33,4 +33,34 @@ file internal/app/ingest.go
 	for _, k := range keys {
 		if k == key {
 			for _, v := range parsed.Meta[k] {
+--- end
+
+[allMeta stops deduplicating multiple values]
+file internal/app/ingest.go
+--- anchor
+			if trimmed := strings.TrimSpace(v); trimmed != "" {
+				if !slices.Contains(out, trimmed) {
+					out = append(out, trimmed)
+				}
+			}
+--- replace
+			if trimmed := strings.TrimSpace(v); trimmed != "" {
+				out = append(out, trimmed)
+			}
+--- end
+
+[readNZBMetaPasswords returns nil even for recorded NZB backup]
+file internal/app/app.go
+--- anchor
+func readNZBMetaPasswords(adminDir, nzbBackup string) []string {
+	if nzbBackup == "" {
+		return nil
+	}
+	parsed, err := parseNZBBackup(adminDir, nzbBackup)
+--- replace
+func readNZBMetaPasswords(adminDir, nzbBackup string) []string {
+	if true {
+		return nil
+	}
+	parsed, err := parseNZBBackup(adminDir, nzbBackup)
 --- end

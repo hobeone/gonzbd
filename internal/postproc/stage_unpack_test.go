@@ -667,6 +667,27 @@ func TestUnpackHelpers(t *testing.T) {
 		_ = u.prepareOptions(t.Context(), slog.Default(), job, unpack.Options{}, "nonexistent-password-file.txt")
 	})
 
+	t.Run("prepareOptions with MetaPasswords", func(t *testing.T) {
+		u := NewUnpackStage()
+		qjob := newQueueJob(t, "pw-meta-job", 0)
+		job := &Job{
+			Job:           qjob,
+			Password:      "primary_pw",
+			MetaPasswords: []string{"primary_pw", "meta_pw1", "meta_pw2", "meta_pw1"},
+		}
+
+		tmpFile := filepath.Join(t.TempDir(), "passwords.txt")
+		if err := os.WriteFile(tmpFile, []byte("file_pw1\n"), 0o644); err != nil {
+			t.Fatalf("WriteFile: %v", err)
+		}
+
+		opts := u.prepareOptions(t.Context(), slog.Default(), job, unpack.Options{}, tmpFile)
+		want := []string{"primary_pw", "meta_pw1", "meta_pw2", "file_pw1"}
+		if !slices.Equal(opts.Passwords, want) {
+			t.Errorf("opts.Passwords = %v; want %v", opts.Passwords, want)
+		}
+	})
+
 	// 2. Test applyPermissions
 	t.Run("applyPermissions", func(t *testing.T) {
 		u := NewUnpackStage()

@@ -170,22 +170,28 @@ func BuildIngestJob(cfg *config.Config, parsed *nzb.NZB, filename string, opts t
 	return j, hdr, nil
 }
 
-// firstMeta returns the first non-empty trimmed value for key in parsed.Meta.
-// It checks key directly first, then scans keys case-insensitively using
-// deterministic key ordering.
-func firstMeta(parsed *nzb.NZB, key string) string {
+// allMeta returns all non-empty trimmed values for key in parsed.Meta,
+// deduplicated in order of appearance. It checks exact key matches first,
+// then scans remaining keys case-insensitively using deterministic key ordering.
+func allMeta(parsed *nzb.NZB, key string) []string {
 	if parsed == nil || len(parsed.Meta) == 0 {
-		return ""
+		return nil
 	}
+	var out []string
 	if vals, ok := parsed.Meta[key]; ok {
 		for _, v := range vals {
 			if trimmed := strings.TrimSpace(v); trimmed != "" {
-				return trimmed
+				if !slices.Contains(out, trimmed) {
+					out = append(out, trimmed)
+				}
 			}
 		}
 	}
 	keys := make([]string, 0, len(parsed.Meta))
 	for k := range parsed.Meta {
+		if k == key {
+			continue
+		}
 		keys = append(keys, k)
 	}
 	slices.Sort(keys)
@@ -193,12 +199,25 @@ func firstMeta(parsed *nzb.NZB, key string) string {
 		if strings.EqualFold(k, key) {
 			for _, v := range parsed.Meta[k] {
 				if trimmed := strings.TrimSpace(v); trimmed != "" {
-					return trimmed
+					if !slices.Contains(out, trimmed) {
+						out = append(out, trimmed)
+					}
 				}
 			}
 		}
 	}
-	return ""
+	return out
+}
+
+// firstMeta returns the first non-empty trimmed value for key in parsed.Meta.
+// It delegates to allMeta, which checks key directly first and scans keys
+// case-insensitively using deterministic key ordering.
+func firstMeta(parsed *nzb.NZB, key string) string {
+	vals := allMeta(parsed, key)
+	if len(vals) == 0 {
+		return ""
+	}
+	return vals[0]
 }
 
 // stripCompressionSuffix removes a trailing ".gz" or ".bz2" from a name that

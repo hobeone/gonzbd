@@ -2484,6 +2484,7 @@ func (app *Application) enqueuePostProc(j *job.Job, hdr dispatch.Header, failMsg
 			NZBBackup:            hdr.NZBBackup,
 			Category:             hdr.Category,
 			Password:             hdr.Password,
+			MetaPasswords:        readNZBMetaPasswords(gen.AdminDir, hdr.NZBBackup),
 			Script:               hdr.Script,
 			PP:                   hdr.PP.Int(),
 			URL:                  hdr.URL,
@@ -2547,6 +2548,45 @@ func (app *Application) enqueuePostProc(j *job.Job, hdr dispatch.Header, failMsg
 	enqueue(nil, nil, nil)
 }
 
+// parseNZBBackup loads, decompresses, and parses a backed-up NZB file from adminDir/nzb/.
+func parseNZBBackup(adminDir, nzbBackup string) (*nzb.NZB, error) {
+	// filepath.Base defends against a stored value containing separators;
+	// the column is written by us but is not a trust boundary we control
+	// once the database is on disk.
+	path := filepath.Join(adminDir, "nzb", filepath.Base(nzbBackup))
+
+	f, err := os.Open(path) //nolint:gosec // path is adminDir-rooted with the basename taken above
+	if err != nil {
+		return nil, fmt.Errorf("open NZB backup %q: %w", nzbBackup, err)
+	}
+	defer func() { _ = f.Close() }() //nolint:errcheck // read-only NZB backup
+
+	gz, err := gzip.NewReader(f)
+	if err != nil {
+		return nil, fmt.Errorf("read NZB backup %q: %w", nzbBackup, err)
+	}
+	defer func() { _ = gz.Close() }()
+
+	parsed, err := nzb.Parse(gz)
+	if err != nil {
+		return nil, fmt.Errorf("parse NZB backup %q: %w", nzbBackup, err)
+	}
+	return parsed, nil
+}
+
+// readNZBMetaPasswords extracts all <meta type="password"> values from the backed-up NZB.
+// If nzbBackup is empty or cannot be opened/parsed, it returns nil.
+func readNZBMetaPasswords(adminDir, nzbBackup string) []string {
+	if nzbBackup == "" {
+		return nil
+	}
+	parsed, err := parseNZBBackup(adminDir, nzbBackup)
+	if err != nil {
+		return nil
+	}
+	return allMeta(parsed, "password")
+}
+
 // rebuildJobFromNZB reconstructs a *job.Job for a history entry by
 // re-parsing the gzipped NZB backup recorded on it.
 //
@@ -2562,27 +2602,9 @@ func (app *Application) rebuildJobFromNZB(entry history.Entry) (*job.Job, dispat
 	if entry.NZBBackup == "" {
 		return nil, dispatch.Header{}, fmt.Errorf("app: retry %s: no NZB backup was recorded for this job", entry.NzoID)
 	}
-	adminDir := app.config.GetGeneral().AdminDir
-	// filepath.Base defends against a stored value containing separators;
-	// the column is written by us but is not a trust boundary we control
-	// once the database is on disk.
-	path := filepath.Join(adminDir, "nzb", filepath.Base(entry.NZBBackup))
-
-	f, err := os.Open(path) //nolint:gosec // path is adminDir-rooted with the basename taken above
+	parsed, err := parseNZBBackup(app.config.GetGeneral().AdminDir, entry.NZBBackup)
 	if err != nil {
-		return nil, dispatch.Header{}, fmt.Errorf("app: retry %s: open NZB backup %q: %w", entry.NzoID, entry.NZBBackup, err)
-	}
-	defer func() { _ = f.Close() }() //nolint:errcheck // read-only NZB backup
-
-	gz, err := gzip.NewReader(f)
-	if err != nil {
-		return nil, dispatch.Header{}, fmt.Errorf("app: retry %s: read NZB backup %q: %w", entry.NzoID, entry.NZBBackup, err)
-	}
-	defer func() { _ = gz.Close() }()
-
-	parsed, err := nzb.Parse(gz)
-	if err != nil {
-		return nil, dispatch.Header{}, fmt.Errorf("app: retry %s: parse NZB backup %q: %w", entry.NzoID, entry.NZBBackup, err)
+		return nil, dispatch.Header{}, fmt.Errorf("app: retry %s: %w", entry.NzoID, err)
 	}
 
 	pp := types.PPInherit
