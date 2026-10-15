@@ -320,23 +320,24 @@ func TestLayoutA_ObfuscatedDamagedArchiveIsRepaired(t *testing.T) {
 	}
 }
 
-// Identifying a file in the directory means the par2 set describes something
-// that is there to check, so repair has work to do and the archive beside it
-// does not change that. It must stay Damaged.
+// Identifying a delivered file in the directory means the par2 set describes
+// something that was delivered and is there to check, so repair has work to do
+// and the archive beside it does not change that. It must stay Damaged.
 func TestQuickCheckStage_IdentifiedEntryStaysDamaged(t *testing.T) {
 	t.Parallel()
 
-	job, dir := layoutBJob(t, "release.rar")
-	// Put the protected file in the directory too, under its own name but
-	// truncated, so the set identifies it by name and still has nothing to
-	// verify it by: the manifest lists only release.rar.
-	if err := os.WriteFile(filepath.Join(dir, "feature.bin"), []byte("x"), 0o644); err != nil {
+	releaseData, err := os.ReadFile(par2LayoutFixture("layout_b", "release.rar"))
+	if err != nil {
 		t.Fatal(err)
 	}
+	job, _ := deliveredJob(t, "layout_b", layoutBPar2, []deliveredFile{
+		{name: "release.rar", data: releaseData},
+		{name: "feature.bin", data: []byte("x")},
+	})
 	qc, _, _ := layoutStages()
 	runQuickCheck(t, qc, job)
 	if job.quickCheck != QuickCheckDamaged {
-		t.Errorf("QuickCheck = %s with a par2 entry identified in the directory, want damaged", job.quickCheck)
+		t.Errorf("QuickCheck = %s with a delivered par2 entry identified in the directory, want damaged", job.quickCheck)
 	}
 }
 
@@ -380,7 +381,8 @@ func TestDeferredSets_FullyAccountedSetIsNot(t *testing.T) {
 	job.DownloadDir = filepath.Join(t.TempDir(), "absent")
 	entry := par2.FileDesc{FileName: "feature.bin", Set: "feature"}
 	id := par2.Identification{Files: []par2.Identified{{OnDisk: "feature.bin", Desc: entry}}}
-	if got := qc.deferredSets(t.Context(), slog.New(slog.DiscardHandler), job, id); len(got) != 0 {
+	a := par2.Assessment{ID: id}
+	if got := qc.deferredSets(t.Context(), slog.New(slog.DiscardHandler), job, a); len(got) != 0 {
 		t.Errorf("deferredSets = %v for a set that identified every entry, want none", got)
 	}
 	for _, line := range job.OutputLines {

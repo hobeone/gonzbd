@@ -167,7 +167,7 @@ func (q *QuickCheckStage) recordVerdict(ctx context.Context, log *slog.Logger, j
 	// identification, and the CRCs were compared against the entries
 	// identification proved each file to be, before any of the moves above
 	// happened.
-	deferred := q.deferredSets(ctx, log, job, a.ID)
+	deferred := q.deferredSets(ctx, log, job, a)
 	job.deferredPar2Sets = deferred
 	skip := make(map[string]bool, len(deferred))
 	for _, name := range deferred {
@@ -259,8 +259,9 @@ func (q *QuickCheckStage) recordVerdict(ctx context.Context, log *slog.Logger, j
 // unpack: sets judged to protect files a delivered archive will extract
 // (Layout B), which a repair before unpack has nothing to verify against and
 // whose failure would skip the unpack that produces them. It is a heuristic,
-// judged per set on the entries identification did not account for, and a
-// set that fails any condition is repaired before unpack as usual.
+// judged per set on the entries no delivered file was identified as
+// (a.Undelivered), and a set that fails any condition is repaired before
+// unpack as usual.
 //
 //  1. Unpack will run for this job. Deferring hands the set to
 //     extracted_repair, which runs only after unpack, so a job unpack will
@@ -278,9 +279,9 @@ func (q *QuickCheckStage) recordVerdict(ctx context.Context, log *slog.Logger, j
 //     the directory whose type unpack extracts (heldArchiveMembers). An
 //     archive the entries do not name says nothing about them, and one whose
 //     type is disabled (enable_unrar, enable_7zip) will not produce them.
-func (q *QuickCheckStage) deferredSets(ctx context.Context, log *slog.Logger, job *Job, id par2.Identification) []string {
+func (q *QuickCheckStage) deferredSets(ctx context.Context, log *slog.Logger, job *Job, a par2.Assessment) []string {
 	unaccounted := make(map[string][]par2.FileDesc)
-	for _, fd := range id.Unaccounted {
+	for _, fd := range a.Undelivered() {
 		unaccounted[fd.Set] = append(unaccounted[fd.Set], fd)
 	}
 	if len(unaccounted) == 0 {

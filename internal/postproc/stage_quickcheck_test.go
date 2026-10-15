@@ -394,3 +394,27 @@ func TestQuickCheckStage_CRCErrors(t *testing.T) {
 		}
 	})
 }
+
+func TestQuickCheckStage_LayoutBRetryWithLeftoverExtractedFileDefersPar2Set(t *testing.T) {
+	t.Parallel()
+
+	// In Layout B, release.rar extracts to feature.bin, and feature.par2 protects feature.bin.
+	// On Attempt 2 of a retry, feature.bin (e.g. corrupt from Attempt 1) already sits on disk.
+	job, dir := layoutBJob(t, "release.rar")
+	leftoverExtracted := filepath.Join(dir, "feature.bin")
+	if err := os.WriteFile(leftoverExtracted, []byte("corrupt leftover extracted member"), 0o644); err != nil {
+		t.Fatalf("write leftover extracted member: %v", err)
+	}
+
+	qc, _, _ := layoutStages()
+	if err := qc.Run(t.Context(), job); err != nil {
+		t.Fatalf("quickcheck: %v", err)
+	}
+
+	if job.quickCheck != QuickCheckUnidentified {
+		t.Errorf("quickCheck = %v, want %v (QuickCheckUnidentified)", job.quickCheck, QuickCheckUnidentified)
+	}
+	if len(job.deferredPar2Sets) != 1 || job.deferredPar2Sets[0] != "feature" {
+		t.Errorf("deferredPar2Sets = %v, want [feature]", job.deferredPar2Sets)
+	}
+}

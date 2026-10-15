@@ -87,6 +87,27 @@ func (a Assessment) CRCExcluding(sets map[string]bool, log *slog.Logger) CRCVeri
 	return verifyIdentified(kept, a.files, log)
 }
 
+// Undelivered returns every par2 entry that no delivered file in a.files was
+// shown to be: any identified file whose path on disk matches no delivered
+// file in a.files (exact name or unambiguous basename), followed by all
+// unaccounted entries.
+//
+// When a.files is empty, it returns a clone of a.ID.Unaccounted.
+func (a Assessment) Undelivered() []FileDesc {
+	if len(a.files) == 0 {
+		return slices.Clone(a.ID.Unaccounted)
+	}
+	idx := newDeliveredIndex(a.files, nil)
+	var undelivered []FileDesc
+	for _, f := range a.ID.Files {
+		if _, ok := idx.match(f.OnDisk); !ok {
+			undelivered = append(undelivered, f.Desc)
+		}
+	}
+	undelivered = append(undelivered, a.ID.Unaccounted...)
+	return undelivered
+}
+
 // Assess identifies the files in dir against the par2 sets, verifies the
 // identified ones against the assembled CRCs the caller supplies, and reports
 // the renames that would relocate them — all from the directory's current,
@@ -132,6 +153,50 @@ func AssessWithOptions(dir string, sets []Set, files []AssembledFile, log *slog.
 	return a, nil
 }
 
+// delivered holds the verification state of a delivered file.
+type delivered struct {
+	crc     uint32
+	matched bool
+}
+
+// deliveredIndex indexes delivered files by exact filename and by unambiguous basename.
+type deliveredIndex struct {
+	byName map[string]*delivered
+	byBase map[string]*delivered
+}
+
+func newDeliveredIndex(files []AssembledFile, log *slog.Logger) deliveredIndex {
+	byName := make(map[string]*delivered, len(files))
+	byBase := make(map[string]*delivered, len(files))
+	ambiguousBase := make(map[string]bool)
+	for _, af := range files {
+		d := &delivered{crc: af.CRC32}
+		byName[af.FileName] = d
+		base := joinKey(af.FileName)
+		if _, dup := byBase[base]; dup {
+			ambiguousBase[base] = true
+			continue
+		}
+		byBase[base] = d
+	}
+	for base := range ambiguousBase {
+		if log != nil {
+			log.Warn("assess: delivered files share a basename; none can be matched to a CRC by it",
+				"basename", base)
+		}
+		delete(byBase, base)
+	}
+	return deliveredIndex{byName: byName, byBase: byBase}
+}
+
+func (idx deliveredIndex) match(onDisk string) (*delivered, bool) {
+	if d, ok := idx.byName[onDisk]; ok {
+		return d, true
+	}
+	d, ok := idx.byBase[joinKey(onDisk)]
+	return d, ok
+}
+
 // verifyIdentified compares each identified file's assembled CRC32 against the
 // CRC32 par2 recorded for the entry it was identified AS.
 //
@@ -168,38 +233,11 @@ func verifyIdentified(id Identification, files []AssembledFile, log *slog.Logger
 		log = slog.Default()
 	}
 
-	// Exact names, and the basenames that are unambiguous among them. One
-	// entry per delivered file in each, and `matched` doubles as the
-	// NotInPar2 accounting, so there is no second map to keep in step.
-	type delivered struct {
-		crc     uint32
-		matched bool
-	}
-	byName := make(map[string]*delivered, len(files))
-	byBase := make(map[string]*delivered, len(files))
-	ambiguousBase := make(map[string]bool)
-	for _, af := range files {
-		d := &delivered{crc: af.CRC32}
-		byName[af.FileName] = d
-		base := joinKey(af.FileName)
-		if _, dup := byBase[base]; dup {
-			ambiguousBase[base] = true
-			continue
-		}
-		byBase[base] = d
-	}
-	for base := range ambiguousBase {
-		log.Warn("assess: delivered files share a basename; none can be matched to a CRC by it",
-			"basename", base)
-		delete(byBase, base)
-	}
+	idx := newDeliveredIndex(files, log)
 
 	var r CRCVerifyResult
 	for _, f := range id.Files {
-		d, delivered := byName[f.OnDisk]
-		if !delivered {
-			d, delivered = byBase[joinKey(f.OnDisk)]
-		}
+		d, delivered := idx.match(f.OnDisk)
 		if !delivered {
 			// Identified against the directory, but the caller lists no
 			// delivered file under that name. par2 protects something this
@@ -270,7 +308,7 @@ func verifyIdentified(id Identification, files []AssembledFile, log *slog.Logger
 	// Delivered files no identification claimed. Normal and benign: the .par2
 	// files themselves, .nfo, .sfv. Read off the same records the join used,
 	// so there is no second map that could disagree with it.
-	for _, d := range byName {
+	for _, d := range idx.byName {
 		if !d.matched {
 			r.NotInPar2++
 		}

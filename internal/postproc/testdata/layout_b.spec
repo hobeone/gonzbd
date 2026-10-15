@@ -1,5 +1,5 @@
 pkg ./internal/postproc/
-run TestLayoutB_ArchiveExtractsDespitePar2NamingItsContents|TestLayoutB_DamagedArchiveFailsTheJob|TestQuickCheckStage_UnidentifiedNeedsEveryCondition|TestLayoutB_RepairOnlyJobKeepsRepair|TestLayoutA_ObfuscatedDamagedArchiveIsRepaired|TestQuickCheckStage_IdentifiedEntryStaysDamaged|TestHeldArchiveMembers_ScanErrorIsNotHeld|TestHeldArchiveMembers_ListingErrorIsNotHeld|TestRepairStage_DeclinesWhenQuickCheckUnidentified|TestRepairStage_HandlesEveryQuickCheckOutcome
+run TestLayoutB_ArchiveExtractsDespitePar2NamingItsContents|TestLayoutB_DamagedArchiveFailsTheJob|TestQuickCheckStage_UnidentifiedNeedsEveryCondition|TestLayoutB_RepairOnlyJobKeepsRepair|TestLayoutA_ObfuscatedDamagedArchiveIsRepaired|TestQuickCheckStage_IdentifiedEntryStaysDamaged|TestHeldArchiveMembers_ScanErrorIsNotHeld|TestHeldArchiveMembers_ListingErrorIsNotHeld|TestRepairStage_DeclinesWhenQuickCheckUnidentified|TestRepairStage_HandlesEveryQuickCheckOutcome|TestQuickCheckStage_LayoutBRetryWithLeftoverExtractedFileDefersPar2Set
 
 # The classification itself. Without it a Layout B post is Damaged, repair
 # runs against files unpack has not produced, and ParError skips unpack.
@@ -11,10 +11,16 @@ file internal/postproc/stage_quickcheck.go
 	case false:
 --- end
 
-# deferredSets' condition 2 — the set has an entry nothing delivered was
-# identified as — has no branch to neuter: the candidate sets are drawn from
-# id.Unaccounted. TestQuickCheckStage_IdentifiedEntryStaysDamaged and
-# TestDeferredSets_FullyAccountedSetIsNot pin its outcome.
+# Condition 2: candidates drawn from Undelivered(). If Undelivered() is mutated
+# to inspect only unaccounted entries, a retry with leftover extracted member
+# stays Damaged instead of deferring to extracted_repair.
+[undelivered fallback ignores identified files]
+file internal/postproc/stage_quickcheck.go
+--- anchor
+	for _, fd := range a.Undelivered() {
+--- replace
+	for _, fd := range a.ID.Unaccounted {
+--- end
 
 # Condition 1, whole. Dropped, a PP=1 job or one with unpack disabled skips
 # repair, skips unpack, and succeeds with nothing verified.
