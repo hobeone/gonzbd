@@ -5,7 +5,7 @@ run TestIdleTimeoutReaderForcesDeadlineWhenHandshakeCtxAlreadyDone
 file internal/nntp/conn.go
 --- anchor
 	if ctx := r.handshakeCtx; ctx != nil {
-		if err := ctx.Err(); err != nil {
+		if ctxErr := ctx.Err(); ctxErr != nil {
 --- replace
 	if ctx := r.handshakeCtx; ctx != nil {
 		if false {

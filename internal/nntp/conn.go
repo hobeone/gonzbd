@@ -206,13 +206,13 @@ type dialOptions struct {
 // non-positive timeout or depth, so this package keeps no fallbacks.
 func newDialOptions(srv config.Server) (*dialOptions, error) {
 	cfg := srv.Config()
+	// KeepAlive is left at zero on Dialer so Go's stdlib default TCP keepalive
+	// probes remain enabled; steady-state connections disarm their read deadline
+	// while no command is in flight and rely on TCP keepalive for idle liveness.
 	opts := &dialOptions{
-		host:   cfg.Host,
-		port:   cfg.Port,
-		useTLS: cfg.SSL,
-		// KeepAlive is left at zero so Go's stdlib default TCP keepalive probes
-		// remain enabled; steady-state connections disarm their read deadline
-		// while no command is in flight and rely on TCP keepalive for idle liveness.
+		host:       cfg.Host,
+		port:       cfg.Port,
+		useTLS:     cfg.SSL,
 		dialer:     &net.Dialer{Timeout: time.Duration(cfg.Timeout) * time.Second},
 		pipelining: cfg.PipeliningRequests,
 		readBuf:    256 * 1024,
