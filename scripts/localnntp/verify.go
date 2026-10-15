@@ -46,6 +46,7 @@ type VerifyReport struct {
 	Mode            string   `json:"mode"`
 	JobID           string   `json:"job_id"`
 	VerifiedRows    int      `json:"verified_rows"`
+	FallbackRows    int      `json:"fallback_rows,omitempty"`
 	RecordedIDs     []string `json:"recorded_ids,omitempty"`
 	RefetchedIDs    []string `json:"refetched_ids,omitempty"`
 	OutputsVerified int      `json:"outputs_verified"`
@@ -352,6 +353,168 @@ func postSnapshot(ctx context.Context, controlURL, snapshotName string, recorded
 	return nil
 }
 
+func manifestFileAt(sortedFiles []ReleaseFile, idx int) *ReleaseFile {
+	if idx >= 0 && idx < len(sortedFiles) {
+		return &sortedFiles[idx]
+	}
+	return nil
+}
+
+func resolveRowFilename(fr durability.FileRow, rf *ReleaseFile, idx int) string {
+	if fr.Filename != "" {
+		return fr.Filename
+	}
+	if rf != nil && rf.DiskName != "" {
+		return rf.DiskName
+	}
+	return fmt.Sprintf("file_%d", idx)
+}
+
+func openCachedPartialFile(
+	downloadDir string,
+	candidateSubdirs []string,
+	openFiles map[int]*os.File,
+	fileIdx int,
+	filename string,
+) (*os.File, error) {
+	if f, ok := openFiles[fileIdx]; ok {
+		return f, nil
+	}
+	filePath, err := findPartialFile(downloadDir, candidateSubdirs, filename)
+	if err != nil {
+		return nil, err
+	}
+	opened, err := os.Open(filePath) //nolint:gosec // partial file within downloadDir
+	if err != nil {
+		return nil, fmt.Errorf("open partial file %s: %w", filePath, err)
+	}
+	openFiles[fileIdx] = opened
+	return opened, nil
+}
+
+func postProcCandidateNames(filename string, rf *ReleaseFile) []string {
+	names := []string{filename, filename + ".1"}
+	if rf != nil && rf.DiskName != "" && rf.DiskName != filename {
+		names = append(names, rf.DiskName, rf.DiskName+".1")
+	}
+	return names
+}
+
+func indexSegmentMetaByOffset(rf *ReleaseFile) map[int64]SegmentMeta {
+	if rf == nil || len(rf.Segments) == 0 {
+		return nil
+	}
+	byOffset := make(map[int64]SegmentMeta, len(rf.Segments))
+	for _, seg := range rf.Segments {
+		byOffset[seg.Offset] = seg
+	}
+	return byOffset
+}
+
+func hasPar2BackupCandidate(downloadDir string, candidateSubdirs []string, filename string, rf *ReleaseFile) bool {
+	if _, err := findPartialFile(downloadDir, candidateSubdirs, filename+".1"); err == nil {
+		return true
+	}
+	if rf != nil && rf.DiskName != "" && rf.DiskName != filename {
+		if _, err := findPartialFile(downloadDir, candidateSubdirs, rf.DiskName+".1"); err == nil {
+			return true
+		}
+	}
+	return false
+}
+
+func allowedRowCRCs(r durability.WrittenRow, segByOffset map[int64]SegmentMeta, hasPar2Backup bool) []uint32 {
+	crcs := []uint32{r.CRC32}
+	if !hasPar2Backup {
+		return crcs
+	}
+	if seg, ok := segByOffset[r.Offset]; ok && int64(seg.Length) == r.Length && seg.CRC32 != r.CRC32 {
+		crcs = append(crcs, seg.CRC32)
+	}
+	return crcs
+}
+
+func verifyAllRowsAgainstCandidate(
+	f *os.File,
+	rows []durability.WrittenRow,
+	segByOffset map[int64]SegmentMeta,
+	hasPar2Backup bool,
+) bool {
+	for _, r := range rows {
+		buf := make([]byte, r.Length)
+		n, err := f.ReadAt(buf, r.Offset)
+		if (err != nil && !errors.Is(err, io.EOF)) || int64(n) < r.Length {
+			return false
+		}
+		got := crc32.ChecksumIEEE(buf)
+		crcs := allowedRowCRCs(r, segByOffset, hasPar2Backup)
+		if !slices.Contains(crcs, got) {
+			return false
+		}
+	}
+	return true
+}
+
+func resolveCompletePostProcFile(
+	downloadDir string,
+	candidateSubdirs []string,
+	openFiles map[int]*os.File,
+	fileIdx int,
+	filename string,
+	rf *ReleaseFile,
+	rows []durability.WrittenRow,
+) bool {
+	segByOffset := indexSegmentMetaByOffset(rf)
+	hasBackup := hasPar2BackupCandidate(downloadDir, candidateSubdirs, filename, rf)
+	for _, cand := range postProcCandidateNames(filename, rf) {
+		filePath, err := findPartialFile(downloadDir, candidateSubdirs, cand)
+		if err != nil {
+			continue
+		}
+		candFile, err := os.Open(filePath) //nolint:gosec // verified candidate inside downloadDir
+		if err != nil {
+			continue
+		}
+		if verifyAllRowsAgainstCandidate(candFile, rows, segByOffset, hasBackup) {
+			if prev := openFiles[fileIdx]; prev != nil {
+				_ = prev.Close() //nolint:errcheck // best-effort close of superseded handle
+			}
+			openFiles[fileIdx] = candFile
+			return true
+		}
+		_ = candFile.Close() //nolint:errcheck // read-only close
+	}
+	return false
+}
+
+func verifyCrashFileRows(
+	downloadDir string,
+	candidateSubdirs []string,
+	openFiles map[int]*os.File,
+	fileIdx int,
+	fr durability.FileRow,
+	rf *ReleaseFile,
+	rows []durability.WrittenRow,
+) (bool, error) {
+	filename := resolveRowFilename(fr, rf, fileIdx)
+	f, err := openCachedPartialFile(downloadDir, candidateSubdirs, openFiles, fileIdx, filename)
+	if err == nil {
+		for _, r := range rows {
+			if rowErr := verifyWrittenRowOnDisk(f, filename, r); rowErr != nil {
+				err = rowErr
+				break
+			}
+		}
+	}
+	if err == nil {
+		return false, nil
+	}
+	if fr.Complete && resolveCompletePostProcFile(downloadDir, candidateSubdirs, openFiles, fileIdx, filename, rf, rows) {
+		return true, nil
+	}
+	return false, err
+}
+
 func verifyCrash(ctx context.Context, db *sql.DB, m *ReleaseManifest, cfg VerifyConfig) (*VerifyReport, error) {
 	jobID, jobName, err := resolveCrashJob(ctx, db, cfg.JobID, m.Name)
 	if err != nil {
@@ -363,9 +526,9 @@ func verifyCrash(ctx context.Context, db *sql.DB, m *ReleaseManifest, cfg Verify
 	if err != nil {
 		return nil, fmt.Errorf("query job_files: %w", err)
 	}
-	fileNames := make(map[int]string, len(fRows))
+	fileRows := make(map[int]durability.FileRow, len(fRows))
 	for _, fr := range fRows {
-		fileNames[fr.FileIndex] = fr.Filename
+		fileRows[fr.FileIndex] = fr
 	}
 
 	written, err := store.WrittenRows(ctx, jobID)
@@ -388,36 +551,28 @@ func verifyCrash(ctx context.Context, db *sql.DB, m *ReleaseManifest, cfg Verify
 		}
 	}()
 
+	var fileOrder []int
+	rowsByFile := make(map[int][]durability.WrittenRow)
 	var recordedIDs []string
 	for _, r := range written {
-		filename := fileNames[r.FileIdx]
-		if filename == "" && r.FileIdx >= 0 && r.FileIdx < len(sortedFiles) {
-			filename = sortedFiles[r.FileIdx].DiskName
+		if _, seen := rowsByFile[r.FileIdx]; !seen {
+			fileOrder = append(fileOrder, r.FileIdx)
 		}
-		if filename == "" {
-			filename = fmt.Sprintf("file_%d", r.FileIdx)
-		}
-
-		f, ok := openFiles[r.FileIdx]
-		if !ok {
-			filePath, err := findPartialFile(cfg.DownloadDir, candidateSubdirs, filename)
-			if err != nil {
-				return nil, err
-			}
-			opened, err := os.Open(filePath) //nolint:gosec // partial file within downloadDir
-			if err != nil {
-				return nil, fmt.Errorf("open partial file %s: %w", filePath, err)
-			}
-			openFiles[r.FileIdx] = opened
-			f = opened
-		}
-
-		if err := verifyWrittenRowOnDisk(f, filename, r); err != nil {
-			return nil, err
-		}
-
+		rowsByFile[r.FileIdx] = append(rowsByFile[r.FileIdx], r)
 		if rawMsgID, ok := artIDResolver(int(r.ArtIdx)); ok && rawMsgID != "" {
 			recordedIDs = append(recordedIDs, extractMessageID(rawMsgID))
+		}
+	}
+
+	var fallbackRows int
+	for _, fileIdx := range fileOrder {
+		rf := manifestFileAt(sortedFiles, fileIdx)
+		usedFallback, err := verifyCrashFileRows(cfg.DownloadDir, candidateSubdirs, openFiles, fileIdx, fileRows[fileIdx], rf, rowsByFile[fileIdx])
+		if err != nil {
+			return nil, err
+		}
+		if usedFallback {
+			fallbackRows += len(rowsByFile[fileIdx])
 		}
 	}
 
@@ -434,6 +589,7 @@ func verifyCrash(ctx context.Context, db *sql.DB, m *ReleaseManifest, cfg Verify
 		Mode:         "crash",
 		JobID:        jobID,
 		VerifiedRows: len(written),
+		FallbackRows: fallbackRows,
 		RecordedIDs:  recordedIDs,
 	}, nil
 }

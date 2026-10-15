@@ -1,6 +1,8 @@
 package par2
 
 import (
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -27,6 +29,9 @@ All files are correct, repair is not required.
 	}
 	if ro.Status != StatusAllFilesOK {
 		t.Errorf("Status = %d, want StatusAllFilesOK", ro.Status)
+	}
+	if len(ro.DamagedTargets) != 0 {
+		t.Errorf("DamagedTargets = %v, want empty", ro.DamagedTargets)
 	}
 }
 
@@ -56,6 +61,9 @@ Target: "data.bin" - found.
 	}
 	if ro.RepairPercent != 100.0 {
 		t.Errorf("RepairPercent = %f, want 100.0", ro.RepairPercent)
+	}
+	if len(ro.DamagedTargets) != 1 || ro.DamagedTargets[0] != "data.bin" {
+		t.Errorf("DamagedTargets = %v, want [data.bin]", ro.DamagedTargets)
 	}
 }
 
@@ -416,10 +424,92 @@ Target: "movie.srt" - found.
 	if got := ro.Renames["movie.srt"]; got != "abc123.srt" {
 		t.Errorf("Renames[movie.srt] = %q, want %q", got, "abc123.srt")
 	}
+	if len(ro.DamagedTargets) != 1 || ro.DamagedTargets[0] != "movie.srt" {
+		t.Errorf("DamagedTargets = %v, want [movie.srt]", ro.DamagedTargets)
+	}
 	if ro.RepairPercent != 100.0 {
 		t.Errorf("RepairPercent = %f, want 100.0", ro.RepairPercent)
 	}
 	if ro.Phase != PhaseVerifyingRepair {
 		t.Errorf("Phase = %d, want PhaseVerifyingRepair", ro.Phase)
+	}
+}
+
+func TestParseRepairOutput_CRDelimitedProgressLines(t *testing.T) {
+	t.Parallel()
+	// Real par2cmdline (1.1.1 and turbo) emits Target: and File: lines on the
+	// same \n-delimited line as preceding \r-terminated "Scanning: NN.N%"
+	// progress lines.
+	output := "Verifying source files:\n" +
+		"Opening: \"a.rar\"\n" +
+		"Scanning: 10.0%\rScanning: 94.2%\rTarget: \"a.rar\" - damaged. Found 12 of 13 data blocks.\n" +
+		"Scanning extra files:\n" +
+		"Opening: \"obf.bin\"\n" +
+		"Scanning: 50.0%\rScanning: 99.9%\rFile: \"obf.bin\" - is a match for \"b.rar\".\n" +
+		"Repair is required.\n" +
+		"1 file(s) exist but are damaged.\n" +
+		"Repair is possible.\n" +
+		"Repairing: 10.0%\rRepairing: 100.0%\rRepair complete.\n"
+
+	ro := ParseRepairOutput(output)
+	if !ro.Finished || ro.Status != StatusRepairComplete {
+		t.Errorf("Finished=%v Status=%v, want true/%v", ro.Finished, ro.Status, StatusRepairComplete)
+	}
+	if len(ro.DamagedTargets) != 1 || ro.DamagedTargets[0] != "a.rar" {
+		t.Errorf("DamagedTargets = %v, want [a.rar]", ro.DamagedTargets)
+	}
+	if got := ro.Renames["b.rar"]; got != "obf.bin" {
+		t.Errorf("Renames[b.rar] = %q, want %q", got, "obf.bin")
+	}
+}
+
+func TestIsBackupNamedFor(t *testing.T) {
+	t.Parallel()
+
+	if !IsBackupNumber("1") || !IsBackupNumber("999") || IsBackupNumber("") || IsBackupNumber("01") || IsBackupNumber("1000") || IsBackupNumber("1a") {
+		t.Error("IsBackupNumber classification failed")
+	}
+
+	dir := t.TempDir()
+	targetData := []byte("verified-target-bytes")
+	if err := os.WriteFile(filepath.Join(dir, "movie.rar"), targetData, 0o600); err != nil {
+		t.Fatalf("WriteFile movie.rar: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "movie.rar.1"), targetData, 0o600); err != nil {
+		t.Fatalf("WriteFile movie.rar.1: %v", err)
+	}
+	if err := os.MkdirAll(filepath.Join(dir, "subdir.rar"), 0o750); err != nil {
+		t.Fatalf("MkdirAll subdir.rar: %v", err)
+	}
+
+	root, err := os.OpenRoot(dir)
+	if err != nil {
+		t.Fatalf("OpenRoot: %v", err)
+	}
+	defer root.Close()
+
+	wantHash, err := ComputeHash16kRoot(root, "movie.rar")
+	if err != nil {
+		t.Fatalf("ComputeHash16kRoot: %v", err)
+	}
+
+	if !IsBackupNamedFor(root, "movie.rar.1", "movie.rar", wantHash) {
+		t.Error("IsBackupNamedFor(movie.rar.1, movie.rar, wantHash) = false, want true")
+	}
+	if IsBackupNamedFor(root, "movie.rar.01", "movie.rar", wantHash) {
+		t.Error("IsBackupNamedFor accepted zero-padded .01 suffix")
+	}
+	if IsBackupNamedFor(root, "other.rar.1", "movie.rar", wantHash) {
+		t.Error("IsBackupNamedFor accepted mismatched target prefix")
+	}
+	if IsBackupNamedFor(root, "subdir.rar.1", "subdir.rar", wantHash) {
+		t.Error("IsBackupNamedFor accepted directory target")
+	}
+	if IsBackupNamedFor(root, "missing.rar.1", "missing.rar", wantHash) {
+		t.Error("IsBackupNamedFor accepted missing target")
+	}
+	var wrongHash [16]byte
+	if IsBackupNamedFor(root, "movie.rar.1", "movie.rar", wrongHash) {
+		t.Error("IsBackupNamedFor accepted mismatched target 16 KiB hash")
 	}
 }

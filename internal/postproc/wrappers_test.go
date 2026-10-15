@@ -105,6 +105,7 @@ func TestPar2CleanupStage_RunsAfterSuccessfulUnpack(t *testing.T) {
 	os.WriteFile(filepath.Join(dir, "movie.vol01+2.par2"), []byte("par2 vol"), 0o644)
 	// Create backup copy file.
 	os.WriteFile(filepath.Join(dir, "movie.mkv.1"), []byte("backup"), 0o644)
+	job.recordPar2Backup("movie.mkv.1")
 
 	// Simulate: repair succeeded, unpack succeeded (defaults).
 	stage := NewPar2CleanupStage(true)

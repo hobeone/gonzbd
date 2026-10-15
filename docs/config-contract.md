@@ -31,7 +31,7 @@ Basis for `set_config` being the runtime path that changes the directory:
 which one is a call (`internal/api/config.go`) and three are declarations.
 `git grep -n 'config\.Load(' -- '*.go' ':!*_test.go'` finds 2 lines, the daemon
 at startup (`cmd/gonzbd/main.go`) and a separate tool (`scripts/nzbprobe`), and
-the daemon has no SIGHUP or file-watch handler, so nothing reloads the file
+the daemon has no config-reload or file-watch handler (SIGHUP triggers shutdown, not a reload), so nothing reloads the file
 while it runs.
 
 Startup reads the directory from the config alone (`resolveDirs` in

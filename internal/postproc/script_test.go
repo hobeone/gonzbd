@@ -17,6 +17,9 @@ import (
 // skipIfNoShell skips the test when /bin/sh is not available (e.g. Windows).
 func skipIfNoShell(t *testing.T) {
 	t.Helper()
+	if got := encodeFiles(nil); got != "[]" {
+		t.Fatalf("encodeFiles(nil) = %q, want []", got)
+	}
 	if _, err := os.Stat("/bin/sh"); err != nil {
 		t.Skipf("skipping: /bin/sh not available: %v", err)
 	}

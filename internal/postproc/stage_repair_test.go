@@ -3,10 +3,12 @@ package postproc
 import (
 	"bytes"
 	"context"
+	"crypto/md5"
 	"errors"
 	"fmt"
 	"log/slog"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -265,7 +267,8 @@ func TestCleanupPar2Backups_RemovesBackupsWithOriginal(t *testing.T) {
 	os.WriteFile(filepath.Join(dir, "movie.part01.rar.1"), []byte("damaged-orig"), 0o644) //nolint:errcheck
 
 	log := slog.New(slog.DiscardHandler)
-	removed := cleanupPar2Backups(dir, log)
+	repaired := map[string]struct{}{"movie.part01.rar": {}}
+	removed := cleanupPar2Backups(dir, nil, repaired, log)
 
 	if len(removed) != 1 || removed[0] != "movie.part01.rar.1" {
 		t.Errorf("removed = %v, want [movie.part01.rar.1]", removed)
@@ -284,13 +287,107 @@ func TestCleanupPar2Backups_PreservesIfOriginalMissing(t *testing.T) {
 	os.WriteFile(backupPath, []byte("damaged-orig"), 0o644) //nolint:errcheck
 
 	log := slog.New(slog.DiscardHandler)
-	removed := cleanupPar2Backups(dir, log)
+	repaired := map[string]struct{}{"movie.part01.rar": {}}
+	removed := cleanupPar2Backups(dir, nil, repaired, log)
 
 	if len(removed) != 0 {
 		t.Errorf("removed = %d, want 0 (no original present)", len(removed))
 	}
 	if _, err := os.Stat(backupPath); err != nil {
 		t.Errorf("backup removed despite missing original: %v", err)
+	}
+}
+
+func TestCleanupPar2Backups_ScopedToRepairedTargetsAndSkipsDirs(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	// Directory named release.v1 must not count as an existing repaired file for release.v1.1.
+	if err := os.MkdirAll(filepath.Join(dir, "release.v1"), 0o750); err != nil {
+		t.Fatalf("MkdirAll release.v1: %v", err)
+	}
+	for _, name := range []string{
+		"disc.iso",           // unrepaired payload
+		"disc.iso.1",         // unrepaired payload with .1 suffix — must be kept
+		"libfoo.so",          // unrepaired payload
+		"libfoo.so.1",        // unrepaired payload — must be kept
+		"release.v1.1",       // file next to directory release.v1 — must be kept
+		"movie.part01.rar",   // repaired target
+		"movie.part01.rar.1", // backup of repaired target — must be queued
+		"payload.bin",        // repaired target
+		"payload.bin.1",      // pre-existing legitimate payload.bin.1 before repair — must be kept
+		"payload.bin.2",      // backup created by par2 during repair — must be queued
+		"payload.bin.001",    // zero-padded split part, NOT a par2 .1 backup
+	} {
+		if err := os.WriteFile(filepath.Join(dir, name), []byte("data"), 0o600); err != nil {
+			t.Fatalf("WriteFile %s: %v", name, err)
+		}
+	}
+
+	log := slog.New(slog.DiscardHandler)
+	beforeRepair := map[string]struct{}{
+		"payload.bin.1": {},
+	}
+	repaired := map[string]struct{}{
+		"movie.part01.rar": {},
+		"payload.bin":      {},
+		"release.v1":       {},
+	}
+	removed := cleanupPar2Backups(dir, beforeRepair, repaired, log)
+	slices.Sort(removed)
+	want := []string{"movie.part01.rar.1", "payload.bin.2"}
+	if !slices.Equal(removed, want) {
+		t.Errorf("cleanupPar2Backups = %v, want %v", removed, want)
+	}
+	if got := cleanupPar2Backups(dir, beforeRepair, nil, log); len(got) != 0 {
+		t.Errorf("cleanupPar2Backups with nil repairedTargets = %v, want empty", got)
+	}
+	if !par2.IsBackupNumber("1") || !par2.IsBackupNumber("999") || par2.IsBackupNumber("01") || par2.IsBackupNumber("1000") || par2.IsBackupNumber("1a") || par2.IsBackupNumber("") {
+		t.Error("par2.IsBackupNumber classification failed")
+	}
+
+	// Verify recordRepairSuccess records backups of DamagedTargets and Renames
+	// onto job.par2Backups, RecoverPar2NamesStage excludes them via
+	// par2RenameExclusions, and Par2CleanupStage promotes only those backups.
+	job := repairJob(t)
+	job.DownloadDir = dir
+	recordRepairSuccess(t.Context(), log, par2.Set{Name: "movie", MainFile: filepath.Join(dir, "movie.par2")}, job, beforeRepair, par2.RepairResult{
+		Success: true,
+		Parsed: &par2.RepairOutput{
+			DamagedTargets: []string{"movie.part01.rar"},
+			Renames:        map[string]string{"payload.bin": "obf.bin"},
+		},
+	})
+	excl := job.par2RenameExclusions()
+	for _, wantExcl := range []string{"movie.part01.rar.1", "payload.bin.2"} {
+		if _, ok := excl[wantExcl]; !ok {
+			t.Errorf("par2RenameExclusions missing %q: %v", wantExcl, excl)
+		}
+	}
+	for _, unexpectedExcl := range []string{"disc.iso.1", "payload.bin.1"} {
+		if _, ok := excl[unexpectedExcl]; ok {
+			t.Errorf("pre-existing/unrepaired %q was excluded as a par2 backup: %v", unexpectedExcl, excl)
+		}
+	}
+	if err := NewPar2CleanupStage(true).Run(t.Context(), job); err != nil {
+		t.Fatalf("Par2CleanupStage.Run: %v", err)
+	}
+	for _, wantPending := range []string{"movie.part01.rar.1", "payload.bin.2"} {
+		if !job.isPendingDeletion(wantPending) {
+			t.Errorf("%q was not promoted to pendingDeletions by Par2CleanupStage", wantPending)
+		}
+	}
+	for _, keep := range []string{"disc.iso.1", "libfoo.so.1", "release.v1.1", "payload.bin.1", "payload.bin.001"} {
+		if job.isPendingDeletion(keep) {
+			t.Errorf("unrepaired/non-backup %q was queued for deletion", keep)
+		}
+	}
+	if _, err := job.outputFileList(); err == nil {
+		t.Error("expected error from outputFileList before finalize runs")
+	}
+	job.clearPendingDeletions()
+	if len(job.pendingDeletions) != 0 {
+		t.Errorf("pendingDeletions after clearPendingDeletions = %v, want empty", job.pendingDeletions)
 	}
 }
 
@@ -320,7 +417,7 @@ func TestHandleRepairResult_ErrorPath(t *testing.T) {
 	stage := &RepairStage{}
 
 	underlying := fmt.Errorf("par2 crashed with code 137")
-	err := stage.handleRepairResult(context.Background(), slog.Default(), job, set, par2.RepairResult{}, underlying)
+	err := stage.handleRepairResult(context.Background(), slog.Default(), job, set, nil, par2.RepairResult{}, underlying)
 
 	if err == nil {
 		t.Fatal("expected error, got nil")
@@ -346,7 +443,7 @@ func TestHandleRepairResult_NeedMoreBlocks(t *testing.T) {
 		NeedMoreBlocks: true,
 		BlocksNeeded:   42,
 	}
-	err := stage.handleRepairResult(context.Background(), slog.Default(), job, set, res, nil)
+	err := stage.handleRepairResult(context.Background(), slog.Default(), job, set, nil, res, nil)
 
 	if err == nil {
 		t.Fatal("expected error for NeedMoreBlocks")
@@ -374,7 +471,7 @@ func TestHandleRepairResult_InvalidPar2(t *testing.T) {
 		Success: false,
 		Parsed:  &par2.RepairOutput{Status: par2.StatusInvalidPar2},
 	}
-	err := stage.handleRepairResult(context.Background(), slog.Default(), job, set, res, nil)
+	err := stage.handleRepairResult(context.Background(), slog.Default(), job, set, nil, res, nil)
 
 	if err == nil {
 		t.Fatal("expected error for InvalidPar2")
@@ -401,7 +498,7 @@ func TestHandleRepairResult_UnsuccessfulGeneric(t *testing.T) {
 		Success:  false,
 		ExitCode: 2,
 	}
-	err := stage.handleRepairResult(context.Background(), slog.Default(), job, set, res, nil)
+	err := stage.handleRepairResult(context.Background(), slog.Default(), job, set, nil, res, nil)
 
 	if err == nil {
 		t.Fatal("expected error for generic unsuccessful repair")
@@ -430,7 +527,7 @@ func TestHandleRepairResult_Success(t *testing.T) {
 	stage := &RepairStage{}
 
 	res := par2.RepairResult{Success: true}
-	err := stage.handleRepairResult(context.Background(), slog.Default(), job, set, res, nil)
+	err := stage.handleRepairResult(context.Background(), slog.Default(), job, set, nil, res, nil)
 
 	if err != nil {
 		t.Errorf("expected no error, got: %v", err)
@@ -684,7 +781,7 @@ func TestRepairHelpers(t *testing.T) {
 			},
 		}
 		job.DownloadDir = t.TempDir()
-		recordRepairSuccess(t.Context(), slog.Default(), set, job, res)
+		recordRepairSuccess(t.Context(), slog.Default(), set, job, nil, res)
 		if _, ok := job.ConsumedFiles["testset.par2"]; !ok {
 			t.Error("expected testset.par2 to be consumed")
 		}
@@ -814,7 +911,7 @@ func TestRepairStage_ContainmentViolation(t *testing.T) {
 	}
 
 	res := par2.RepairResult{Success: true}
-	err := s.handleRepairResult(t.Context(), slog.Default(), job, set, res, nil)
+	err := s.handleRepairResult(t.Context(), slog.Default(), job, set, nil, res, nil)
 	if err == nil {
 		t.Fatalf("expected containment violation error, got nil")
 	}
@@ -862,5 +959,320 @@ func TestRepairStage_PreRepairContainmentViolation(t *testing.T) {
 	}
 	if !job.ParError {
 		t.Errorf("job.ParError = false; want true on pre-repair containment violation")
+	}
+}
+
+func TestRepairStage_ExternalPar2RecordsBackupAndCrashRerunCleansIt(t *testing.T) {
+	t.Parallel()
+	if _, err := exec.LookPath("par2"); err != nil {
+		t.Skip("par2 not in PATH")
+	}
+
+	dir := t.TempDir()
+	target := "ExtMovie.part03.rar"
+	targetPath := filepath.Join(dir, target)
+	payload := make([]byte, 32*1024)
+	for i := range payload {
+		payload[i] = byte((i*31 + 7) & 0xff)
+	}
+	if err := os.WriteFile(targetPath, payload, 0o600); err != nil {
+		t.Fatalf("WriteFile target: %v", err)
+	}
+
+	// Pre-existing legitimate target.1 with the EXACT same byte size as target
+	// but unrelated content; must NOT be queued as a par2 backup.
+	preExistingDot1 := filepath.Join(dir, target+".1")
+	unrelatedSameSize := bytes.Repeat([]byte("pre-existing-legit-dot1!"), len(payload)/24+1)[:len(payload)]
+	if err := os.WriteFile(preExistingDot1, unrelatedSameSize, 0o600); err != nil {
+		t.Fatalf("WriteFile pre-existing .1: %v", err)
+	}
+
+	parFile := filepath.Join(dir, "ExtMovie.par2")
+	createCmd := exec.CommandContext(t.Context(), "par2", "c", "-q", "-r20", "-n1", parFile, targetPath)
+	createCmd.Dir = dir
+	if out, err := createCmd.CombinedOutput(); err != nil {
+		t.Fatalf("par2 c failed: %v\n%s", err, out)
+	}
+
+	// Corrupt bytes past the first 16 KiB so the backup retains the original 16 KiB MD5.
+	damaged := slices.Clone(payload)
+	for i := 20 * 1024; i < 20*1024+64; i++ {
+		damaged[i] ^= 0xff
+	}
+	if err := os.WriteFile(targetPath, damaged, 0o600); err != nil {
+		t.Fatalf("WriteFile damaged target: %v", err)
+	}
+
+	job := repairJob(t)
+	job.DownloadDir = dir
+	s := NewRepairStage()
+	s.Apply(RepairConfig{
+		Par2:      par2.RunOptions{Command: "par2"},
+		UseGoPar2: false,
+	})
+	if err := s.Run(t.Context(), job); err != nil {
+		t.Fatalf("RepairStage.Run: %v", err)
+	}
+
+	// Because ExtMovie.part03.rar.1 already existed before repair, par2 backed up
+	// the damaged target to ExtMovie.part03.rar.2.
+	wantBackup := target + ".2"
+	excl := job.par2RenameExclusions()
+	if _, ok := excl[wantBackup]; !ok {
+		t.Fatalf("job.par2RenameExclusions() = %v, want %q present", excl, wantBackup)
+	}
+	if _, ok := excl[target+".1"]; ok {
+		t.Fatalf("pre-existing %s.1 was wrongly recorded in par2Backups: %v", target, excl)
+	}
+
+	// Simulate a crash between repair and finalize: a fresh Job has empty par2Backups.
+	rerunJob := repairJob(t)
+	rerunJob.DownloadDir = dir
+	if err := NewRecoverPar2NamesStage().Run(t.Context(), rerunJob); err != nil {
+		t.Fatalf("RecoverPar2NamesStage.Run on crash rerun: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(dir, wantBackup)); err != nil {
+		t.Fatalf("backup %s was renamed or lost during crash rerun RecoverPar2NamesStage: %v", wantBackup, err)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "ExtMovie.part03.1.rar")); !os.IsNotExist(err) {
+		t.Fatalf("RecoverPar2NamesStage renamed backup to ExtMovie.part03.1.rar on crash rerun")
+	}
+
+	// When ParError is true, Par2CleanupStage must NOT queue the backup.
+	failedJob := repairJob(t)
+	failedJob.DownloadDir = dir
+	failedJob.ParError = true
+	if err := NewPar2CleanupStage(true).Run(t.Context(), failedJob); err != nil {
+		t.Fatalf("Par2CleanupStage.Run(ParError=true): %v", err)
+	}
+	if failedJob.isPendingDeletion(wantBackup) {
+		t.Fatalf("Par2CleanupStage queued %s despite ParError=true", wantBackup)
+	}
+
+	// When cleanup gates pass on the crash rerun, Par2CleanupStage must queue wantBackup
+	// and keep the pre-existing .1 file (whose 16 KiB hash does not match target).
+	if err := NewPar2CleanupStage(true).Run(t.Context(), rerunJob); err != nil {
+		t.Fatalf("Par2CleanupStage.Run on crash rerun: %v", err)
+	}
+	if !rerunJob.isPendingDeletion(wantBackup) {
+		t.Fatalf("Par2CleanupStage on crash rerun did not queue %s in pendingDeletions", wantBackup)
+	}
+	if rerunJob.isPendingDeletion(target + ".1") {
+		t.Fatalf("Par2CleanupStage on crash rerun wrongly queued pre-existing %s.1", target)
+	}
+
+	// Also verify crash rerun when the repaired damage was inside the first 16 KiB (offset 100),
+	// so the backup's 16 KiB MD5 differs from the par2 description's Hash16k.
+	damaged100 := slices.Clone(payload)
+	damaged100[100] ^= 0xff
+	if err := os.WriteFile(filepath.Join(dir, wantBackup), damaged100, 0o600); err != nil {
+		t.Fatalf("WriteFile damaged100 backup: %v", err)
+	}
+	rerun100 := repairJob(t)
+	rerun100.DownloadDir = dir
+	if err := NewPar2CleanupStage(true).Run(t.Context(), rerun100); err != nil {
+		t.Fatalf("Par2CleanupStage.Run (offset 100 crash rerun): %v", err)
+	}
+	if !rerun100.isPendingDeletion(wantBackup) {
+		t.Fatalf("Par2CleanupStage on crash rerun (damage at offset 100) did not queue %s", wantBackup)
+	}
+}
+
+func TestFindVerifiedPar2Backups(t *testing.T) {
+	t.Parallel()
+
+	log := slog.New(slog.DiscardHandler)
+	payload := make([]byte, 24*1024)
+	for i := range payload {
+		payload[i] = byte((i*17 + 3) & 0xff)
+	}
+	// memberDot1 shares the first 16 KiB and total size with payload, but differs in the tail.
+	memberDot1 := slices.Clone(payload)
+	memberDot1[20*1024] ^= 0xff
+	// damagedAt100 has the same total size as payload, but differs at offset 100 (first 16 KiB).
+	damagedAt100 := slices.Clone(payload)
+	damagedAt100[100] ^= 0xff
+	// unrelatedSameSize has the exact same size as payload, but shares no probe chunk.
+	unrelatedSameSize := bytes.Repeat([]byte("unrelated-file-content!!"), len(payload)/24+1)[:len(payload)]
+	// truncatedBackup is a short backup (missing tail articles) whose first 16 KiB matches payload.
+	truncatedBackup := slices.Clone(payload[:18*1024])
+	// isoTarget starts with 32 KiB of zeros (like ISO9660) followed by 32 KiB of payload.
+	isoTarget := append(make([]byte, 32*1024), bytes.Repeat([]byte("iso-target-payload-data!"), (32*1024)/24+1)[:32*1024]...)
+	// isoUnrelated starts with 32 KiB of zeros followed by different non-zero data.
+	isoUnrelated := append(make([]byte, 32*1024), bytes.Repeat([]byte("other-unrelated-iso-img!"), (32*1024)/24+1)[:32*1024]...)
+	// isoDamagedMid is a backup of isoTarget damaged at offset 34 KiB (shares non-zero tail).
+	isoDamagedMid := slices.Clone(isoTarget)
+	isoDamagedMid[34*1024] ^= 0xff
+
+	tests := []struct {
+		name        string
+		parMembers  map[string][]byte
+		extraOnDisk map[string][]byte
+		want        []string
+	}{
+		{
+			name: "par2 member named X.1 sharing first 16 KiB and size with X is preserved",
+			parMembers: map[string][]byte{
+				"archive.rar":   payload,
+				"archive.rar.1": memberDot1,
+			},
+			extraOnDisk: map[string][]byte{
+				"archive.rar.2": damagedAt100,
+			},
+			want: []string{"archive.rar.2"},
+		},
+		{
+			name: "unrelated same-size X.1 is ignored while offset-100 damaged X.2 and truncated X.3 are returned",
+			parMembers: map[string][]byte{
+				"archive.rar": payload,
+			},
+			extraOnDisk: map[string][]byte{
+				"archive.rar.1": unrelatedSameSize,
+				"archive.rar.2": damagedAt100,
+				"archive.rar.3": truncatedBackup,
+				"archive.rar.4": append(slices.Clone(payload), []byte("extra-tail-bytes")...),
+			},
+			want: []string{"archive.rar.2", "archive.rar.3"},
+		},
+		{
+			name: "zero-headed ISO unrelated X.1 is ignored while mid-damaged backup X.2 is returned",
+			parMembers: map[string][]byte{
+				"disc.iso": isoTarget,
+			},
+			extraOnDisk: map[string][]byte{
+				"disc.iso.1": isoUnrelated,
+				"disc.iso.2": isoDamagedMid,
+			},
+			want: []string{"disc.iso.2"},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			dir := t.TempDir()
+			var parData []byte
+			setID := [16]byte{1, 2, 3, 4}
+			idx := byte(1)
+			for mName, mData := range tc.parMembers {
+				if err := os.WriteFile(filepath.Join(dir, mName), mData, 0o600); err != nil {
+					t.Fatalf("WriteFile %s: %v", mName, err)
+				}
+				first16k := mData
+				if len(first16k) > 16*1024 {
+					first16k = first16k[:16*1024]
+				}
+				fileID := [16]byte{idx}
+				idx++
+				body := buildFileDescBody(fileID, md5.Sum(mData), md5.Sum(first16k), uint64(len(mData)), mName)
+				parData = append(parData, buildPacket(setID, typeFileDesc, body)...)
+			}
+			if err := os.WriteFile(filepath.Join(dir, "set.par2"), parData, 0o600); err != nil {
+				t.Fatalf("WriteFile set.par2: %v", err)
+			}
+			for eName, eData := range tc.extraOnDisk {
+				if err := os.WriteFile(filepath.Join(dir, eName), eData, 0o600); err != nil {
+					t.Fatalf("WriteFile %s: %v", eName, err)
+				}
+			}
+			sets, err := par2.FindPar2Files(dir)
+			if err != nil {
+				t.Fatalf("FindPar2Files: %v", err)
+			}
+			got := findVerifiedPar2Backups(dir, sets, repairJob(t).Sanitize, par2.ParseOptions{}, log)
+			slices.Sort(got)
+			if !slices.Equal(got, tc.want) {
+				t.Errorf("findVerifiedPar2Backups = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestSharesProbeChunk(t *testing.T) {
+	t.Parallel()
+
+	const (
+		chunk    = 16 * 1024
+		fullSize = 200 * 1024
+		midOff   = ((fullSize / 2) / chunk) * chunk
+		tailOff  = fullSize - chunk
+	)
+	target := make([]byte, fullSize)
+	for i := range target {
+		target[i] = byte((i*29 + 1) | 1)
+	}
+	baseDiff := bytes.Repeat([]byte{0xaa}, fullSize)
+
+	withSliceFromTarget := func(size, off, length int) []byte {
+		b := slices.Clone(baseDiff[:size])
+		copy(b[off:off+length], target[off:off+length])
+		return b
+	}
+
+	tests := []struct {
+		name string
+		cand []byte
+		want bool
+	}{
+		{
+			name: "matches only at probe 0 (0..16K)",
+			cand: withSliceFromTarget(fullSize, 0, chunk),
+			want: true,
+		},
+		{
+			name: "matches only at probe 1 (16K..32K)",
+			cand: withSliceFromTarget(fullSize, chunk, chunk),
+			want: true,
+		},
+		{
+			name: "matches only at midpoint probe (96K..112K)",
+			cand: withSliceFromTarget(fullSize, midOff, chunk),
+			want: true,
+		},
+		{
+			name: "matches only at tail probe (184K..200K)",
+			cand: withSliceFromTarget(fullSize, tailOff, chunk),
+			want: true,
+		},
+		{
+			name: "candidate smaller than 16 KiB matching prefix",
+			cand: slices.Clone(target[:8*1024]),
+			want: true,
+		},
+		{
+			name: "candidate between 16 KiB and 32 KiB matching only second partial chunk",
+			cand: withSliceFromTarget(24*1024, chunk, 8*1024),
+			want: true,
+		},
+		{
+			name: "no matching probe chunk",
+			cand: slices.Clone(baseDiff),
+			want: false,
+		},
+		{
+			name: "empty candidate",
+			cand: nil,
+			want: false,
+		},
+	}
+
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "target.bin"), target, 0o600); err != nil {
+		t.Fatalf("WriteFile target.bin: %v", err)
+	}
+	root, err := os.OpenRoot(dir)
+	if err != nil {
+		t.Fatalf("OpenRoot: %v", err)
+	}
+	defer root.Close()
+
+	for i, tc := range tests {
+		candName := fmt.Sprintf("cand-%d.bin", i)
+		if err := os.WriteFile(filepath.Join(dir, candName), tc.cand, 0o600); err != nil {
+			t.Fatalf("WriteFile %s: %v", candName, err)
+		}
+		if got := sharesProbeChunk(root, candName, "target.bin", int64(len(tc.cand))); got != tc.want {
+			t.Errorf("%s: sharesProbeChunk = %v, want %v", tc.name, got, tc.want)
+		}
 	}
 }

@@ -449,6 +449,198 @@ func TestVerify_Crash_Errors(t *testing.T) {
 	})
 }
 
+func TestVerify_Crash_MidPar2RepairOnCompleteFile(t *testing.T) {
+	t.Parallel()
+
+	tempDir := t.TempDir()
+	adminDir := filepath.Join(tempDir, "admin")
+	downloadDir := filepath.Join(tempDir, "incomplete")
+	jobSub := filepath.Join(downloadDir, "ExtMovie")
+	if err := os.MkdirAll(adminDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(jobSub, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	db := createTestDB(t, adminDir)
+	jobID := "job-mid-repair"
+	if _, err := db.Exec(`INSERT INTO dispatch_jobs (id, sort_key, name) VALUES (?, ?, ?)`, jobID, 1, "ExtMovie"); err != nil {
+		t.Fatal(err)
+	}
+
+	// File 0 (complete=1): external par2 renamed ExtMovie.part01.rar -> ExtMovie.part01.rar.1
+	// and truncated ExtMovie.part01.rar to 0 bytes right before SIGKILL.
+	// File 1 (complete=1): par2 already repaired a corrupt-payload segment in place so the
+	// on-disk bytes match the clean ReleaseManifest CRC32 rather than written_articles' corrupt CRC32.
+	// File 2 (complete=1): quickcheck/par2 renamed obfuscated obf03.bin -> ExtMovie.part03.rar.
+	cleanBytes := []byte("clean-segment-payload-bytes")
+	cleanCRC := crc32.ChecksumIEEE(cleanBytes)
+	corruptBytes := []byte("corrupt-segment-payload-xyz")
+	corruptCRC := crc32.ChecksumIEEE(corruptBytes)
+
+	for _, row := range []struct {
+		idx      int
+		filename string
+		complete int
+	}{
+		{0, "ExtMovie.part01.rar", 1},
+		{1, "ExtMovie.part02.rar", 1},
+		{2, "obf03.bin", 1},
+	} {
+		if _, err := db.Exec(`INSERT INTO job_files (job_id, file_index, filename, complete) VALUES (?, ?, ?, ?)`,
+			jobID, row.idx, row.filename, row.complete); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	for _, wr := range []struct {
+		fileIdx int
+		artIdx  int
+		length  int
+		crc     uint32
+	}{
+		{0, 0, len(cleanBytes), cleanCRC},
+		{1, 1, len(corruptBytes), corruptCRC},
+		{2, 2, len(cleanBytes), cleanCRC},
+	} {
+		if _, err := db.Exec(`INSERT INTO written_articles (job_id, file_idx, art_idx, offset, length, crc32) VALUES (?, ?, ?, ?, ?, ?)`,
+			jobID, wr.fileIdx, wr.artIdx, 0, wr.length, wr.crc); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	// File 0 on disk: truncated 0-byte target + intact .1 backup.
+	if err := os.WriteFile(filepath.Join(jobSub, "ExtMovie.part01.rar"), nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(jobSub, "ExtMovie.part01.rar.1"), cleanBytes, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	// File 1 on disk: repaired in place with cleanBytes, with .1 backup present on disk as evidence repair ran.
+	if err := os.WriteFile(filepath.Join(jobSub, "ExtMovie.part02.rar"), cleanBytes, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(jobSub, "ExtMovie.part02.rar.1"), corruptBytes, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	// File 2 on disk: renamed from obf03.bin to DiskName ExtMovie.part03.rar.
+	if err := os.WriteFile(filepath.Join(jobSub, "ExtMovie.part03.rar"), cleanBytes, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	manifest := &ReleaseManifest{
+		Name:     "ExtMovie",
+		PartSize: len(cleanBytes),
+		Files: []ReleaseFile{
+			{
+				FileIndex:   0,
+				DiskName:    "ExtMovie.part01.rar",
+				NZBFilename: "ExtMovie.part01.rar",
+				Role:        RoleRARVolume,
+				TotalSize:   int64(len(cleanBytes)),
+				Segments:    []SegmentMeta{{MessageID: "<m0@test>", PartNum: 1, Offset: 0, Length: len(cleanBytes), CRC32: cleanCRC}},
+			},
+			{
+				FileIndex:   1,
+				DiskName:    "ExtMovie.part02.rar",
+				NZBFilename: "ExtMovie.part02.rar",
+				Role:        RoleRARVolume,
+				TotalSize:   int64(len(cleanBytes)),
+				Segments:    []SegmentMeta{{MessageID: "<m1@test>", PartNum: 1, Offset: 0, Length: len(cleanBytes), CRC32: cleanCRC}},
+			},
+			{
+				FileIndex:   2,
+				DiskName:    "ExtMovie.part03.rar",
+				NZBFilename: "obf03.bin",
+				Role:        RoleRARVolume,
+				TotalSize:   int64(len(cleanBytes)),
+				Segments:    []SegmentMeta{{MessageID: "<m2@test>", PartNum: 1, Offset: 0, Length: len(cleanBytes), CRC32: cleanCRC}},
+			},
+		},
+	}
+	manifestPath := filepath.Join(tempDir, "manifest.json")
+	if err := SaveManifest(manifestPath, manifest); err != nil {
+		t.Fatal(err)
+	}
+
+	report, err := Verify(t.Context(), VerifyConfig{
+		Mode:         "crash",
+		ManifestPath: manifestPath,
+		AdminDir:     adminDir,
+		DownloadDir:  downloadDir,
+		JobID:        jobID,
+	})
+	if err != nil {
+		t.Fatalf("Verify crash on mid-repair complete files failed: %v", err)
+	}
+	if report.VerifiedRows != 3 {
+		t.Errorf("VerifiedRows = %d, want 3", report.VerifiedRows)
+	}
+	if report.FallbackRows != 3 {
+		t.Errorf("FallbackRows = %d, want 3", report.FallbackRows)
+	}
+
+	// Without a .1 backup on disk, clean manifest CRC must NOT be accepted when
+	// written_articles recorded a different CRC.
+	if err := os.Remove(filepath.Join(jobSub, "ExtMovie.part02.rar.1")); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Verify(t.Context(), VerifyConfig{
+		Mode:         "crash",
+		ManifestPath: manifestPath,
+		AdminDir:     adminDir,
+		DownloadDir:  downloadDir,
+		JobID:        jobID,
+	}); err == nil {
+		t.Fatal("expected error when clean manifest CRC is used without a .1 repair backup on disk")
+	}
+	if err := os.WriteFile(filepath.Join(jobSub, "ExtMovie.part02.rar.1"), corruptBytes, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	// Split-brain across candidates: if File 0 has two rows where row 0 is only
+	// valid in ExtMovie.part01.rar and row 1 is only valid in ExtMovie.part01.rar.1,
+	// no single candidate file is whole, so Verify must fail.
+	if _, err := db.Exec(`INSERT INTO written_articles (job_id, file_idx, art_idx, offset, length, crc32) VALUES (?, ?, ?, ?, ?, ?)`,
+		jobID, 0, 3, len(cleanBytes), len(cleanBytes), cleanCRC); err != nil {
+		t.Fatal(err)
+	}
+	bogusChunk := []byte("bogus-segment-payload-00000")
+	primarySplit := append(append([]byte{}, cleanBytes...), bogusChunk...)
+	backupSplit := append(append([]byte{}, bogusChunk...), cleanBytes...)
+	if err := os.WriteFile(filepath.Join(jobSub, "ExtMovie.part01.rar"), primarySplit, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(jobSub, "ExtMovie.part01.rar.1"), backupSplit, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Verify(t.Context(), VerifyConfig{
+		Mode:         "crash",
+		ManifestPath: manifestPath,
+		AdminDir:     adminDir,
+		DownloadDir:  downloadDir,
+		JobID:        jobID,
+	}); err == nil {
+		t.Fatal("expected error when neither primary nor .1 backup is intact across all rows of File 0")
+	}
+
+	// If a complete=1 file has bogus bytes matching neither written_articles nor
+	// the clean ReleaseManifest CRC32, Verify must still fail.
+	if err := os.WriteFile(filepath.Join(jobSub, "ExtMovie.part02.rar"), []byte("bogus-bytes-not-matching!!!"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Verify(t.Context(), VerifyConfig{
+		Mode:         "crash",
+		ManifestPath: manifestPath,
+		AdminDir:     adminDir,
+		DownloadDir:  downloadDir,
+		JobID:        jobID,
+	}); err == nil {
+		t.Fatal("expected error when complete=1 file matches neither written_articles nor ReleaseManifest CRC32")
+	}
+}
+
 func TestVerify_Complete_HappyPath(t *testing.T) {
 	tempDir := t.TempDir()
 	adminDir := filepath.Join(tempDir, "admin")

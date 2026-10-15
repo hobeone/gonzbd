@@ -42,6 +42,12 @@ type RepairOutput struct {
 	// which files par2 will rename during repair.
 	Renames map[string]string
 
+	// DamagedTargets lists target filenames that par2 reported as damaged or
+	// missing during initial verification ("Target: \"X\" - damaged." or
+	// "Target: \"X\" - missing."). RepairStage uses this to identify which
+	// ".1"/".2" backup files par2 created during repair.
+	DamagedTargets []string
+
 	// UsedForRepair lists files that par2 used as repair sources
 	// (detected via "duplicate data blocks" lines). These files should
 	// not be deleted during cleanup.
@@ -147,7 +153,7 @@ func ParseRepairOutput(output string) *RepairOutput {
 	inExtraFiles := false
 	verified := false // true once "Repair is required" is seen
 
-	for rawLine := range strings.SplitSeq(output, "\n") {
+	for rawLine := range strings.FieldsFuncSeq(output, func(r rune) bool { return r == '\n' || r == '\r' }) {
 		line := strings.TrimSpace(rawLine)
 		if line == "" {
 			continue
@@ -363,6 +369,10 @@ func parseFinalStateOrFailure(line string, ro *RepairOutput, inVerify, inExtraFi
 		// In the verify phase — count target files.
 		if m := targetRE.FindStringSubmatch(line); len(m) == 2 {
 			ro.VerifyNum++
+
+			if !strings.HasSuffix(line, "- found.") && !strings.Contains(line, "- found.") {
+				ro.DamagedTargets = append(ro.DamagedTargets, m[1])
+			}
 
 			// Duplicate data blocks detected during verification.
 			if strings.Contains(line, "duplicate data blocks") {

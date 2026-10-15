@@ -240,7 +240,7 @@ func serveMode(configPath, listenOverride, logLevelsOverride, pidPath string, ve
 		return fmt.Errorf("build app: %w", err)
 	}
 
-	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM, syscall.SIGHUP)
 	defer cancel()
 
 	if err := application.Start(ctx); err != nil {
@@ -332,7 +332,7 @@ func serveMode(configPath, listenOverride, logLevelsOverride, pidPath string, ve
 	return waitErr
 }
 
-// awaitShutdownSignal blocks until either ctx is done (SIGINT/SIGTERM, via
+// awaitShutdownSignal blocks until either ctx is done (SIGINT/SIGTERM/SIGHUP, via
 // signal.NotifyContext) or a listener goroutine reports a failure on errCh,
 // logging which of the two occurred. Returns nil for a normal shutdown
 // signal, or the listener's error so the caller can complete shutdown and
@@ -1020,7 +1020,7 @@ func run(configPath, nzbPath, logLevelsOverride string, verbose bool) error {
 		return fmt.Errorf("build app: %w", err)
 	}
 
-	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM, syscall.SIGHUP)
 	defer cancel()
 
 	if err := application.Start(ctx); err != nil {

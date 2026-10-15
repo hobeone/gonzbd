@@ -285,6 +285,16 @@ type Job struct {
 	// 2 lines, both in stages.go; loadPendingDeletions records through
 	// recordPendingDeletion).
 	pendingDeletions []string
+
+	// par2Backups lists paths relative to DownloadDir of numbered ".1"/".2"
+	// backup files created by par2 repair for targets that repair modified.
+	// Kept separate from pendingDeletions until Par2CleanupStage checks its
+	// gates (enable_par_cleanup, ParError, UnpackError), while still allowing
+	// RecoverPar2NamesStage (which runs before Par2CleanupStage) to exclude
+	// them via par2RenameExclusions. recordPar2Backup is its writer
+	// (`git grep -n 'j[.]par2Backups = ' -- '*.go' ':!*_test.go'` finds 1 line,
+	// in stages.go).
+	par2Backups []string
 }
 
 // StageLogEntry records the outcome of a single stage execution.
@@ -462,6 +472,35 @@ func (j *Job) pendingDeletionSet() map[string]struct{} {
 	}
 	set := make(map[string]struct{}, len(j.pendingDeletions))
 	for _, rel := range j.pendingDeletions {
+		set[rel] = struct{}{}
+	}
+	return set
+}
+
+// recordPar2Backup records a par2-created ".N" backup path (relative to
+// DownloadDir) so RecoverPar2NamesStage skips it and Par2CleanupStage can
+// promote it to pendingDeletions when par2 cleanup is enabled.
+func (j *Job) recordPar2Backup(path string) {
+	rel, ok := j.pendingDeletionRel(path)
+	if !ok {
+		return
+	}
+	if !slices.Contains(j.par2Backups, rel) {
+		j.par2Backups = append(j.par2Backups, rel)
+	}
+}
+
+// par2RenameExclusions returns the union of pendingDeletions and par2Backups
+// as a relative-path set for RecoverPar2NamesStage, or nil when both are empty.
+func (j *Job) par2RenameExclusions() map[string]struct{} {
+	if len(j.pendingDeletions) == 0 && len(j.par2Backups) == 0 {
+		return nil
+	}
+	set := make(map[string]struct{}, len(j.pendingDeletions)+len(j.par2Backups))
+	for _, rel := range j.pendingDeletions {
+		set[rel] = struct{}{}
+	}
+	for _, rel := range j.par2Backups {
 		set[rel] = struct{}{}
 	}
 	return set

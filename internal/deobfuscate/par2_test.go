@@ -173,6 +173,71 @@ func TestPar2Rename_CollisionDifferent(t *testing.T) {
 	}
 }
 
+// TestPar2Rename_SkipsExcludedPar2Backups pins that numbered backup files
+// created by external par2 repair (e.g. "ExtMovie.part03.rar.1",
+// "ExtMovie.part03.rar.2") whose first 16 KiB match the par2 entry are NOT
+// renamed to ".1.rar" / ".2.rar" when excluded via Par2RenameExcluding,
+// leaving them at ".rar.1" / ".rar.2" for Par2CleanupStage to remove.
+func TestPar2Rename_SkipsExcludedPar2Backups(t *testing.T) {
+	t.Parallel()
+	jobDir := t.TempDir()
+
+	trueName := "ExtMovie.part03.rar"
+	repaired := make([]byte, 20000)
+	copy(repaired, []byte("header within first 16 KiB"))
+	repaired[18000] = 0xAA
+
+	damaged1 := make([]byte, 20000)
+	copy(damaged1, repaired)
+	damaged1[18000] = 0xBB // differs past 16 KiB, so Hash16k is identical
+
+	damaged2 := make([]byte, 20000)
+	copy(damaged2, repaired)
+	damaged2[18000] = 0xCC
+
+	if err := os.WriteFile(filepath.Join(jobDir, trueName), repaired, 0o600); err != nil {
+		t.Fatalf("WriteFile repaired: %v", err)
+	}
+	backup1 := filepath.Join(jobDir, trueName+".1")
+	if err := os.WriteFile(backup1, damaged1, 0o600); err != nil {
+		t.Fatalf("WriteFile backup1: %v", err)
+	}
+	backup2 := filepath.Join(jobDir, trueName+".2")
+	if err := os.WriteFile(backup2, damaged2, 0o600); err != nil {
+		t.Fatalf("WriteFile backup2: %v", err)
+	}
+
+	writePar2(t, jobDir, trueName, repaired)
+
+	root, err := os.OpenRoot(jobDir)
+	if err != nil {
+		t.Fatalf("OpenRoot: %v", err)
+	}
+	defer root.Close()
+
+	exclude := map[string]struct{}{
+		trueName + ".1": {},
+		trueName + ".2": {},
+	}
+	renames, err := Par2RenameExcluding(t.Context(), slog.Default(), root, jobDir, fsutil.SanitizeOptions{}, exclude)
+	if err != nil {
+		t.Fatalf("Par2RenameExcluding: %v", err)
+	}
+	if len(renames) != 0 {
+		t.Fatalf("len(renames) = %d (%+v); want 0 (par2 .1/.2 backups must be skipped)", len(renames), renames)
+	}
+	for _, p := range []string{backup1, backup2} {
+		if _, err := os.Stat(p); err != nil {
+			t.Errorf("backup %q missing after Par2Rename: %v", p, err)
+		}
+	}
+	for _, bad := range []string{"ExtMovie.part03.1.rar", "ExtMovie.part03.2.rar"} {
+		if _, err := os.Stat(filepath.Join(jobDir, bad)); !os.IsNotExist(err) {
+			t.Errorf("unexpected colliding rename %q created on disk", bad)
+		}
+	}
+}
+
 type recordHandler struct {
 	records []slog.Record
 }
@@ -463,5 +528,44 @@ func TestDeobfuscateHelpersAndExcluding(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(dedupDir, "b082fa0beaa644d3aa01045d5b8d0b36.mkv")); !os.IsNotExist(err) {
 		t.Errorf("identical obfuscated file still exists: err=%v", err)
+	}
+}
+
+func TestPar2Rename_SkipsBackupOfVerifiedTargetWithoutExclusions(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	log := slog.New(slog.DiscardHandler)
+
+	prefix := strings.Repeat("A", 16*1024)
+	repairedData := []byte(prefix + "repaired-tail")
+	damagedBackupData := []byte(prefix + "damaged-tail!")
+
+	for name, data := range map[string][]byte{
+		"ExtMovie.part03.rar":   repairedData,
+		"ExtMovie.part03.rar.1": damagedBackupData,
+	} {
+		if err := os.WriteFile(filepath.Join(dir, name), data, 0o600); err != nil {
+			t.Fatalf("WriteFile %s: %v", name, err)
+		}
+	}
+
+	writePar2(t, dir, "ExtMovie.part03.rar", repairedData)
+
+	root, err := os.OpenRoot(dir)
+	if err != nil {
+		t.Fatalf("OpenRoot: %v", err)
+	}
+	defer root.Close()
+
+	renames, err := Par2Rename(t.Context(), log, root, dir, fsutil.SanitizeOptions{})
+	if err != nil {
+		t.Fatalf("Par2Rename: %v", err)
+	}
+	if len(renames) != 0 {
+		t.Fatalf("Par2Rename renamed par2 backup without exclusions: %+v", renames)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "ExtMovie.part03.rar.1")); err != nil {
+		t.Errorf("ExtMovie.part03.rar.1 missing after Par2Rename: %v", err)
 	}
 }

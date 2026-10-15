@@ -6,27 +6,19 @@ import (
 	"errors"
 	"os/exec"
 	"syscall"
+
+	"github.com/hobeone/gonzbd/internal/cmdutil"
 )
 
-// setProcessGroup configures cmd to start in its own process group so that
-// when the process is killed the entire process tree (including grandchildren
-// spawned by shell scripts) receives the signal.
+// setProcessGroup configures cmd to start in its own process group and wires
+// cmd.Cancel to terminate the entire process tree on context cancellation.
 func setProcessGroup(cmd *exec.Cmd) {
-	if cmd.SysProcAttr == nil {
-		cmd.SysProcAttr = &syscall.SysProcAttr{}
-	}
-	cmd.SysProcAttr.Setpgid = true
+	cmdutil.SetProcessGroup(cmd)
 }
 
 // killProcessGroup sends SIGKILL to the entire process group of cmd.
-// If the process has already exited, the error is silently ignored.
 func killProcessGroup(cmd *exec.Cmd) {
-	if cmd.Process == nil {
-		return
-	}
-	// Negative pid targets the process group.
-	//nolint:errcheck // best-effort kill; process may have already exited
-	_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
+	cmdutil.KillProcessGroup(cmd)
 }
 
 // isETXTBSY reports whether err wraps the ETXTBSY ("text file busy") errno.
