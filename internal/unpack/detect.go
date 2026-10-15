@@ -113,20 +113,35 @@ func Scan(dir string) ([]Archive, error) {
 	return groupArchives(files), nil
 }
 
+func archiveGroupKey(path, lowerStem string) string {
+	return filepath.Join(filepath.Dir(path), lowerStem)
+}
+
 // rarSet groups files belonging to one RAR set.
 type rarSet struct {
+	name  string
 	main  string
 	parts []string
 }
 
+type sevenSplitSet struct {
+	name  string
+	parts []string
+}
+
+type singleArchive struct {
+	name string
+	path string
+}
+
 // groupArchives classifies and groups a flat list of file paths into Archives.
 func groupArchives(files []string) []Archive {
-	newStyleRar := make(map[string]*rarSet) // key: lower-case set name
-	legacyRar := make(map[string]*rarSet)   // key: lower-case set name
-	sevenSplit := make(map[string][]string) // key: lower-case set name → volume paths
-	sevenSingle := make(map[string]string)  // key: lower-case set name → .7z path
-	splitParts := make(map[string][]string) // key: lower-case base name without suffix
-	tarSingle := make(map[string]string)    // key: lower-case set name → .tar path
+	newStyleRar := make(map[string]*rarSet)       // key: dir + lower-case set name
+	legacyRar := make(map[string]*rarSet)         // key: dir + lower-case set name
+	sevenSplit := make(map[string]*sevenSplitSet) // key: dir + lower-case set name → volume paths
+	sevenSingle := make(map[string]singleArchive) // key: dir + lower-case set name → singleArchive
+	splitParts := make(map[string][]string)       // key: dir + lower-case base name without suffix
+	tarSingle := make(map[string]singleArchive)   // key: dir + lower-case set name → singleArchive
 
 	for _, path := range files {
 		base := filepath.Base(path)
@@ -137,13 +152,17 @@ func groupArchives(files []string) []Archive {
 			// New-style multi-part RAR: movie.part01.rar
 			suffix := partPattern.FindString(lower)
 			name := lower[:len(lower)-len(suffix)]
-			s := ensureRarSet(newStyleRar, name)
+			key := archiveGroupKey(path, name)
+			s := ensureRarSet(newStyleRar, key)
+			s.name = name
 			s.parts = append(s.parts, path)
 
 		case strings.HasSuffix(lower, ".rar") && !legacyExtraPattern.MatchString(base):
 			// Legacy main RAR: movie.rar
 			name := lower[:len(lower)-len(".rar")]
-			s := ensureRarSet(legacyRar, name)
+			key := archiveGroupKey(path, name)
+			s := ensureRarSet(legacyRar, key)
+			s.name = name
 			if s.main == "" {
 				s.main = path
 			}
@@ -153,48 +172,59 @@ func groupArchives(files []string) []Archive {
 			// Legacy extra volumes: movie.r00, movie.r01, …
 			ext := legacyExtraPattern.FindString(lower)
 			name := lower[:len(lower)-len(ext)]
-			s := ensureRarSet(legacyRar, name)
+			key := archiveGroupKey(path, name)
+			s := ensureRarSet(legacyRar, key)
+			s.name = name
 			s.parts = append(s.parts, path)
 
 		case sevenSplitPattern.MatchString(base):
 			// Split 7z volume: archive.7z.001
 			suffix := sevenSplitPattern.FindString(lower)
 			name := lower[:len(lower)-len(suffix)]
-			sevenSplit[name] = append(sevenSplit[name], path)
+			key := archiveGroupKey(path, name)
+			s, ok := sevenSplit[key]
+			if !ok {
+				s = &sevenSplitSet{name: name}
+				sevenSplit[key] = s
+			}
+			s.parts = append(s.parts, path)
 
 		case strings.HasSuffix(lower, ".7z"):
 			// Single 7z archive.
 			name := lower[:len(lower)-len(".7z")]
-			sevenSingle[name] = path
+			key := archiveGroupKey(path, name)
+			sevenSingle[key] = singleArchive{name: name, path: path}
 
 		case numericSuffixPattern.MatchString(base):
 			// Generic split file: xyz.001
 			suffix := numericSuffixPattern.FindString(lower)
 			name := lower[:len(lower)-len(suffix)]
-			splitParts[name] = append(splitParts[name], path)
+			key := archiveGroupKey(path, name)
+			splitParts[key] = append(splitParts[key], path)
 
 		case strings.HasSuffix(lower, ".tar"):
 			// Plain tar archive. No multi-volume convention in scope.
 			name := lower[:len(lower)-len(".tar")]
-			tarSingle[name] = path
+			key := archiveGroupKey(path, name)
+			tarSingle[key] = singleArchive{name: name, path: path}
 		}
 	}
 
 	var archives []Archive
 
 	// New-style multi-part RARs.
-	for name, s := range newStyleRar {
+	for _, s := range newStyleRar {
 		slices.Sort(s.parts)
 		archives = append(archives, Archive{
 			Type:     RarArchive,
-			Name:     name,
+			Name:     s.name,
 			MainFile: s.parts[0],
 			Parts:    s.parts,
 		})
 	}
 
 	// Legacy RARs.
-	for name, s := range legacyRar {
+	for _, s := range legacyRar {
 		slices.Sort(s.parts)
 		main := s.main
 		if main == "" && len(s.parts) > 0 {
@@ -202,76 +232,85 @@ func groupArchives(files []string) []Archive {
 		}
 		archives = append(archives, Archive{
 			Type:     RarArchive,
-			Name:     name,
+			Name:     s.name,
 			MainFile: main,
 			Parts:    s.parts,
 		})
 	}
 
 	// Split 7z volumes.
-	for name, parts := range sevenSplit {
-		slices.Sort(parts)
+	for _, s := range sevenSplit {
+		slices.Sort(s.parts)
 		archives = append(archives, Archive{
 			Type:     SevenZipArchive,
-			Name:     name,
-			MainFile: parts[0],
-			Parts:    parts,
+			Name:     s.name,
+			MainFile: s.parts[0],
+			Parts:    s.parts,
 		})
 	}
 
-	// Single 7z archives (skip if covered by a split-volume set of same name).
-	for name, path := range sevenSingle {
-		if _, ok := sevenSplit[name]; ok {
+	// Single 7z archives (skip if covered by a split-volume set of same name in same dir).
+	for key, sa := range sevenSingle {
+		if _, ok := sevenSplit[key]; ok {
 			continue
 		}
 		archives = append(archives, Archive{
 			Type:     SevenZipArchive,
-			Name:     name,
-			MainFile: path,
-			Parts:    []string{path},
+			Name:     sa.name,
+			MainFile: sa.path,
+			Parts:    []string{sa.path},
 		})
 	}
 
-	// Generic split files (skip if already covered by a RAR set of the same name).
-	for name, parts := range splitParts {
-		if _, ok := newStyleRar[name]; ok {
+	// Generic split files (skip if already covered by a RAR set of the same name in same dir).
+	for key, parts := range splitParts {
+		if _, ok := newStyleRar[key]; ok {
 			continue
 		}
-		if _, ok := legacyRar[name]; ok {
+		if _, ok := legacyRar[key]; ok {
 			continue
 		}
 		sorted, err := sortedNumericParts(parts)
 		if err != nil {
 			// Non-contiguous — still emit; FileJoin will return a proper error.
 			slices.Sort(parts)
+			mainBase := filepath.Base(parts[0])
+			suffix := numericSuffixPattern.FindString(mainBase)
+			stem := mainBase[:len(mainBase)-len(suffix)]
 			archives = append(archives, Archive{
 				Type:     SplitArchive,
-				Name:     name,
+				Name:     stem,
 				MainFile: parts[0],
 				Parts:    parts,
 			})
 			continue
 		}
+		mainBase := filepath.Base(sorted[0])
+		suffix := numericSuffixPattern.FindString(mainBase)
+		stem := mainBase[:len(mainBase)-len(suffix)]
 		archives = append(archives, Archive{
 			Type:     SplitArchive,
-			Name:     name,
+			Name:     stem,
 			MainFile: sorted[0],
 			Parts:    sorted,
 		})
 	}
 
 	// Single tar archives.
-	for name, path := range tarSingle {
+	for _, ta := range tarSingle {
 		archives = append(archives, Archive{
 			Type:     TarArchive,
-			Name:     name,
-			MainFile: path,
-			Parts:    []string{path},
+			Name:     ta.name,
+			MainFile: ta.path,
+			Parts:    []string{ta.path},
 		})
 	}
 
-	// Stable sort by Name for deterministic output.
-	slices.SortFunc(archives, func(a, b Archive) int { return cmp.Compare(a.Name, b.Name) })
+	// Deterministic sort by Name, then MainFile as tie-breaker for archives
+	// with the same Name in different directories.
+	slices.SortFunc(archives, func(a, b Archive) int {
+		return cmp.Or(cmp.Compare(a.Name, b.Name), cmp.Compare(a.MainFile, b.MainFile))
+	})
 
 	return archives
 }
