@@ -181,6 +181,9 @@ func (r *appResidency) verifyAndAttach(ctx context.Context, j *job.Job, m *job.M
 			return r.fault(ctx, j, storagefault.Classify("commit verdicts", "", err), err)
 		}
 	}
+	if j.State().State == job.Fetching {
+		cleanUnrecordedFetchingFiles(j.Name(), files, locate, r.log)
+	}
 	if err := j.AttachContent(m); err != nil {
 		return err
 	}

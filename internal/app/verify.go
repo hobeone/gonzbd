@@ -7,6 +7,7 @@ import (
 	"hash/crc32"
 	"io"
 	"io/fs"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"slices"
@@ -15,6 +16,7 @@ import (
 	"github.com/hobeone/gonzbd/internal/fsutil"
 	"github.com/hobeone/gonzbd/internal/job"
 	"github.com/hobeone/gonzbd/internal/storagefault"
+	"github.com/hobeone/gonzbd/internal/unpack"
 )
 
 // verifyResult is what one verification pass established about a job's files.
@@ -511,4 +513,54 @@ func fileFinishable(m *job.Manifest, fi int, policy job.FetchPolicy, complete bo
 		}
 	}
 	return true
+}
+
+// cleanUnrecordedFetchingFiles removes regular files in the job directory that
+// are not recorded in job_files, as well as leftover DirectUnpack staging
+// directories, when hydrating a job in job.Fetching.
+func cleanUnrecordedFetchingFiles(jobName string, files []durability.FileRow, locate func(filename string) (jobFile, error), log *slog.Logger) {
+	if locate == nil {
+		return
+	}
+	loc, _ := locate(".") //nolint:errcheck // locate sets Dir even when the component check returns an error
+	jobDir := loc.Dir
+	if jobDir == "" {
+		return
+	}
+	unpack.CleanupStageDirs(jobDir)
+	recorded := make(map[string]bool, len(files))
+	for _, f := range files {
+		if f.Filename != "" {
+			recorded[f.Filename] = true
+		}
+	}
+	root, err := openRoot(jobDir)
+	if err != nil {
+		return
+	}
+	defer func() { _ = root.Close() }()
+
+	d, err := root.Open(".")
+	if err != nil {
+		return
+	}
+	defer func() { _ = d.Close() }() //nolint:errcheck // read-only directory descriptor
+
+	entries, err := d.ReadDir(-1)
+	if err != nil {
+		return
+	}
+	for _, e := range entries {
+		if e.Type().IsRegular() && !recorded[e.Name()] {
+			if err := root.Remove(e.Name()); err != nil {
+				if log != nil {
+					log.Warn("residency: failed to remove unrecorded partial file from incomplete directory", "job", jobName, "file", e.Name(), "err", err)
+				}
+			} else {
+				if log != nil {
+					log.Info("residency: removed unrecorded partial file from incomplete directory", "job", jobName, "file", e.Name())
+				}
+			}
+		}
+	}
 }

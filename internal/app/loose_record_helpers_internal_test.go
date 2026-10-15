@@ -583,3 +583,130 @@ func TestHandleFileUntrusted_KeepsTheFilesNameForTheNextFlush(t *testing.T) {
 		t.Errorf("job_files.filename = %q after an untrust and a flush, want %q", name, "A.bin")
 	}
 }
+
+// TestVerifyAndAttach_RemovesUnrecordedFilesAndStageDirsWhenFetching pins that
+// hydration of a job in job.Fetching cleans up unrecorded files and leftover
+// DirectUnpack staging directories, so a resumed download does not choose a
+// suffixed filename like "part02.1.rar".
+func TestVerifyAndAttach_RemovesUnrecordedFilesAndStageDirsWhenFetching(t *testing.T) {
+	t.Parallel()
+	env := newLREnv(t)
+	a := env.newApp(t)
+
+	raw := strings.ReplaceAll(string(lrNZB(1, 1)), "A.bin", "part01.rar")
+	raw = strings.ReplaceAll(raw, "B.bin", "part02.rar")
+	parsed, err := nzb.Parse(strings.NewReader(raw))
+	if err != nil {
+		t.Fatalf("nzb.Parse: %v", err)
+	}
+	j0, hdr, err := BuildIngestJob(a.config, parsed, "unrec.nzb", types.FetchOptions{NzbName: "unrec"}, nil)
+	if err != nil {
+		t.Fatalf("BuildIngestJob: %v", err)
+	}
+	if err := a.AddJob(t.Context(), j0, hdr, []byte(raw), true); err != nil {
+		t.Fatalf("AddJob: %v", err)
+	}
+
+	if err := a.st.ApplyRecord(t.Context(), []durability.RecordBatch{{
+		JobID: j0.ID(),
+		Files: []durability.FileState{{FileIdx: 0, Filename: "part01.rar", FetchPolicy: uint8(job.FetchAlways)}},
+	}}); err != nil {
+		t.Fatalf("ApplyRecord: %v", err)
+	}
+
+	jobDir := filepath.Join(env.dl, j0.Name())
+	if err := os.MkdirAll(jobDir, 0o750); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	part1 := filepath.Join(jobDir, "part01.rar")
+	part2 := filepath.Join(jobDir, "part02.rar")
+	if err := os.WriteFile(part1, []byte("part01-bytes"), 0o600); err != nil {
+		t.Fatalf("write part01: %v", err)
+	}
+	if err := os.WriteFile(part2, []byte("part02-bytes"), 0o600); err != nil {
+		t.Fatalf("write part02: %v", err)
+	}
+	stageDir := filepath.Join(jobDir, ".gonzbd-tmp-unpack-12345")
+	if err := os.MkdirAll(stageDir, 0o750); err != nil {
+		t.Fatalf("mkdir stageDir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(stageDir, "partial.bin"), []byte("partial"), 0o600); err != nil {
+		t.Fatalf("write stage partial: %v", err)
+	}
+
+	fresh := job.New(j0.ID(), j0.Name(), job.Policy{})
+	if err := fresh.BeginAttempt(time.Now()); err != nil {
+		t.Fatalf("BeginAttempt: %v", err)
+	}
+	m, err := j0.Manifest()
+	if err != nil {
+		t.Fatalf("Manifest: %v", err)
+	}
+
+	if err := a.residency.verifyAndAttach(t.Context(), fresh, m); err != nil {
+		t.Fatalf("verifyAndAttach: %v", err)
+	}
+
+	if _, err := os.Stat(part1); err != nil {
+		t.Errorf("part01.rar was removed: %v", err)
+	}
+	if _, err := os.Stat(part2); !os.IsNotExist(err) {
+		t.Errorf("part02.rar still exists on disk after hydration of Fetching job")
+	}
+	if _, err := os.Stat(stageDir); !os.IsNotExist(err) {
+		t.Errorf("staging dir %s still exists on disk after hydration of Fetching job", stageDir)
+	}
+
+	if err := a.pipeline.registerFile(fresh, 1); err != nil {
+		t.Fatalf("registerFile: %v", err)
+	}
+	_, fn := fresh.FileLocation(1)
+	if fn != "part02.rar" {
+		t.Errorf("fresh.FileLocation(1) = %q, want part02.rar (not part02.1.rar)", fn)
+	}
+}
+
+// TestVerifyAndAttach_PreservesExtractedFilesWhenNotFetching pins that
+// hydration of a job in post-processing (e.g. job.Extracting) does not delete
+// extracted files in incomplete/<jobName>/ that are not in job_files.
+func TestVerifyAndAttach_PreservesExtractedFilesWhenNotFetching(t *testing.T) {
+	t.Parallel()
+	env := newLREnv(t)
+	a := env.newApp(t)
+
+	j0 := a.addJob(t, "preserve-extract", 1, 1)
+	jobDir := filepath.Join(env.dl, j0.Name())
+	if err := os.MkdirAll(jobDir, 0o750); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	moviePath := filepath.Join(jobDir, "movie.mkv")
+	if err := os.WriteFile(moviePath, []byte("movie content"), 0o600); err != nil {
+		t.Fatalf("write movie: %v", err)
+	}
+
+	fresh := job.New(j0.ID(), j0.Name(), job.Policy{})
+	if err := fresh.BeginAttempt(time.Now()); err != nil {
+		t.Fatalf("BeginAttempt: %v", err)
+	}
+	if err := fresh.Transition(job.Assessing); err != nil {
+		t.Fatalf("Transition(Assessing): %v", err)
+	}
+	if err := fresh.SetNext(job.Extracting); err != nil {
+		t.Fatalf("SetNext(Extracting): %v", err)
+	}
+	if _, err := fresh.Cross(job.Extracting); err != nil {
+		t.Fatalf("Cross(Extracting): %v", err)
+	}
+	m, err := j0.Manifest()
+	if err != nil {
+		t.Fatalf("Manifest: %v", err)
+	}
+
+	if err := a.residency.verifyAndAttach(t.Context(), fresh, m); err != nil {
+		t.Fatalf("verifyAndAttach: %v", err)
+	}
+
+	if _, err := os.Stat(moviePath); err != nil {
+		t.Errorf("movie.mkv was removed: %v", err)
+	}
+}
