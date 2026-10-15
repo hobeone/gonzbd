@@ -340,3 +340,134 @@ func TestDeriveName(t *testing.T) {
 		}
 	}
 }
+
+func TestBuildIngestJob_NZBMetaDefaults(t *testing.T) {
+	t.Parallel()
+
+	cfg := &config.Config{Categories: []config.CategoryConfig{
+		{Name: "Default", PP: 3, Priority: int(constants.NormalPriority)},
+		{Name: "tv", PP: 1, Script: "notify.sh", Priority: int(constants.HighPriority)},
+		{Name: "movies", PP: 2, Script: "movie.sh", Priority: int(constants.LowPriority)},
+	}}
+
+	t.Run("meta password used when option empty", func(t *testing.T) {
+		t.Parallel()
+		nzbDoc := multiVolumeNZB()
+		nzbDoc.Meta = map[string][]string{
+			"password": {"meta_secret"},
+		}
+		_, hdr, err := BuildIngestJob(cfg, nzbDoc, "test.nzb", types.FetchOptions{}, nil)
+		if err != nil {
+			t.Fatalf("BuildIngestJob: %v", err)
+		}
+		if hdr.Password != "meta_secret" {
+			t.Errorf("Password = %q, want %q", hdr.Password, "meta_secret")
+		}
+	})
+
+	t.Run("meta password case insensitive lookup", func(t *testing.T) {
+		t.Parallel()
+		nzbDoc := multiVolumeNZB()
+		nzbDoc.Meta = map[string][]string{
+			"Password": {"case_secret"},
+		}
+		_, hdr, err := BuildIngestJob(cfg, nzbDoc, "test.nzb", types.FetchOptions{}, nil)
+		if err != nil {
+			t.Fatalf("BuildIngestJob: %v", err)
+		}
+		if hdr.Password != "case_secret" {
+			t.Errorf("Password = %q, want %q", hdr.Password, "case_secret")
+		}
+	})
+
+	t.Run("option password takes precedence over meta", func(t *testing.T) {
+		t.Parallel()
+		nzbDoc := multiVolumeNZB()
+		nzbDoc.Meta = map[string][]string{
+			"password": {"meta_secret"},
+		}
+		_, hdr, err := BuildIngestJob(cfg, nzbDoc, "test.nzb", types.FetchOptions{Password: "opt_secret"}, nil)
+		if err != nil {
+			t.Fatalf("BuildIngestJob: %v", err)
+		}
+		if hdr.Password != "opt_secret" {
+			t.Errorf("Password = %q, want %q", hdr.Password, "opt_secret")
+		}
+	})
+
+	t.Run("meta category used when option empty", func(t *testing.T) {
+		t.Parallel()
+		nzbDoc := multiVolumeNZB()
+		nzbDoc.Meta = map[string][]string{
+			"category": {"tv"},
+		}
+		_, hdr, err := BuildIngestJob(cfg, nzbDoc, "test.nzb", types.FetchOptions{
+			PP:       types.PPInherit,
+			Priority: constants.DefaultPriority,
+		}, nil)
+		if err != nil {
+			t.Fatalf("BuildIngestJob: %v", err)
+		}
+		if hdr.Category != "tv" {
+			t.Errorf("Category = %q, want %q", hdr.Category, "tv")
+		}
+		if hdr.Priority != constants.HighPriority {
+			t.Errorf("Priority = %v, want %v (from tv category)", hdr.Priority, constants.HighPriority)
+		}
+		if hdr.PP.Int() != 1 {
+			t.Errorf("PP = %d, want 1 (from tv category)", hdr.PP.Int())
+		}
+		if hdr.Script != "notify.sh" {
+			t.Errorf("Script = %q, want %q (from tv category)", hdr.Script, "notify.sh")
+		}
+	})
+
+	t.Run("meta category case insensitive lookup", func(t *testing.T) {
+		t.Parallel()
+		nzbDoc := multiVolumeNZB()
+		nzbDoc.Meta = map[string][]string{
+			"Category": {"tv"},
+		}
+		_, hdr, err := BuildIngestJob(cfg, nzbDoc, "test.nzb", types.FetchOptions{
+			PP:       types.PPInherit,
+			Priority: constants.DefaultPriority,
+		}, nil)
+		if err != nil {
+			t.Fatalf("BuildIngestJob: %v", err)
+		}
+		if hdr.Category != "tv" {
+			t.Errorf("Category = %q, want %q", hdr.Category, "tv")
+		}
+		if hdr.Priority != constants.HighPriority {
+			t.Errorf("Priority = %v, want %v (from tv category)", hdr.Priority, constants.HighPriority)
+		}
+	})
+
+	t.Run("option category takes precedence over meta", func(t *testing.T) {
+		t.Parallel()
+		nzbDoc := multiVolumeNZB()
+		nzbDoc.Meta = map[string][]string{
+			"category": {"tv"},
+		}
+		_, hdr, err := BuildIngestJob(cfg, nzbDoc, "test.nzb", types.FetchOptions{
+			Category: "movies",
+			PP:       types.PPInherit,
+			Priority: constants.DefaultPriority,
+		}, nil)
+		if err != nil {
+			t.Fatalf("BuildIngestJob: %v", err)
+		}
+		if hdr.Category != "movies" {
+			t.Errorf("Category = %q, want %q", hdr.Category, "movies")
+		}
+		if hdr.Priority != constants.LowPriority {
+			t.Errorf("Priority = %v, want %v (from movies category)", hdr.Priority, constants.LowPriority)
+		}
+		if hdr.PP.Int() != 2 {
+			t.Errorf("PP = %d, want 2 (from movies category)", hdr.PP.Int())
+		}
+		if hdr.Script != "movie.sh" {
+			t.Errorf("Script = %q, want %q (from movies category)", hdr.Script, "movie.sh")
+		}
+	})
+}

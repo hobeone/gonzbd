@@ -327,11 +327,12 @@ func absorbHead(dec *xml.Decoder, se *xml.StartElement, out *NZB) error {
 		return fmt.Errorf("nzb: decode <head>: %w", err)
 	}
 	for _, m := range head.Metas {
+		k := strings.ToLower(strings.TrimSpace(m.Type))
 		v := strings.TrimSpace(m.Value)
-		if m.Type == "" || v == "" {
+		if k == "" || v == "" {
 			continue
 		}
-		out.Meta[m.Type] = append(out.Meta[m.Type], v)
+		out.Meta[k] = append(out.Meta[k], v)
 	}
 	return nil
 }
