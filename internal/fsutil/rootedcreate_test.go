@@ -300,16 +300,18 @@ func TestIsTempFile(t *testing.T) {
 		{"part03.rar.par2engine-FW6AYZPLN4JV6JDE.tmp", true},
 		{"a.par2engine-ABCDEFGHIJKLMNOP.tmp", true},
 		{"a.par2engine-QRSTUVWXYZ234567.tmp", true},
-		{".par2engine-FW6AYZPLN4JV6JDE.tmp", false},   // empty target name
-		{"a.par2engine-FW6AYZPLN4JV6JD.tmp", false},   // 15 base32 chars
-		{"a.par2engine-FW6AYZPLN4JV6JDEA.tmp", false}, // 17 base32 chars
-		{"a.par2engine-fw6ayzpln4jv6jde.tmp", false},  // lowercase
-		{"a.par2engine-1W6AYZPLN4JV6JDE.tmp", false},  // '2'-1
-		{"a.par2engine-8W6AYZPLN4JV6JDE.tmp", false},  // '7'+1
-		{"a.par2engine-@W6AYZPLN4JV6JDE.tmp", false},  // 'A'-1
-		{"a.par2engine-[W6AYZPLN4JV6JDE.tmp", false},  // 'Z'+1
-		{"a.par2engine-FW6AYZPLN4JV6JDE.bak", false},  // wrong extension
-		{"a.par2engine-keep.tmp", false},              // non-random suffix
+		{".par2engine-FW6AYZPLN4JV6JDE.tmp", false},      // empty target name
+		{"a.par2enginX-FW6AYZPLN4JV6JDE.tmp", false},     // wrong marker, same length
+		{"a.par2engine-FW6AYZPLN4JV6JD.tmp", false},      // 15 base32 chars
+		{"a.par2engine-FW6AYZPLN4JV6JDEA.tmp", false},    // 17 base32 chars
+		{"a.par2engine-fw6ayzpln4jv6jde.tmp", false},     // lowercase
+		{"a.par2engine-1W6AYZPLN4JV6JDE.tmp", false},     // '2'-1
+		{"a.par2engine-8W6AYZPLN4JV6JDE.tmp", false},     // '7'+1
+		{"a.par2engine-@W6AYZPLN4JV6JDE.tmp", false},     // 'A'-1
+		{"a.par2engine-[W6AYZPLN4JV6JDE.tmp", false},     // 'Z'+1
+		{"a.par2engine-FW6AYZPLN4JV6JDE.bak", false},     // wrong extension
+		{"a.par2engine-FW6AYZPLN4JV6JDE.tmp.tmp", false}, // trailing text after .tmp
+		{"a.par2engine-keep.tmp", false},                 // non-random suffix
 		{".hidden", false},
 		{"movie.mkv", false},
 	} {

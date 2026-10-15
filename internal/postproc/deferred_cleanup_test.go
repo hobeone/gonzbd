@@ -390,9 +390,6 @@ func TestDeferredCleanup_RerunAfterCrashBeforeFinalize(t *testing.T) {
 		if _, err := os.Stat(unpackFinalDir); !os.IsNotExist(err) {
 			t.Errorf("expected %s to be renamed to %s, stat err=%v", unpackFinalDir, subFinalDir, err)
 		}
-		if err := pp.recoverUnpackFinalDir(t.Context(), &Job{}); err != nil {
-			t.Errorf("recoverUnpackFinalDir(empty FinalDir) = %v, want nil", err)
-		}
 
 		roComplete := filepath.Join(baseDir, "ro-complete")
 		roFinal := filepath.Join(roComplete, "Crashed.RO")

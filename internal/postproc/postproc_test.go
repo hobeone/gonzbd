@@ -1779,11 +1779,12 @@ func TestPreCheck_AlreadyDeliveredPerJobFinalDir(t *testing.T) {
 	})
 }
 
-// TestProcessJob_SweepsLeftoverTempFiles verifies that orphaned
-// .gonzbd-tmp-<16 hex> files left behind in DownloadDir (or its subdirectories)
-// by an interrupted extraction or split join are removed at the start of a
-// post-processing run before any stage executes, while non-matching dotfiles
-// and regular files are preserved.
+// TestProcessJob_SweepsLeftoverTempFiles verifies that orphaned temp files
+// matching fsutil.IsTempFile (.gonzbd-tmp-<16 hex> and
+// <target>.par2engine-<16 base32>.tmp) left behind in DownloadDir (or its
+// subdirectories) by an interrupted repair, extraction, or split join are
+// removed at the start of a post-processing run before any stage executes,
+// while non-matching files are preserved.
 func TestProcessJob_SweepsLeftoverTempFiles(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
@@ -1848,7 +1849,7 @@ func TestProcessJob_SweepsLeftoverTempFiles(t *testing.T) {
 		t.Fatalf("checkStage ran %d times, want 1", checkStage.CallCount())
 	}
 	if stageSawStale {
-		t.Error("stale .gonzbd-tmp-* file was still present when first stage ran; sweep must run before stages")
+		t.Error("stale temp file was still present when first stage ran; sweep must run before stages")
 	}
 
 	procLogs := procLogBuf.String()
@@ -1903,18 +1904,23 @@ func TestProcessJob_SweepsLeftoverTempFiles(t *testing.T) {
 	}
 
 	// Verify interaction with #767 alreadyDelivered recovery:
-	// 1. A per-job FinalDir holding only a leftover .gonzbd-tmp-* file is not
-	//    treated as already delivered.
-	tempOnlyFinal := t.TempDir()
-	if err := os.WriteFile(filepath.Join(tempOnlyFinal, ".gonzbd-tmp-0123456789abcdef"), []byte("partial"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	if (&Job{FinalDir: tempOnlyFinal}).alreadyDelivered() {
-		t.Error("alreadyDelivered() = true for FinalDir containing only a .gonzbd-tmp-* file, want false")
+	// 1. A per-job FinalDir holding only a leftover temp file (.gonzbd-tmp-* or
+	//    *.par2engine-*.tmp) is not treated as already delivered.
+	for _, tempName := range []string{
+		".gonzbd-tmp-0123456789abcdef",
+		"part03.rar.par2engine-FW6AYZPLN4JV6JDE.tmp",
+	} {
+		tempOnlyFinal := t.TempDir()
+		if err := os.WriteFile(filepath.Join(tempOnlyFinal, tempName), []byte("partial"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if (&Job{FinalDir: tempOnlyFinal}).alreadyDelivered() {
+			t.Errorf("alreadyDelivered() = true for FinalDir containing only temp file %q, want false", tempName)
+		}
 	}
 
 	// 2. When DownloadDir is missing and a per-job FinalDir has both a real
-	//    delivered file and a leftover .gonzbd-tmp-* file, processJob sweeps
+	//    delivered file and a leftover temp file, processJob sweeps
 	//    the redirected FinalDir before building the preamble log.
 	deliveredFinal := t.TempDir()
 	deliveredReal := filepath.Join(deliveredFinal, "movie.mkv")

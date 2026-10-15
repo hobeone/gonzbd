@@ -316,12 +316,14 @@ file into a `<target>.par2engine-<16 uppercase base32>.tmp` sibling,
 `.gonzbd-tmp-<16 lowercase hex>` (`fsutil.IsTempFile` matches both) file beside
 each entry they are about to rename into place (`writeEntrySafely` and
 `FileJoin`), and the in-process `unpack` engines open their root at a
-`.gonzbd-tmp-unpack-*` staging directory inside it. Those are removed on the
-deferred path, and any orphan left behind by a crash or a kill mid-repair or
-mid-extraction is swept at the start of the next post-processing run
-(`sweepTempFiles` in `processJob`). What does not exist any more is a file we
-later READ BACK and act on — which is the property that mattered, since it is
-the read that turns a forged write into a decision.
+`.gonzbd-tmp-unpack-*` staging directory inside it. `par2engine` removes its
+own `.tmp` siblings on normal and cancelled runs, `gonzbd` removes its
+extraction temp files and staging directories on the deferred path, and any
+orphan left behind by a crash or a kill mid-repair or mid-extraction is swept at
+the start of the next post-processing run (`sweepTempFiles` in `processJob`).
+What does not exist any more is a file we later READ BACK and act on — which is
+the property that mattered, since it is the read that turns a forged write into
+a decision.
 
 This replaced a `__ADMIN__/__verified__` file, and the reasoning is worth keeping
 because the file looked cheap:

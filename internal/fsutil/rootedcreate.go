@@ -16,7 +16,9 @@ import (
 // RootedCreateTempPerm for sibling temporary files before atomic rename.
 const TempFilePrefix = ".gonzbd-tmp-"
 
-// par2engine temp-file markers (Decoder.Repair: "<target>.par2engine-<16 base32>.tmp").
+// par2engine temp-file markers (github.com/hobeone/par2engine/par2 repair.go:335
+// in v1.1.2: target + repairTempMarker + rand.Text()[:16] + repairTempExt, where
+// crypto/rand.Text produces 16 uppercase base32 characters A-Z2-7).
 const (
 	par2TempMarker = ".par2engine-"
 	par2TempExt    = ".tmp"
@@ -31,7 +33,7 @@ func IsTempFile(name string) bool {
 	return isGonzbdTempFile(name) || isPar2EngineTempFile(name)
 }
 
-func isGonzbdTempFile(name string) bool {
+func isGonzbdTempFile(name string) bool { //noalign: covered via IsTempFile in rootedcreate_test.go
 	if !strings.HasPrefix(name, TempFilePrefix) {
 		return false
 	}
@@ -48,7 +50,7 @@ func isGonzbdTempFile(name string) bool {
 	return true
 }
 
-func isPar2EngineTempFile(name string) bool {
+func isPar2EngineTempFile(name string) bool { //noalign: covered via IsTempFile in rootedcreate_test.go
 	if len(name) <= par2TempSuffix || !strings.HasSuffix(name, par2TempExt) {
 		return false
 	}
