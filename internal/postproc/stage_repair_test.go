@@ -1080,7 +1080,6 @@ func TestRepairStage_ExternalPar2RecordsBackupAndCrashRerunCleansIt(t *testing.T
 
 func TestFindVerifiedPar2Backups(t *testing.T) {
 	t.Parallel()
-	_ = sharesAlignedChunk
 
 	log := slog.New(slog.DiscardHandler)
 	payload := make([]byte, 24*1024)
@@ -1093,10 +1092,17 @@ func TestFindVerifiedPar2Backups(t *testing.T) {
 	// damagedAt100 has the same total size as payload, but differs at offset 100 (first 16 KiB).
 	damagedAt100 := slices.Clone(payload)
 	damagedAt100[100] ^= 0xff
-	// unrelatedSameSize has the exact same size as payload, but shares no aligned chunk.
+	// unrelatedSameSize has the exact same size as payload, but shares no probe chunk.
 	unrelatedSameSize := bytes.Repeat([]byte("unrelated-file-content!!"), len(payload)/24+1)[:len(payload)]
 	// truncatedBackup is a short backup (missing tail articles) whose first 16 KiB matches payload.
 	truncatedBackup := slices.Clone(payload[:18*1024])
+	// isoTarget starts with 32 KiB of zeros (like ISO9660) followed by 32 KiB of payload.
+	isoTarget := append(make([]byte, 32*1024), bytes.Repeat([]byte("iso-target-payload-data!"), (32*1024)/24+1)[:32*1024]...)
+	// isoUnrelated starts with 32 KiB of zeros followed by different non-zero data.
+	isoUnrelated := append(make([]byte, 32*1024), bytes.Repeat([]byte("other-unrelated-iso-img!"), (32*1024)/24+1)[:32*1024]...)
+	// isoDamagedMid is a backup of isoTarget damaged at offset 34 KiB (shares non-zero tail).
+	isoDamagedMid := slices.Clone(isoTarget)
+	isoDamagedMid[34*1024] ^= 0xff
 
 	tests := []struct {
 		name        string
@@ -1127,6 +1133,17 @@ func TestFindVerifiedPar2Backups(t *testing.T) {
 				"archive.rar.4": append(slices.Clone(payload), []byte("extra-tail-bytes")...),
 			},
 			want: []string{"archive.rar.2", "archive.rar.3"},
+		},
+		{
+			name: "zero-headed ISO unrelated X.1 is ignored while mid-damaged backup X.2 is returned",
+			parMembers: map[string][]byte{
+				"disc.iso": isoTarget,
+			},
+			extraOnDisk: map[string][]byte{
+				"disc.iso.1": isoUnrelated,
+				"disc.iso.2": isoDamagedMid,
+			},
+			want: []string{"disc.iso.2"},
 		},
 	}
 
@@ -1168,5 +1185,94 @@ func TestFindVerifiedPar2Backups(t *testing.T) {
 				t.Errorf("findVerifiedPar2Backups = %v, want %v", got, tc.want)
 			}
 		})
+	}
+}
+
+func TestSharesProbeChunk(t *testing.T) {
+	t.Parallel()
+
+	const (
+		chunk    = 16 * 1024
+		fullSize = 200 * 1024
+		midOff   = ((fullSize / 2) / chunk) * chunk
+		tailOff  = fullSize - chunk
+	)
+	target := make([]byte, fullSize)
+	for i := range target {
+		target[i] = byte((i*29 + 1) | 1)
+	}
+	baseDiff := bytes.Repeat([]byte{0xaa}, fullSize)
+
+	withSliceFromTarget := func(size, off, length int) []byte {
+		b := slices.Clone(baseDiff[:size])
+		copy(b[off:off+length], target[off:off+length])
+		return b
+	}
+
+	tests := []struct {
+		name string
+		cand []byte
+		want bool
+	}{
+		{
+			name: "matches only at probe 0 (0..16K)",
+			cand: withSliceFromTarget(fullSize, 0, chunk),
+			want: true,
+		},
+		{
+			name: "matches only at probe 1 (16K..32K)",
+			cand: withSliceFromTarget(fullSize, chunk, chunk),
+			want: true,
+		},
+		{
+			name: "matches only at midpoint probe (96K..112K)",
+			cand: withSliceFromTarget(fullSize, midOff, chunk),
+			want: true,
+		},
+		{
+			name: "matches only at tail probe (184K..200K)",
+			cand: withSliceFromTarget(fullSize, tailOff, chunk),
+			want: true,
+		},
+		{
+			name: "candidate smaller than 16 KiB matching prefix",
+			cand: slices.Clone(target[:8*1024]),
+			want: true,
+		},
+		{
+			name: "candidate between 16 KiB and 32 KiB matching only second partial chunk",
+			cand: withSliceFromTarget(24*1024, chunk, 8*1024),
+			want: true,
+		},
+		{
+			name: "no matching probe chunk",
+			cand: slices.Clone(baseDiff),
+			want: false,
+		},
+		{
+			name: "empty candidate",
+			cand: nil,
+			want: false,
+		},
+	}
+
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "target.bin"), target, 0o600); err != nil {
+		t.Fatalf("WriteFile target.bin: %v", err)
+	}
+	root, err := os.OpenRoot(dir)
+	if err != nil {
+		t.Fatalf("OpenRoot: %v", err)
+	}
+	defer root.Close()
+
+	for i, tc := range tests {
+		candName := fmt.Sprintf("cand-%d.bin", i)
+		if err := os.WriteFile(filepath.Join(dir, candName), tc.cand, 0o600); err != nil {
+			t.Fatalf("WriteFile %s: %v", candName, err)
+		}
+		if got := sharesProbeChunk(root, candName, "target.bin", int64(len(tc.cand))); got != tc.want {
+			t.Errorf("%s: sharesProbeChunk = %v, want %v", tc.name, got, tc.want)
+		}
 	}
 }

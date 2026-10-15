@@ -115,9 +115,9 @@ func (s *Par2CleanupStage) Run(ctx context.Context, job *Job) error {
 	// records them in job.par2Backups. Also scan for "<target>.<N>" backups
 	// alongside an existing par2-verified "<target>" (verified intact by the
 	// stage gates above) whose size is at most "<target>"'s par2 description
-	// size and that share at least one aligned chunk with "<target>", so a
-	// crash between repair and finalize still cleans them up on rerun when
-	// job.par2Backups is empty without touching unrelated "<target>.<N>"
+	// size and that share at least one non-zero probe chunk with "<target>",
+	// so a crash between repair and finalize still cleans them up on rerun
+	// when job.par2Backups is empty without touching unrelated "<target>.<N>"
 	// files. Promote them to pendingDeletions so subsequent stages
 	// (deobfuscate, unwanted_cleanup, extension_cleanup) skip them and
 	// finalize deletes them after moving the job.
@@ -152,7 +152,7 @@ const par2BackupSampleChunk int64 = 16 * 1024
 // findVerifiedPar2Backups scans dir for non-member "<target>.<N>" files where
 // "<target>" exists as a regular file whose 16 KiB MD5 matches its par2
 // FileDescription, the candidate's byte size is in (0, FileSize], and the
-// candidate shares at least one aligned chunk with "<target>" (#768).
+// candidate shares at least one non-zero probe chunk with "<target>" (#768).
 func findVerifiedPar2Backups(dir string, sets []par2.Set, opts fsutil.SanitizeOptions, parseOpts par2.ParseOptions, log *slog.Logger) []string {
 	if len(sets) == 0 {
 		return nil
@@ -210,20 +210,21 @@ func findVerifiedPar2Backups(dir string, sets []par2.Set, opts fsutil.SanitizeOp
 			continue
 		}
 		info, ierr := e.Info()
-		if ierr != nil || info.Size() <= 0 || info.Size() > spec.size {
+		if ierr != nil || info.Size() > spec.size {
 			continue
 		}
-		if sharesAlignedChunk(root, name, relDst, info.Size()) {
+		if sharesProbeChunk(root, name, relDst, info.Size()) {
 			backups = append(backups, name)
 		}
 	}
 	return backups
 }
 
-// sharesAlignedChunk reports whether candidateName (of size candSize > 0) and
-// targetName share at least one byte-identical aligned chunk (up to 16 KiB) at
-// the start, second chunk, middle, or tail of candidateName (#768).
-func sharesAlignedChunk(root *os.Root, candidateName, targetName string, candSize int64) bool {
+// sharesProbeChunk reports whether candidateName (of size candSize) and
+// targetName share at least one byte-identical non-zero probe chunk (up to
+// 16 KiB) at the start, second chunk, midpoint, or tail of candidateName (#768).
+// Candidates with candSize <= 0 skip every probe (off >= candSize) and return false.
+func sharesProbeChunk(root *os.Root, candidateName, targetName string, candSize int64) bool {
 	candFile, err := root.Open(candidateName)
 	if err != nil {
 		return false
@@ -252,6 +253,9 @@ func sharesAlignedChunk(root *os.Root, candidateName, targetName string, candSiz
 		}
 		n := min(par2BackupSampleChunk, candSize-off)
 		if _, err := io.ReadFull(io.NewSectionReader(candFile, off, n), candBuf[:n]); err != nil {
+			continue
+		}
+		if !slices.ContainsFunc(candBuf[:n], func(b byte) bool { return b != 0 }) {
 			continue
 		}
 		if _, err := io.ReadFull(io.NewSectionReader(targetFile, off, n), targetBuf[:n]); err != nil {

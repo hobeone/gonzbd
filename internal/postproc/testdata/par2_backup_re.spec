@@ -1,5 +1,5 @@
 pkg ./internal/postproc/
-run TestCleanupPar2Backups_ScopedToRepairedTargetsAndSkipsDirs|TestRepairStage_ExternalPar2RecordsBackupAndCrashRerunCleansIt|TestFindVerifiedPar2Backups
+run TestCleanupPar2Backups_ScopedToRepairedTargetsAndSkipsDirs|TestRepairStage_ExternalPar2RecordsBackupAndCrashRerunCleansIt|TestFindVerifiedPar2Backups|TestSharesProbeChunk
 
 [existing map includes directories as valid repaired targets]
 file internal/postproc/stage_repair.go
@@ -69,15 +69,99 @@ file internal/postproc/stage_par2cleanup.go
 [findVerifiedPar2Backups skips backup size upper bound]
 file internal/postproc/stage_par2cleanup.go
 --- anchor
-		if ierr != nil || info.Size() <= 0 || info.Size() > spec.size {
+		if ierr != nil || info.Size() > spec.size {
 --- replace
-		if ierr != nil || info.Size() <= 0 {
+		if ierr != nil {
 --- end
 
-[findVerifiedPar2Backups skips aligned chunk content verification]
+[findVerifiedPar2Backups skips probe chunk content verification]
 file internal/postproc/stage_par2cleanup.go
 --- anchor
-		if sharesAlignedChunk(root, name, relDst, info.Size()) {
+		if sharesProbeChunk(root, name, relDst, info.Size()) {
 --- replace
-		if sharesAlignedChunk(root, name, relDst, info.Size()) || true {
+		if sharesProbeChunk(root, name, relDst, info.Size()) || true {
+--- end
+
+[sharesProbeChunk accepts all-zero probe chunks]
+file internal/postproc/stage_par2cleanup.go
+--- anchor
+		if !slices.ContainsFunc(candBuf[:n], func(b byte) bool { return b != 0 }) {
+			continue
+		}
+--- replace
+		if false {
+			continue
+		}
+--- end
+
+[sharesProbeChunk omits probe 0 at start of file]
+file internal/postproc/stage_par2cleanup.go
+--- anchor
+	offsets := [4]int64{
+		0,
+		par2BackupSampleChunk,
+		((candSize / 2) / par2BackupSampleChunk) * par2BackupSampleChunk,
+		max(candSize-par2BackupSampleChunk, par2BackupSampleChunk),
+	}
+--- replace
+	offsets := [4]int64{
+		-1,
+		par2BackupSampleChunk,
+		((candSize / 2) / par2BackupSampleChunk) * par2BackupSampleChunk,
+		max(candSize-par2BackupSampleChunk, par2BackupSampleChunk),
+	}
+--- end
+
+[sharesProbeChunk omits probe 1 at 16 KiB]
+file internal/postproc/stage_par2cleanup.go
+--- anchor
+	offsets := [4]int64{
+		0,
+		par2BackupSampleChunk,
+		((candSize / 2) / par2BackupSampleChunk) * par2BackupSampleChunk,
+		max(candSize-par2BackupSampleChunk, par2BackupSampleChunk),
+	}
+--- replace
+	offsets := [4]int64{
+		0,
+		-1,
+		((candSize / 2) / par2BackupSampleChunk) * par2BackupSampleChunk,
+		max(candSize-par2BackupSampleChunk, par2BackupSampleChunk),
+	}
+--- end
+
+[sharesProbeChunk omits midpoint probe]
+file internal/postproc/stage_par2cleanup.go
+--- anchor
+	offsets := [4]int64{
+		0,
+		par2BackupSampleChunk,
+		((candSize / 2) / par2BackupSampleChunk) * par2BackupSampleChunk,
+		max(candSize-par2BackupSampleChunk, par2BackupSampleChunk),
+	}
+--- replace
+	offsets := [4]int64{
+		0,
+		par2BackupSampleChunk,
+		-1,
+		max(candSize-par2BackupSampleChunk, par2BackupSampleChunk),
+	}
+--- end
+
+[sharesProbeChunk omits tail probe]
+file internal/postproc/stage_par2cleanup.go
+--- anchor
+	offsets := [4]int64{
+		0,
+		par2BackupSampleChunk,
+		((candSize / 2) / par2BackupSampleChunk) * par2BackupSampleChunk,
+		max(candSize-par2BackupSampleChunk, par2BackupSampleChunk),
+	}
+--- replace
+	offsets := [4]int64{
+		0,
+		par2BackupSampleChunk,
+		((candSize / 2) / par2BackupSampleChunk) * par2BackupSampleChunk,
+		-1,
+	}
 --- end
