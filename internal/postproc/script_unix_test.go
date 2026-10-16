@@ -3,9 +3,12 @@
 package postproc
 
 import (
+	"context"
 	"errors"
 	"fmt"
+	"os"
 	"os/exec"
+	"path/filepath"
 	"syscall"
 	"testing"
 	"time"
@@ -108,5 +111,49 @@ func TestIsETXTBSY(t *testing.T) {
 				t.Errorf("isETXTBSY(%v) = %v, want %v", tc.err, got, tc.want)
 			}
 		})
+	}
+}
+
+// TestRunScript_SetsidGrandchildWaitDelayBindsExecution verifies that when a
+// script spawns a detached grandchild in a new session (setsid) that inherits
+// stdout and sleeps, RunScript still terminates within WaitDelay + margin after
+// context cancellation instead of blocking indefinitely waiting for pipe EOF.
+func TestRunScript_SetsidGrandchildWaitDelayBindsExecution(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	scriptPath := filepath.Join(dir, "setsid_child.sh")
+	pidFile := filepath.Join(dir, "grandchild.pid")
+	scriptContent := fmt.Sprintf(`#!/bin/sh
+setsid sh -c 'echo $$ > %q; exec sleep 30' &
+echo "grandchild started"
+wait
+`, pidFile)
+	if err := os.WriteFile(scriptPath, []byte(scriptContent), 0o755); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	t.Cleanup(func() {
+		data, err := os.ReadFile(pidFile)
+		if err == nil {
+			var pid int
+			if _, scanErr := fmt.Sscanf(string(data), "%d", &pid); scanErr == nil && pid > 0 {
+				_ = syscall.Kill(pid, syscall.SIGKILL)
+			}
+		}
+	})
+
+	ctx, cancel := context.WithTimeout(t.Context(), 200*time.Millisecond)
+	defer cancel()
+
+	start := time.Now()
+	result := RunScript(ctx, scriptPath, ScriptInput{FinalDir: dir})
+	elapsed := time.Since(start)
+
+	if elapsed > 10*time.Second {
+		t.Fatalf("RunScript blocked for %v (expected ~3s bounded by WaitDelay, not 30s grandchild sleep)", elapsed)
+	}
+	if result.Err == nil {
+		t.Fatal("RunScript expected timeout/cancellation error, got nil")
 	}
 }

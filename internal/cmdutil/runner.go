@@ -8,6 +8,7 @@ import (
 	"os/exec"
 	"strings"
 	"syscall"
+	"time"
 )
 
 // CmdConfig controls process-priority wrapping for external commands.
@@ -70,7 +71,9 @@ func BuildCommand(ctx context.Context, cfg CmdConfig, name string, args ...strin
 // (Setpgid: true, preserving any existing non-nil SysProcAttr). When cmd was
 // constructed with exec.CommandContext (so cmd.Cancel is non-nil), it replaces
 // cmd.Cancel with KillProcessGroup so context cancellation terminates the
-// entire process tree rather than only the direct child.
+// entire process tree rather than only the direct child. It also sets
+// cmd.WaitDelay to 3 seconds if not already set, preventing cmd.Wait from
+// hanging indefinitely when background processes inherit standard descriptors.
 func SetProcessGroup(cmd *exec.Cmd) {
 	if cmd.SysProcAttr == nil {
 		cmd.SysProcAttr = &syscall.SysProcAttr{}
@@ -81,6 +84,9 @@ func SetProcessGroup(cmd *exec.Cmd) {
 			KillProcessGroup(cmd)
 			return nil
 		}
+	}
+	if cmd.WaitDelay == 0 {
+		cmd.WaitDelay = 3 * time.Second
 	}
 }
 

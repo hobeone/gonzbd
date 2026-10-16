@@ -5,6 +5,7 @@ import (
 	"errors"
 	"log/slog"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -827,5 +828,134 @@ func TestExtractSevenZipFile_TempFileUnlinkedMidWrite(t *testing.T) {
 	}
 	if !foundChtimes {
 		t.Error("expected debug log for failed Chtimes")
+	}
+}
+
+func TestGoSevenZipWithPasswords_StoredEncryptedArchiveTriesSecondPassword(t *testing.T) {
+	sevenZipPath, err := exec.LookPath("7z")
+	if err != nil {
+		t.Skip("7z binary not found")
+	}
+	dir := t.TempDir()
+	contentFile := filepath.Join(dir, "content.txt")
+	const payload = "stored encrypted payload content 1234567890"
+	if err := os.WriteFile(contentFile, []byte(payload), 0o600); err != nil {
+		t.Fatalf("write content file: %v", err)
+	}
+	archivePath := filepath.Join(dir, "stored_encrypted.7z")
+	cmd := exec.Command(sevenZipPath, "a", "-t7z", "-mx=0", "-psecret123", archivePath, contentFile)
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("create 7z archive failed: %v, output: %s", err, out)
+	}
+
+	outDir := t.TempDir()
+	archive := Archive{
+		Type:     SevenZipArchive,
+		MainFile: archivePath,
+	}
+	opts := Options{
+		Passwords: []string{"wrongpass", "secret123"},
+	}
+	res, err := GoSevenZipWithPasswords(context.Background(), slog.Default(), archive, outDir, opts)
+	if err != nil {
+		t.Fatalf("GoSevenZipWithPasswords() expected success on second password, got error: %v, reason: %v", err, res.Reason)
+	}
+	extractedFile := filepath.Join(outDir, "content.txt")
+	data, err := os.ReadFile(extractedFile)
+	if err != nil {
+		t.Fatalf("read extracted file: %v", err)
+	}
+	if string(data) != payload {
+		t.Fatalf("extracted content = %q, want %q", string(data), payload)
+	}
+
+	// Verify that an unencrypted corrupted archive still fails with FailCorrupt and does not try all passwords.
+	corruptPath := corruptedCopySevenZip(t, t.TempDir())
+	corruptArchive := Archive{
+		Type:     SevenZipArchive,
+		MainFile: corruptPath,
+	}
+	corruptOut := t.TempDir()
+	resCorrupt, errCorrupt := GoSevenZipWithPasswords(context.Background(), slog.Default(), corruptArchive, corruptOut, opts)
+	if errCorrupt == nil {
+		t.Fatal("expected corrupted archive extraction to fail, got nil")
+	}
+	if resCorrupt.Reason != FailCorrupt {
+		t.Fatalf("resCorrupt.Reason = %v, want %v (FailCorrupt)", resCorrupt.Reason, FailCorrupt)
+	}
+}
+
+func TestIsSevenZipEncrypted(t *testing.T) {
+	sevenZipPath, err := exec.LookPath("7z")
+	if err != nil {
+		t.Skip("7z binary not found")
+	}
+
+	dir := t.TempDir()
+	contentFile := filepath.Join(dir, "content.txt")
+	const payload = "stored encrypted payload content 1234567890"
+	if err := os.WriteFile(contentFile, []byte(payload), 0o600); err != nil {
+		t.Fatalf("write content file: %v", err)
+	}
+
+	// 1. Stored encrypted archive (unencrypted header, encrypted stream)
+	storedEncPath := filepath.Join(dir, "stored_enc.7z")
+	cmd := exec.Command(sevenZipPath, "a", "-t7z", "-mx=0", "-psecret123", storedEncPath, contentFile)
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("create stored_enc.7z failed: %v, output: %s", err, out)
+	}
+
+	// 2. Encrypted header archive (-mhe=on)
+	headerEncPath := filepath.Join(dir, "header_enc.7z")
+	cmdHeader := exec.Command(sevenZipPath, "a", "-t7z", "-mhe=on", "-psecret123", headerEncPath, contentFile)
+	if out, err := cmdHeader.CombinedOutput(); err != nil {
+		t.Fatalf("create header_enc.7z failed: %v, output: %s", err, out)
+	}
+
+	// 3. Unencrypted archive
+	unencPath := filepath.Join(dir, "unenc.7z")
+	cmdUnenc := exec.Command(sevenZipPath, "a", "-t7z", unencPath, contentFile)
+	if out, err := cmdUnenc.CombinedOutput(); err != nil {
+		t.Fatalf("create unenc.7z failed: %v, output: %s", err, out)
+	}
+
+	// Case A: Stored encrypted, named entry
+	if !isSevenZipEncrypted(storedEncPath, "wrongpass", "content.txt") {
+		t.Error("isSevenZipEncrypted(storedEnc, wrongpass, content.txt) = false, want true")
+	}
+
+	// Case B: Stored encrypted, empty entryName (finds first regular file)
+	if !isSevenZipEncrypted(storedEncPath, "wrongpass", "") {
+		t.Error("isSevenZipEncrypted(storedEnc, wrongpass, '') = false, want true")
+	}
+
+	// Case B2: Stored encrypted, empty password provided (Open fails with ReadError.Encrypted)
+	if !isSevenZipEncrypted(storedEncPath, "", "content.txt") {
+		t.Error("isSevenZipEncrypted(storedEnc, '', content.txt) = false, want true")
+	}
+
+	// Case C: Encrypted header (-mhe=on)
+	if !isSevenZipEncrypted(headerEncPath, "wrongpass", "") {
+		t.Error("isSevenZipEncrypted(headerEnc, wrongpass, '') = false, want true")
+	}
+
+	// Case D: Unencrypted archive, named entry
+	if isSevenZipEncrypted(unencPath, "wrongpass", "content.txt") {
+		t.Error("isSevenZipEncrypted(unenc, wrongpass, content.txt) = true, want false")
+	}
+
+	// Case E: Unencrypted archive, empty entryName
+	if isSevenZipEncrypted(unencPath, "wrongpass", "") {
+		t.Error("isSevenZipEncrypted(unenc, wrongpass, '') = true, want false")
+	}
+
+	// Case F: Non-existent entryName
+	if isSevenZipEncrypted(storedEncPath, "wrongpass", "nonexistent.file") {
+		t.Error("isSevenZipEncrypted(storedEnc, wrongpass, nonexistent) = true, want false")
+	}
+
+	// Case G: Non-existent archive path
+	if isSevenZipEncrypted(filepath.Join(dir, "does_not_exist.7z"), "wrongpass", "") {
+		t.Error("isSevenZipEncrypted(nonexistent archive) = true, want false")
 	}
 }

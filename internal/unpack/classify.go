@@ -123,7 +123,9 @@ func Classify7zOutput(output string) FailReason {
 	// Wrong password.
 	if strings.Contains(lower, "wrong password") ||
 		strings.Contains(lower, "data error in encrypted file") ||
-		strings.Contains(lower, "can not open encrypted archive") {
+		strings.Contains(lower, "can not open encrypted archive") ||
+		strings.Contains(lower, "cannot open encrypted archive") ||
+		strings.Contains(lower, "crc failed in encrypted file") {
 		return FailWrongPassword
 	}
 
