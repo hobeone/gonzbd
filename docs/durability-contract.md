@@ -201,8 +201,11 @@ And three ways out:
     `completeFinalizedFile`'s `MarkFileComplete` and `markFileDirty` flushes
     the last file's rows but not its `complete` flag; a crash there costs the
     next start one verification read of that file, which has rows and fsynced
-    bytes. Only a last file whose articles all failed has no rows to verify
-    from (`TestReportDownloadComplete_RecordsTheFileBeforeTheReport`);
+    bytes. That read does not finish a last file with a permanently failed
+    article, since failures are not restored for a `complete=0` file, so the
+    job restores at `Assessing` incomplete
+    (`TestReportDownloadComplete_RecordsTheFileBeforeTheReport`,
+    `TestReportDownloadComplete_ReportsDespiteAFailedFlush`);
   - `enqueuePostProc`, after `CloseJobHandles` and before post-processing can
     change the bytes the rows describe, bounded by `recorderFlushTimeout`
     (2 s), since it holds the post-processing admission;
@@ -306,7 +309,9 @@ whole-file CRC, peeks the archive, feeds DirectUnpack, calls
 `Job.MarkFileComplete`, marks the file dirty for the recorder, and reports the
 download complete when it was the job's last file. `complete=1` therefore
 reaches SQLite at the next flush; a crash before it costs one verification read
-of the file at the next start, which finishes it by path. The report that
+of the file at the next start, which finishes it by path unless the file has a
+permanently failed article (see the `reportDownloadComplete` flush site in §1's
+list of flush sites). The report that
 leaves `Fetching` and the hand-over to post-processing do not wait for the
 background cadence: `reportDownloadComplete` and `enqueuePostProc` flush
 synchronously.
@@ -376,7 +381,8 @@ Every file with `complete=0` and at least one row is read, whatever the job's
 state and the file's fetch policy: a crash between a file's completion and the
 next flush can leave such a file in a job that has already left `Fetching`
 (the flush before the download-complete report narrows that window to a report
-whose flush failed), so no state makes the read unnecessary. For each such file, in order:
+whose flush failed and a `runFetch` report racing the last completion, both
+described with that flush's site above), so no state makes the read unnecessary. For each such file, in order:
 
 | Case | Outcome |
 |---|---|

@@ -61,3 +61,22 @@ func TestReportDownloadComplete_RecordsTheFileBeforeTheReport(t *testing.T) {
 		t.Fatalf("job_files.complete read at the Fetching->Assessing report = %v (an empty list means no row yet), want [1]", spy.flags)
 	}
 }
+
+// TestReportDownloadComplete_ReportsDespiteAFailedFlush: a flush that fails is
+// logged and the report still goes out. No later report is owed, so holding
+// the job at Fetching would strand its lease.
+func TestReportDownloadComplete_ReportsDespiteAFailedFlush(t *testing.T) {
+	t.Parallel()
+	f := newFailAtAssessingFixture(t)
+	f.app.markFileDirty(f.j, 0)
+	f.app.recorder.st = failRecordFor{recordStore: f.app.recorder.st, id: f.j.ID()}
+
+	spy := &completeFlagAtReport{reporter: f.d, read: func() (int, bool) { return 0, true }}
+	reported, err := f.app.reportDownloadComplete(f.j, spy)
+	if !reported || err != nil {
+		t.Fatalf("reportDownloadComplete with a failing flush = (%v, %v), want (true, nil)", reported, err)
+	}
+	if len(spy.flags) != 1 {
+		t.Fatalf("Fetching->Assessing reports made = %d, want 1", len(spy.flags))
+	}
+}

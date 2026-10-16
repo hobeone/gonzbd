@@ -1793,8 +1793,9 @@ func (app *Application) reportDownloadComplete(j *job.Job, rep reporter) (bool, 
 	// markFileDirty flushes the last file's rows but not its complete flag
 	// (completeFinalizedFile's own report then gets ErrStaleReport). A crash
 	// there costs the next start one verification read of that file, which
-	// has rows and fsynced bytes; only a last file whose articles all failed
-	// has no rows to verify from.
+	// has rows and fsynced bytes. That read does not finish a last file with a
+	// permanently failed article: failures are not restored for a complete=0
+	// file (installVerification), so the job restores at Assessing incomplete.
 	flushCtx, flushCancel := context.WithTimeout(context.Background(), recorderFlushTimeout)
 	err := app.recorder.flush(flushCtx)
 	flushCancel()
