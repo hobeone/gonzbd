@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"maps"
 	"slices"
+	"strings"
 	"time"
 
 	"github.com/hobeone/gonzbd/internal/durability"
@@ -1296,6 +1297,39 @@ func (p *JobProgress) isEarlyAbort() bool {
 	if rate >= earlyAbortThreshold {
 		p.earlyAborted = true
 		return true
+	}
+	return false
+}
+
+func isSinglePathComponent(name string) bool {
+	return name != "" && name != "." && name != ".." && !strings.ContainsAny(name, `/\`)
+}
+
+// RecordFileRename updates the recorded on-disk filename of a file renamed in
+// place within the job directory from `from` to `to`, and marks the file dirty
+// for TakeFetchPolicyChanges so the next recorder flush writes the new
+// filename to job_files. Multi-component paths (subdirectory relocations) or
+// identical names are ignored.
+func (j *Job) RecordFileRename(from, to string) bool {
+	if from == to || !isSinglePathComponent(from) || !isSinglePathComponent(to) {
+		return false
+	}
+	j.contentMu.Lock()
+	defer j.contentMu.Unlock()
+	p := j.progress
+	if p == nil {
+		return false
+	}
+	for fi := range p.files {
+		if p.files[fi].Filename == from {
+			p.files[fi].Filename = to
+			f := &p.files[fi]
+			if !f.fetchChanged {
+				f.fetchChanged = true
+				p.fetchChanges++
+			}
+			return true
+		}
 	}
 	return false
 }

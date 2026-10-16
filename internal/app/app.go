@@ -2942,6 +2942,7 @@ func (app *Application) verifyRetry(ctx context.Context, j *job.Job, m *job.Mani
 			return nil, fmt.Errorf("commit verdicts: %w", err)
 		}
 	}
+	cleanUnrecordedRetryFiles(j.Name(), m, files, app.pipeline.sanitizeOptions(), locate, app.log)
 	return installVerification(j, files, rows, res, false, app.log, nil), nil
 }
 

@@ -1057,3 +1057,94 @@ func fileSize(t *testing.T, path string) int64 {
 	}
 	return st.Size()
 }
+
+// TestCleanUnrecordedRetryFiles pins that cleanUnrecordedRetryFiles cleans up
+// leftover unpack staging directories and unrecorded files matching unrecorded
+// manifest subjects, while preserving recorded files and other unrecorded files
+// (such as already-extracted archive members).
+func TestCleanUnrecordedRetryFiles(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+
+	m := job.NewManifest([]job.JobFile{
+		{Subject: "recorded.bin", Bytes: 100, Articles: []job.JobArticle{{ID: "<a1@x>", Bytes: 100, Number: 1}}},
+		{Subject: "unrecorded-match.bin", Bytes: 200, Articles: []job.JobArticle{{ID: "<a2@x>", Bytes: 200, Number: 2}}},
+		{Subject: "another-pending.bin", Bytes: 300, Articles: []job.JobArticle{{ID: "<a3@x>", Bytes: 300, Number: 3}}},
+	})
+
+	files := []durability.FileRow{
+		{FileIndex: 0, Filename: "recorded.bin", Complete: false},
+		{FileIndex: 1, Filename: "", Complete: false},
+		// file 2 is not in files at all
+	}
+
+	recordedPath := filepath.Join(dir, "recorded.bin")
+	unrecMatchPath := filepath.Join(dir, "unrecorded-match.bin")
+	extractedPath := filepath.Join(dir, "already-extracted.mkv")
+	stageDir := filepath.Join(dir, ".gonzbd-tmp-unpack-12345")
+
+	if err := os.WriteFile(recordedPath, []byte("recorded"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(unrecMatchPath, []byte("unrec-match"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(extractedPath, []byte("extracted"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(stageDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(stageDir, "tmp.part"), []byte("tmp"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	locate := func(fn string) (jobFile, error) {
+		return jobFile{Dir: dir, Name: fn}, nil
+	}
+
+	cleanUnrecordedRetryFiles("job-test", m, files, fsutil.SanitizeOptions{}, locate, nil)
+
+	if _, err := os.Stat(recordedPath); err != nil {
+		t.Errorf("recorded.bin was unexpectedly removed: %v", err)
+	}
+	if _, err := os.Stat(extractedPath); err != nil {
+		t.Errorf("already-extracted.mkv was unexpectedly removed: %v", err)
+	}
+	if _, err := os.Stat(unrecMatchPath); !os.IsNotExist(err) {
+		t.Errorf("unrecorded-match.bin was not removed")
+	}
+	if _, err := os.Stat(stageDir); !os.IsNotExist(err) {
+		t.Errorf("staging dir %s was not removed", stageDir)
+	}
+}
+
+// TestCleanUnrecordedFetchingFiles directly exercises cleanUnrecordedFetchingFiles.
+func TestCleanUnrecordedFetchingFiles(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	files := []durability.FileRow{{FileIndex: 0, Filename: "rec.bin"}}
+	if err := os.WriteFile(filepath.Join(dir, "rec.bin"), []byte("rec"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "unrec.bin"), []byte("unrec"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	locate := func(fn string) (jobFile, error) { return jobFile{Dir: dir, Name: fn}, nil }
+	cleanUnrecordedFetchingFiles("testjob", files, locate, nil)
+	if _, err := os.Stat(filepath.Join(dir, "rec.bin")); err != nil {
+		t.Errorf("rec.bin removed: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "unrec.bin")); !os.IsNotExist(err) {
+		t.Errorf("unrec.bin not removed")
+	}
+}
+
+// TestPipeline_SanitizeOptions exercises sanitizeOptions getter.
+func TestPipeline_SanitizeOptions(t *testing.T) {
+	t.Parallel()
+	p := &pipeline{sanitize: fsutil.SanitizeOptions{ReplaceSpacesWith: "_"}}
+	if got := p.sanitizeOptions().ReplaceSpacesWith; got != "_" {
+		t.Errorf("sanitizeOptions = %q, want _", got)
+	}
+}

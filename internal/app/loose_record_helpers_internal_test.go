@@ -235,6 +235,62 @@ func TestVerifyRetry_ReadsEveryFileAndReportsWhatItFinished(t *testing.T) {
 	}
 }
 
+// TestVerifyRetry_CleansUnrecordedRetryFilesAndStageDirs pins that verifyRetry
+// cleans up unrecorded files matching unrecorded manifest subjects and unpack
+// staging directories, while preserving recorded files and other unrecorded files.
+func TestVerifyRetry_CleansUnrecordedRetryFilesAndStageDirs(t *testing.T) {
+	t.Parallel()
+	env := newLREnv(t)
+	a, id := lrRetryFixture(t, env, 3, 3, true, 0, 1, 2)
+	entry, err := a.repo.Get(t.Context(), id)
+	if err != nil {
+		t.Fatalf("history Get: %v", err)
+	}
+	j, _, err := a.rebuildJobFromNZB(*entry)
+	if err != nil {
+		t.Fatalf("rebuildJobFromNZB: %v", err)
+	}
+	m, err := j.Manifest()
+	if err != nil {
+		t.Fatalf("Manifest: %v", err)
+	}
+
+	jobDir := filepath.Join(env.dl, j.Name())
+	unrecMatch := filepath.Join(jobDir, "B.bin")
+	if err := os.WriteFile(unrecMatch, []byte("unrec-partial"), 0o644); err != nil {
+		t.Fatalf("write unrec match: %v", err)
+	}
+	extracted := filepath.Join(jobDir, "extracted.mkv")
+	if err := os.WriteFile(extracted, []byte("extracted-content"), 0o644); err != nil {
+		t.Fatalf("write extracted: %v", err)
+	}
+	stageDir := filepath.Join(jobDir, ".gonzbd-tmp-unpack-stage")
+	if err := os.MkdirAll(stageDir, 0o755); err != nil {
+		t.Fatalf("mkdir stageDir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(stageDir, "part.tmp"), []byte("part"), 0o644); err != nil {
+		t.Fatalf("write stage file: %v", err)
+	}
+
+	if _, err := a.verifyRetry(t.Context(), j, m); err != nil {
+		t.Fatalf("verifyRetry: %v", err)
+	}
+
+	fileA := filepath.Join(jobDir, "A.bin")
+	if _, err := os.Stat(fileA); err != nil {
+		t.Errorf("recorded file A.bin was removed: %v", err)
+	}
+	if _, err := os.Stat(extracted); err != nil {
+		t.Errorf("unrecorded extracted file was removed: %v", err)
+	}
+	if _, err := os.Stat(unrecMatch); !os.IsNotExist(err) {
+		t.Errorf("unrecorded match B.bin was not removed by verifyRetry")
+	}
+	if _, err := os.Stat(stageDir); !os.IsNotExist(err) {
+		t.Errorf("staging dir %s was not removed by verifyRetry", stageDir)
+	}
+}
+
 // failingRecordReader fails whichever read it is armed for.
 type failingRecordReader struct{ filesErr, rowsErr error }
 

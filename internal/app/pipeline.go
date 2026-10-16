@@ -322,6 +322,13 @@ func (p *pipeline) setSanitize(o fsutil.SanitizeOptions) {
 	p.sanitize = o
 }
 
+// sanitizeOptions returns the naming replacement options in effect.
+func (p *pipeline) sanitizeOptions() fsutil.SanitizeOptions {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+	return p.sanitize
+}
+
 // handleResult processes one downloader output, whose body the downloader has
 // already decoded: it drops a result for a job instance no longer registered,
 // and otherwise hands it to handleFailureResult or handleSuccessResult, which

@@ -542,3 +542,16 @@ func TestPar2CleanupStage_NoFiles(t *testing.T) {
 		}
 	}
 }
+
+func TestPostprocJob_RecordFileRename(t *testing.T) {
+	t.Parallel()
+	var nilJob *Job
+	nilJob.RecordFileRename("from.bin", "to.bin")
+
+	jobWithoutQJ := &Job{}
+	jobWithoutQJ.RecordFileRename("from.bin", "to.bin")
+
+	qj := newQueueJob(t, "test", 1)
+	jobWithQJ := &Job{Job: qj}
+	jobWithQJ.RecordFileRename("from.bin", "to.bin")
+}

@@ -6,6 +6,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/hobeone/gonzbd/internal/job"
 )
 
 // ---------- FinalizeStage edge cases ----------
@@ -392,6 +394,56 @@ func TestMoveRecursive_SourceNotExist(t *testing.T) {
 
 // ---------- DeobfuscateStage with obfuscated file ----------
 
+func TestDeobfuscateStage_SkipsOnParError(t *testing.T) {
+	t.Parallel()
+	job, dir := stageJob(t)
+	job.ParError = true
+	mkvFile := filepath.Join(dir, "b082fa0beaa644d3aa01045d5b8d0b36.mkv")
+	data := make([]byte, 11*1024*1024)
+	if err := os.WriteFile(mkvFile, data, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	stage := NewDeobfuscateStage()
+	if err := stage.Run(t.Context(), job); err != nil {
+		t.Fatalf("Deobfuscate: %v", err)
+	}
+
+	// File should NOT have been renamed because repair failed.
+	if _, err := os.Stat(mkvFile); err != nil {
+		t.Errorf("obfuscated file should still exist when ParError is true: %v", err)
+	}
+	expectedMkv := filepath.Join(dir, "test.job.mkv")
+	if _, err := os.Stat(expectedMkv); !os.IsNotExist(err) {
+		t.Errorf("file should not have been deobfuscated when ParError is true")
+	}
+}
+
+func TestDeobfuscateStage_SkipsOnUnpackError(t *testing.T) {
+	t.Parallel()
+	job, dir := stageJob(t)
+	job.UnpackError = true
+	mkvFile := filepath.Join(dir, "b082fa0beaa644d3aa01045d5b8d0b36.mkv")
+	data := make([]byte, 11*1024*1024)
+	if err := os.WriteFile(mkvFile, data, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	stage := NewDeobfuscateStage()
+	if err := stage.Run(t.Context(), job); err != nil {
+		t.Fatalf("Deobfuscate: %v", err)
+	}
+
+	// File should NOT have been renamed because unpack failed.
+	if _, err := os.Stat(mkvFile); err != nil {
+		t.Errorf("obfuscated file should still exist when UnpackError is true: %v", err)
+	}
+	expectedMkv := filepath.Join(dir, "test.job.mkv")
+	if _, err := os.Stat(expectedMkv); !os.IsNotExist(err) {
+		t.Errorf("file should not have been deobfuscated when UnpackError is true")
+	}
+}
+
 func TestDeobfuscateStage_WithFiles(t *testing.T) {
 	t.Parallel()
 	job, dir := stageJob(t)
@@ -469,6 +521,42 @@ func TestDeobfuscateStage_FullFlow(t *testing.T) {
 	}
 	if !hasSubLog {
 		t.Errorf("expected 'Renamed 1 subtitle file(s)' in output, got: %v", job.OutputLines)
+	}
+}
+
+func TestDeobfuscateStage_RecordsRenamesOnJob(t *testing.T) {
+	t.Parallel()
+	jobObj := job.New("id", "test.job", job.Policy{})
+	m := job.NewManifest([]job.JobFile{
+		{Subject: "video", Bytes: 11 * 1024 * 1024, Articles: []job.JobArticle{{ID: "<a1@x>", Bytes: 11 * 1024 * 1024, Number: 1}}},
+	})
+	if err := jobObj.AttachContent(m); err != nil {
+		t.Fatalf("AttachContent: %v", err)
+	}
+	origName := "b082fa0beaa644d3aa01045d5b8d0b36.mkv"
+	if err := jobObj.RecordFileFilename(0, "test.job", origName); err != nil {
+		t.Fatalf("RecordFileFilename: %v", err)
+	}
+
+	dir := t.TempDir()
+	data := make([]byte, 11*1024*1024)
+	if err := os.WriteFile(filepath.Join(dir, origName), data, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	job := &Job{
+		Job:         jobObj,
+		DownloadDir: dir,
+		FinalDir:    filepath.Join(dir, "dst"),
+	}
+
+	stage := NewDeobfuscateStage()
+	if err := stage.Run(t.Context(), job); err != nil {
+		t.Fatalf("Deobfuscate: %v", err)
+	}
+
+	if got := jobObj.Progress().FileFilename(0); got != "test.job.mkv" {
+		t.Fatalf("FileFilename(0) = %q, want test.job.mkv", got)
 	}
 }
 

@@ -97,6 +97,7 @@ func (q *QuickCheckStage) Run(ctx context.Context, job *Job) error {
 	if len(renames) > 0 {
 		logf(ctx, log, job, slog.LevelInfo, "[quickcheck] Relocated %d file(s) into subdirectories", len(renames))
 		for _, r := range renames {
+			job.RecordFileRename(r.From, r.To)
 			job.OutputLines = append(job.OutputLines,
 				fmt.Sprintf("[quickcheck] %s → %s", r.From, r.To))
 		}
