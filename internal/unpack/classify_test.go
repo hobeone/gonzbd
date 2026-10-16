@@ -120,6 +120,26 @@ func TestClassify7zOutput(t *testing.T) {
 			want:   FailWrongPassword,
 		},
 		{
+			name:   "cannot open encrypted modern 7z",
+			output: "ERROR: archive.7z : Cannot open encrypted archive. Wrong password?\n",
+			want:   FailWrongPassword,
+		},
+		{
+			name:   "cannot open encrypted without question mark",
+			output: "ERROR: archive.7z : Cannot open encrypted archive\n",
+			want:   FailWrongPassword,
+		},
+		{
+			name:   "crc failed in encrypted file with question mark",
+			output: "ERROR: CRC Failed in encrypted file. Wrong password? : payload.bin\n",
+			want:   FailWrongPassword,
+		},
+		{
+			name:   "crc failed in encrypted file without question mark",
+			output: "ERROR: CRC Failed in encrypted file : payload.bin\n",
+			want:   FailWrongPassword,
+		},
+		{
 			name:   "disk full",
 			output: "ERROR: Disk full.\n",
 			want:   FailDiskFull,

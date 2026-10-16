@@ -286,6 +286,17 @@ func TestBuildCommand_ProcessGroupCancellationKillsChildren(t *testing.T) {
 	if !directCmd.SysProcAttr.Setpgid || directCmd.Cancel == nil {
 		t.Fatal("SetProcessGroup did not set Setpgid and Cancel")
 	}
+	if directCmd.WaitDelay != 3*time.Second {
+		t.Fatalf("SetProcessGroup did not set WaitDelay = 3s, got %v", directCmd.WaitDelay)
+	}
+
+	customCmd := exec.Command("true")
+	customCmd.WaitDelay = 5 * time.Second
+	SetProcessGroup(customCmd)
+	if customCmd.WaitDelay != 5*time.Second {
+		t.Fatalf("SetProcessGroup overwrote custom WaitDelay: got %v, want 5s", customCmd.WaitDelay)
+	}
+
 	KillProcessGroup(directCmd) // unstarted Process == nil must be a no-op
 
 	// Verify KillProcessGroup falls back to cmd.Process.Kill() when the child

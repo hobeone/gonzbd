@@ -52,13 +52,7 @@ func isUnrarWrongPassword(exitCode int, output string) bool {
 // is7zWrongPassword returns true if the 7z output indicates a wrong
 // password was used.
 func is7zWrongPassword(exitCode int, output string) bool {
-	// 7z prints:
-	//   "Data Error in encrypted file. Wrong password?"
-	//   "Can not open encrypted archive. Wrong password?"
-	//   "Wrong password?"
-	lower := strings.ToLower(output)
-	return strings.Contains(lower, "wrong password") ||
-		strings.Contains(lower, "data error in encrypted file")
+	return Classify7zOutput(output) == FailWrongPassword
 }
 
 // allPasswords returns the effective password list from Options, with

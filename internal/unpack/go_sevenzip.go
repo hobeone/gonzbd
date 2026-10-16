@@ -1,10 +1,12 @@
 package unpack
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
 	"hash/crc32"
+	"io"
 	"io/fs"
 	"log/slog"
 	"os"
@@ -64,6 +66,9 @@ func goSevenZipInternal(ctx context.Context, log *slog.Logger, archive Archive, 
 		r, err = sevenzip.OpenReader(archive.MainFile)
 	}
 	if err != nil {
+		if strings.Contains(err.Error(), "checksum error") && isSevenZipEncrypted(archive.MainFile, password, "") {
+			err = &sevenzip.ReadError{Encrypted: true, Err: err}
+		}
 		res.Reason = classifySevenZipError(err)
 		if opts.OnLine != nil {
 			opts.OnLine(fmt.Sprintf("ERROR: failed to open archive: %v", err))
@@ -95,6 +100,9 @@ func goSevenZipInternal(ctx context.Context, log *slog.Logger, archive Archive, 
 
 		extracted, err := extractSevenZipEntry(ctx, f, stageDir, root, opts, log)
 		if err != nil {
+			if errors.Is(err, errSevenZipChecksum) && isSevenZipEncrypted(archive.MainFile, password, f.Name) {
+				err = &sevenzip.ReadError{Encrypted: true, Err: err}
+			}
 			res.Reason = classifySevenZipError(err)
 			if opts.OnLine != nil {
 				opts.OnLine(fmt.Sprintf("ERROR: %s: %v", f.Name, err))
@@ -229,4 +237,93 @@ func extractSevenZipEntry(ctx context.Context, f *sevenzip.File, outDir string, 
 	}
 
 	return true, nil
+}
+
+// selectSevenZipProbeEntry returns the first non-empty regular file in the
+// folder stream of entryName (which starts at offset 0 of that stream, avoiding
+// solid-stream seek decompression), falling back to the first non-empty regular
+// file in the archive when entryName is empty or not found.
+func selectSevenZipProbeEntry(files []*sevenzip.File, entryName string) *sevenzip.File {
+	if entryName != "" {
+		var target *sevenzip.File
+		for _, f := range files {
+			if f.Name == entryName {
+				target = f
+				break
+			}
+		}
+		if target != nil {
+			for _, f := range files {
+				if !f.FileInfo().IsDir() && f.UncompressedSize > 0 && f.Stream == target.Stream {
+					return f
+				}
+			}
+		}
+	}
+	for _, f := range files {
+		if !f.FileInfo().IsDir() && f.UncompressedSize > 0 {
+			return f
+		}
+	}
+	return nil
+}
+
+// isSevenZipEncrypted probes whether the archive or entry at archivePath is
+// encrypted by attempting to open and read it with an alternate password.
+// It is called only on error paths (e.g. checksum mismatch) and does zero
+// work on successful extractions.
+func isSevenZipEncrypted(archivePath, password, entryName string) bool {
+	altPassword := password + "\x00"
+	altR, err := sevenzip.OpenReaderWithPassword(archivePath, altPassword)
+	if err != nil {
+		if readErr, ok := errors.AsType[*sevenzip.ReadError](err); ok && readErr.Encrypted {
+			return true
+		}
+		return false
+	}
+	defer altR.Close() //nolint:errcheck // best-effort close
+
+	r, err := sevenzip.OpenReaderWithPassword(archivePath, password)
+	if err != nil {
+		return false
+	}
+	defer r.Close() //nolint:errcheck // best-effort close
+
+	f1 := selectSevenZipProbeEntry(r.File, entryName)
+	if f1 == nil {
+		return false
+	}
+	var f2 *sevenzip.File
+	for _, af := range altR.File {
+		if af.Name == f1.Name && af.Stream == f1.Stream {
+			f2 = af
+			break
+		}
+	}
+	if f2 == nil {
+		return false
+	}
+
+	rc1, err := f1.Open()
+	if err != nil {
+		if readErr, ok := errors.AsType[*sevenzip.ReadError](err); ok && readErr.Encrypted {
+			return true
+		}
+		return false
+	}
+	defer rc1.Close() //nolint:errcheck // best-effort close
+
+	rc2, err := f2.Open()
+	if err != nil {
+		return true
+	}
+	defer rc2.Close() //nolint:errcheck // best-effort close
+
+	buf1 := make([]byte, 16)
+	buf2 := make([]byte, 16)
+
+	n1, _ := io.ReadFull(rc1, buf1) //nolint:errcheck // best-effort read up to 16 bytes for comparison
+	n2, _ := io.ReadFull(rc2, buf2) //nolint:errcheck // best-effort read up to 16 bytes for comparison
+
+	return n1 > 0 && (n1 != n2 || !bytes.Equal(buf1[:n1], buf2[:n2]))
 }

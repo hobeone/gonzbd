@@ -96,6 +96,8 @@ func TestIs7zWrongPassword(t *testing.T) {
 		{"wrong_password_question", 2, "Data Error in encrypted file. Wrong password?", true},
 		{"wrong_password_short", 2, "Wrong password?", true},
 		{"data_error_encrypted", 2, "Data Error in encrypted file foo.7z", true},
+		{"cannot_open_encrypted", 2, "ERROR: archive.7z : Cannot open encrypted archive", true},
+		{"crc_failed_encrypted", 2, "ERROR: CRC Failed in encrypted file : payload.bin", true},
 		{"normal_data_error", 2, "Data error in file.7z", false},
 		{"success", 0, "Everything is Ok", false},
 		{"other_error", 7, "Cannot open archive", false},
