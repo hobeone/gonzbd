@@ -180,22 +180,80 @@ func TestParseFileDescriptions(t *testing.T) {
 }
 
 func TestParseFileDescriptions_MalformedLength(t *testing.T) {
-	tmpDir := t.TempDir()
-	parPath := filepath.Join(tmpDir, "test.par2")
+	t.Run("standalone malformed header with zero valid packets returns error", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		parPath := filepath.Join(tmpDir, "test.par2")
 
-	packetLen := uint64(1024 * 1024 * 1024) // 1GB
-	buf := make([]byte, 64)
-	copy(buf[0:8], magic)
-	binary.LittleEndian.PutUint64(buf[8:16], packetLen)
+		packetLen := uint64(1024 * 1024 * 1024) // 1GB
+		buf := make([]byte, 64)
+		copy(buf[0:8], magic)
+		binary.LittleEndian.PutUint64(buf[8:16], packetLen)
 
-	if err := os.WriteFile(parPath, buf, 0o644); err != nil {
-		t.Fatalf("WriteFile: %v", err)
-	}
+		if err := os.WriteFile(parPath, buf, 0o644); err != nil {
+			t.Fatalf("WriteFile: %v", err)
+		}
 
-	_, err := ParseFileDescriptions(parPath)
-	if err == nil {
-		t.Fatal("ParseFileDescriptions expected error on massive packetLen, got nil")
-	}
+		_, err := ParseFileDescriptions(parPath)
+		if err == nil {
+			t.Fatal("ParseFileDescriptions expected error on standalone malformed packetLen, got nil")
+		}
+	})
+
+	t.Run("valid packet after malformed header is recovered", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		parPath := filepath.Join(tmpDir, "test.par2")
+
+		packetLen := uint64(1024 * 1024 * 1024) // 1GB
+		badHdr := make([]byte, 64)
+		copy(badHdr[0:8], magic)
+		binary.LittleEndian.PutUint64(badHdr[8:16], packetLen)
+
+		setID := [16]byte{0x42}
+		fileID := [16]byte{0x01}
+		fileDescBody := buildFileDescBody(fileID, [16]byte{}, [16]byte{}, 100, "recovered.bin")
+		validPkt := buildPacket(setID, typeFileDesc, fileDescBody)
+
+		content := append(append([]byte(nil), badHdr...), validPkt...)
+		if err := os.WriteFile(parPath, content, 0o644); err != nil {
+			t.Fatalf("WriteFile: %v", err)
+		}
+
+		got, err := ParseFileDescriptions(parPath)
+		if err != nil {
+			t.Fatalf("ParseFileDescriptions failed: %v", err)
+		}
+		if len(got) != 1 || got[0].FileName != "recovered.bin" {
+			t.Fatalf("got = %+v, want 1 file recovered.bin", got)
+		}
+	})
+
+	t.Run("valid packet before malformed header is recovered", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		parPath := filepath.Join(tmpDir, "test.par2")
+
+		setID := [16]byte{0x42}
+		fileID := [16]byte{0x01}
+		fileDescBody := buildFileDescBody(fileID, [16]byte{}, [16]byte{}, 100, "recovered.bin")
+		validPkt := buildPacket(setID, typeFileDesc, fileDescBody)
+
+		packetLen := uint64(1024 * 1024 * 1024) // 1GB
+		badHdr := make([]byte, 64)
+		copy(badHdr[0:8], magic)
+		binary.LittleEndian.PutUint64(badHdr[8:16], packetLen)
+
+		content := append(append([]byte(nil), validPkt...), badHdr...)
+		if err := os.WriteFile(parPath, content, 0o644); err != nil {
+			t.Fatalf("WriteFile: %v", err)
+		}
+
+		got, err := ParseFileDescriptions(parPath)
+		if err != nil {
+			t.Fatalf("ParseFileDescriptions failed: %v", err)
+		}
+		if len(got) != 1 || got[0].FileName != "recovered.bin" {
+			t.Fatalf("got = %+v, want 1 file recovered.bin", got)
+		}
+	})
 }
 
 func TestParsePar2Set_MainPacket(t *testing.T) {
@@ -226,10 +284,11 @@ func TestParsePar2Set_MainPacket(t *testing.T) {
 }
 
 // TestParsePar2Set_PacketLengthBoundary exercises the `packetLen < 64`
-// boundary directly: 64 is the minimum valid packet length (a zero-length
-// body), so 63 must be rejected and 64 accepted.
+// and modulo-4 alignment boundaries: 64 is the minimum valid packet length
+// (a zero-length body) and packet lengths must be divisible by 4. Invalid
+// lengths must be rejected and rescanned, while valid lengths are accepted.
 func TestParsePar2Set_PacketLengthBoundary(t *testing.T) {
-	t.Run("packetLen below header size is rejected", func(t *testing.T) {
+	t.Run("packetLen below header size is rejected and rescanned", func(t *testing.T) {
 		tmpDir := t.TempDir()
 		parPath := filepath.Join(tmpDir, "test.par2")
 
@@ -237,12 +296,47 @@ func TestParsePar2Set_PacketLengthBoundary(t *testing.T) {
 		copy(buf[0:8], magic)
 		binary.LittleEndian.PutUint64(buf[8:16], 63) // < 64: shorter than the header itself
 
-		if err := os.WriteFile(parPath, buf, 0o644); err != nil {
+		setID := [16]byte{0x07}
+		creatorPkt := buildPacket(setID, typeCreator, []byte("valid-after-bad-len\x00"))
+		content := append(append([]byte(nil), buf...), creatorPkt...)
+
+		if err := os.WriteFile(parPath, content, 0o644); err != nil {
 			t.Fatalf("WriteFile: %v", err)
 		}
 
-		if _, err := ParsePar2Set(parPath); err == nil {
-			t.Fatal("ParsePar2Set: expected error for packetLen=63, got nil")
+		set, err := ParsePar2Set(parPath)
+		if err != nil {
+			t.Fatalf("ParsePar2Set failed: %v", err)
+		}
+		if set.Creator != "valid-after-bad-len" {
+			t.Errorf("Creator = %q, want %q", set.Creator, "valid-after-bad-len")
+		}
+	})
+
+	t.Run("packetLen not divisible by 4 is rejected and rescanned", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		parPath := filepath.Join(tmpDir, "test.par2")
+
+		setID := [16]byte{0x07}
+		// Build packet with 2 bytes body -> total packetLen = 66, which is not divisible by 4.
+		unalignedPkt := buildPacket(setID, typeCreator, []byte("ab"))
+		if binary.LittleEndian.Uint64(unalignedPkt[8:16]) != 66 {
+			t.Fatalf("expected packetLen=66, got %d", binary.LittleEndian.Uint64(unalignedPkt[8:16]))
+		}
+
+		validPkt := buildPacket(setID, typeCreator, []byte("valid-after-unaligned\x00\x00\x00"))
+		content := append(append([]byte(nil), unalignedPkt...), validPkt...)
+
+		if err := os.WriteFile(parPath, content, 0o644); err != nil {
+			t.Fatalf("WriteFile: %v", err)
+		}
+
+		set, err := ParsePar2Set(parPath)
+		if err != nil {
+			t.Fatalf("ParsePar2Set failed: %v", err)
+		}
+		if set.Creator != "valid-after-unaligned" {
+			t.Errorf("Creator = %q, want %q", set.Creator, "valid-after-unaligned")
 		}
 	})
 
@@ -278,7 +372,7 @@ func TestParsePar2Set_MainBodyLengthBoundary(t *testing.T) {
 		tmpDir := t.TempDir()
 		parPath := filepath.Join(tmpDir, "test.par2")
 
-		shortBody := []byte{1, 2, 3, 4, 5, 6, 7} // 7 bytes — can't hold a uint64 sliceSize
+		shortBody := []byte{1, 2, 3, 4} // 4 bytes — divisible by 4 (packetLen=68), but can't hold a uint64 sliceSize
 		pkt := buildPacket(setID, typeMain, shortBody)
 
 		if err := os.WriteFile(parPath, pkt, 0o644); err != nil {
@@ -615,7 +709,7 @@ func TestParsePar2Set_MultiplePacketTypes(t *testing.T) {
 		buildFileDescBody(fileID, [16]byte{0x11}, [16]byte{0x22}, 8192, "test.bin"))
 
 	// Recovery packet.
-	recPkt := buildPacket(setID, typeRecovery, make([]byte, 50))
+	recPkt := buildPacket(setID, typeRecovery, make([]byte, 52))
 
 	// Creator packet.
 	creatorPkt := buildPacket(setID, typeCreator, []byte("GoNZBD\x00\x00"))
@@ -873,6 +967,224 @@ func TestParserUnexportedHelpersDirect(t *testing.T) {
 	// Direct references for alignment check
 	_ = handlePacket
 	_ = readNextPacket
+	_ = isValidPacketLen
+	_ = rewindToEmbeddedMagic
+
+	t.Run("isValidPacketLen", func(t *testing.T) {
+		if isValidPacketLen(0, 100) {
+			t.Error("isValidPacketLen(0, 100) = true, want false")
+		}
+		if isValidPacketLen(63, 100) {
+			t.Error("isValidPacketLen(63, 100) = true, want false")
+		}
+		if isValidPacketLen(65, 100) {
+			t.Error("isValidPacketLen(65, 100) = true, want false")
+		}
+		if isValidPacketLen(66, 100) {
+			t.Error("isValidPacketLen(66, 100) = true, want false")
+		}
+		if isValidPacketLen(67, 100) {
+			t.Error("isValidPacketLen(67, 100) = true, want false")
+		}
+		if isValidPacketLen(100, 80) {
+			t.Error("isValidPacketLen(100, 80) = true, want false (exceeds fileSize)")
+		}
+		if !isValidPacketLen(64, 64) {
+			t.Error("isValidPacketLen(64, 64) = false, want true")
+		}
+		if !isValidPacketLen(68, 100) {
+			t.Error("isValidPacketLen(68, 100) = false, want true")
+		}
+	})
+
+	t.Run("rewindToEmbeddedMagic", func(t *testing.T) {
+		tmpDir := t.TempDir()
+
+		t.Run("embedded magic in boundary", func(t *testing.T) {
+			f, err := os.Create(filepath.Join(tmpDir, "bnd.bin"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer f.Close()
+
+			header := make([]byte, 64)
+			// Place magic starting at header[10]
+			copy(header[10:18], magic)
+			body := make([]byte, 16)
+			// Write 64+16 bytes so file position is at 80
+			if _, err := f.Write(append(header, body...)); err != nil {
+				t.Fatal(err)
+			}
+
+			if err := rewindToEmbeddedMagic(f, 200, header, body); err != nil {
+				t.Fatalf("rewindToEmbeddedMagic failed: %v", err)
+			}
+			pos, err := f.Seek(0, io.SeekCurrent)
+			if err != nil {
+				t.Fatal(err)
+			}
+			// Should rewind to header[10], which is file offset 10
+			if pos != 10 {
+				t.Errorf("pos = %d, want 10", pos)
+			}
+		})
+
+		t.Run("embedded magic in body", func(t *testing.T) {
+			f, err := os.Create(filepath.Join(tmpDir, "body.bin"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer f.Close()
+
+			header := make([]byte, 64)
+			body := make([]byte, 40)
+			// Place magic at body[12]
+			copy(body[12:20], magic)
+			if _, err := f.Write(append(header, body...)); err != nil {
+				t.Fatal(err)
+			}
+
+			if err := rewindToEmbeddedMagic(f, 200, header, body); err != nil {
+				t.Fatalf("rewindToEmbeddedMagic failed: %v", err)
+			}
+			pos, err := f.Seek(0, io.SeekCurrent)
+			if err != nil {
+				t.Fatal(err)
+			}
+			// Should rewind to 64 + 12 = 76
+			if pos != 76 {
+				t.Errorf("pos = %d, want 76", pos)
+			}
+		})
+
+		t.Run("trailing partial magic prefix", func(t *testing.T) {
+			f, err := os.Create(filepath.Join(tmpDir, "tail.bin"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer f.Close()
+
+			header := make([]byte, 64)
+			body := make([]byte, 20)
+			// End body with magic[:5]
+			copy(body[15:20], magic[:5])
+			if _, err := f.Write(append(header, body...)); err != nil {
+				t.Fatal(err)
+			}
+
+			if err := rewindToEmbeddedMagic(f, 200, header, body); err != nil {
+				t.Fatalf("rewindToEmbeddedMagic failed: %v", err)
+			}
+			pos, err := f.Seek(0, io.SeekCurrent)
+			if err != nil {
+				t.Fatal(err)
+			}
+			// Should rewind by 5 bytes from 84 -> 79
+			if pos != 79 {
+				t.Errorf("pos = %d, want 79", pos)
+			}
+		})
+
+		t.Run("trailing partial magic prefix small body", func(t *testing.T) {
+			f, err := os.Create(filepath.Join(tmpDir, "tailsmall.bin"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer f.Close()
+
+			header := make([]byte, 64)
+			// Put magic[:3] at header[62:64] (2 bytes) and body[0:1] (1 byte)
+			copy(header[62:64], magic[:2])
+			body := []byte{magic[2]} // 1 byte body
+			if _, err := f.Write(append(header, body...)); err != nil {
+				t.Fatal(err)
+			}
+
+			if err := rewindToEmbeddedMagic(f, 200, header, body); err != nil {
+				t.Fatalf("rewindToEmbeddedMagic failed: %v", err)
+			}
+			pos, err := f.Seek(0, io.SeekCurrent)
+			if err != nil {
+				t.Fatal(err)
+			}
+			// Rewind by 3 bytes from 65 -> 62
+			if pos != 62 {
+				t.Errorf("pos = %d, want 62", pos)
+			}
+		})
+
+		t.Run("candidate offset within 63 bytes of fileSize does not seek", func(t *testing.T) {
+			f, err := os.Create(filepath.Join(tmpDir, "shorttail.bin"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer f.Close()
+
+			header := make([]byte, 64)
+			body := make([]byte, 20)
+			// End body with 'P' (magic[0])
+			body[19] = magic[0]
+			if _, err := f.Write(append(header, body...)); err != nil {
+				t.Fatal(err)
+			}
+
+			// Total file size is 84 bytes. If it rewound by 1 byte to offset 83,
+			// only 1 byte remains before fileSize, which cannot fit a 64-byte header.
+			if err := rewindToEmbeddedMagic(f, 84, header, body); err != nil {
+				t.Fatalf("rewindToEmbeddedMagic failed: %v", err)
+			}
+			pos, err := f.Seek(0, io.SeekCurrent)
+			if err != nil {
+				t.Fatal(err)
+			}
+			// Should stay at end of file (84) without seeking back
+			if pos != 84 {
+				t.Errorf("pos = %d, want 84", pos)
+			}
+
+			// Also verify ParsePar2Set on a single-packet .par2 file with corrupted MD5
+			// whose body ends with 'P' returns err == nil and len(set.Files) == 0.
+			pkt := buildPacket([16]byte{1}, typeCreator, append(bytes.Repeat([]byte{0x20}, 7), magic[0]))
+			pkt[16] ^= 0xff // corrupt MD5
+			singlePktPath := filepath.Join(tmpDir, "single_corrupt.par2")
+			if err := os.WriteFile(singlePktPath, pkt, 0o644); err != nil {
+				t.Fatal(err)
+			}
+			set, err := ParsePar2Set(singlePktPath)
+			if err != nil {
+				t.Fatalf("ParsePar2Set failed on single corrupt packet: %v", err)
+			}
+			if len(set.Files) != 0 {
+				t.Errorf("len(set.Files) = %d, want 0", len(set.Files))
+			}
+		})
+
+		t.Run("no magic found leaves offset unchanged", func(t *testing.T) {
+			f, err := os.Create(filepath.Join(tmpDir, "none.bin"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer f.Close()
+
+			header := make([]byte, 64)
+			body := make([]byte, 32)
+			if _, err := f.Write(append(header, body...)); err != nil {
+				t.Fatal(err)
+			}
+
+			if err := rewindToEmbeddedMagic(f, 200, header, body); err != nil {
+				t.Fatalf("rewindToEmbeddedMagic failed: %v", err)
+			}
+			pos, err := f.Seek(0, io.SeekCurrent)
+			if err != nil {
+				t.Fatal(err)
+			}
+			// Should remain at 96
+			if pos != 96 {
+				t.Errorf("pos = %d, want 96", pos)
+			}
+		})
+	})
 
 	t.Run("parseIFSCBody short", func(t *testing.T) {
 		got := parseIFSCBody([]byte{1, 2, 3})

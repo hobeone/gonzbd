@@ -2,6 +2,7 @@ package par2
 
 import (
 	"bytes"
+	"encoding/binary"
 	"errors"
 	"hash/crc32"
 	"io"
@@ -40,6 +41,26 @@ func TestReadNextPacketWithOptions(t *testing.T) {
 	for i := 9; i < 16; i++ {
 		shortLen[i] = 0
 	}
+	unalignedLen := append([]byte(nil), creator...)
+	unalignedLen[8] = 66 // packet length not divisible by 4
+	for i := 9; i < 16; i++ {
+		unalignedLen[i] = 0
+	}
+	valid8 := buildPacket(setID, typeCreator, []byte("test\x00\x00\x00\x00"))
+	extendsPastEOFRescans := make([]byte, 120)
+	copy(extendsPastEOFRescans[30:38], magic)
+	binary.LittleEndian.PutUint64(extendsPastEOFRescans[38:46], 120)
+	copy(extendsPastEOFRescans[48:120], valid8)
+
+	embeddedBody := append(bytes.Repeat([]byte{0x77}, 12), creator...)
+	embeddedPkt := buildPacket(setID, typeRecovery, embeddedBody)
+	embeddedPkt[16] ^= 0xff
+
+	straddleBody := append(bytes.Repeat([]byte{0x33}, 8), magic[:4]...)
+	straddlePkt := buildPacket(setID, typeRecovery, straddleBody)
+	straddlePkt[16] ^= 0xff
+	straddleTail := append(append([]byte(nil), magic[4:]...), creator[8:]...)
+	straddleContent := append(append([]byte(nil), straddlePkt...), straddleTail...)
 
 	cases := []struct {
 		name     string
@@ -53,7 +74,12 @@ func TestReadNextPacketWithOptions(t *testing.T) {
 		{name: "a packet failing its MD5 is dropped", content: append(append([]byte(nil), badMD5...), creator...), wantBody: len(creator) - 64},
 		{name: "body over the limit", content: big, opts: ParseOptions{MaxPacketBodySize: constants.MinPar2PacketBodySize}, wantErr: ErrPacketBodySizeExceeded},
 		{name: "a limit under the minimum means the default", content: big, opts: ParseOptions{MaxPacketBodySize: 10}, wantBody: len(big) - 64},
-		{name: "length shorter than a header", content: shortLen},
+		{name: "length shorter than a header alone returns EOF", content: shortLen, wantErr: io.ErrUnexpectedEOF},
+		{name: "length shorter than a header skips to subsequent valid packet", content: append(append([]byte(nil), shortLen...), creator...), wantBody: len(creator) - 64},
+		{name: "length not divisible by 4 skips to subsequent valid packet", content: append(append([]byte(nil), unalignedLen...), creator...), wantBody: len(creator) - 64},
+		{name: "packet extending past EOF skips to subsequent valid packet", content: extendsPastEOFRescans, wantBody: len(valid8) - 64},
+		{name: "embedded magic inside false packet is recovered", content: embeddedPkt, wantBody: len(creator) - 64},
+		{name: "straddling magic prefix across packet tail is recovered", content: straddleContent, wantBody: len(creator) - 64},
 		{name: "empty file", content: nil, wantErr: io.EOF},
 	}
 	for _, tc := range cases {
