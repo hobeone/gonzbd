@@ -38,12 +38,8 @@ file internal/par2/parser.go
 --- anchor
 		if !isValidPacketLen(packetLen, fileSize) {
 			slog.Warn("par2: invalid packet length, scanning for next packet", "length", packetLen, "file_size", fileSize)
-			found, scanErr := scanForMagicWithOptions(f, magic, opts.MaxJunkScanBytes)
-			if scanErr != nil {
+			if _, scanErr := scanForMagicWithOptions(f, magic, opts.MaxJunkScanBytes); scanErr != nil {
 				return [16]byte{}, nil, scanErr
-			}
-			if !found {
-				return [16]byte{}, nil, io.EOF
 			}
 			continue
 		}
@@ -56,12 +52,8 @@ file internal/par2/parser.go
 [packet extending past EOF rescan neutered]
 file internal/par2/parser.go
 --- anchor
-				found, scanErr := scanForMagicWithOptions(f, magic, opts.MaxJunkScanBytes)
-				if scanErr != nil {
+				if _, scanErr := scanForMagicWithOptions(f, magic, opts.MaxJunkScanBytes); scanErr != nil {
 					return [16]byte{}, nil, scanErr
-				}
-				if !found {
-					return [16]byte{}, nil, io.EOF
 				}
 				continue
 --- replace
@@ -73,7 +65,7 @@ file internal/par2/parser.go
 --- anchor
 		if !validatePacketMD5(header, body) {
 			slog.Warn("par2: packet MD5 mismatch, scanning for next packet", "length", packetLen)
-			if seekErr := rewindToEmbeddedMagic(f, header, body); seekErr != nil {
+			if seekErr := rewindToEmbeddedMagic(f, fileSize, header, body); seekErr != nil {
 				return [16]byte{}, nil, seekErr
 			}
 			continue
@@ -106,4 +98,12 @@ file internal/par2/parser.go
 		if bytes.Equal(tail[tailLen-k:tailLen], magic[:k]) {
 --- replace
 		if false {
+--- end
+
+[rewindToEmbeddedMagic fileSize header fit check neutered]
+file internal/par2/parser.go
+--- anchor
+		return curPos >= backtrack && uint64(curPos-backtrack)+64 <= fileSize
+--- replace
+		return curPos >= 0
 --- end

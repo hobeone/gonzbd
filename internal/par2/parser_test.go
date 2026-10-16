@@ -1016,7 +1016,7 @@ func TestParserUnexportedHelpersDirect(t *testing.T) {
 				t.Fatal(err)
 			}
 
-			if err := rewindToEmbeddedMagic(f, header, body); err != nil {
+			if err := rewindToEmbeddedMagic(f, 200, header, body); err != nil {
 				t.Fatalf("rewindToEmbeddedMagic failed: %v", err)
 			}
 			pos, err := f.Seek(0, io.SeekCurrent)
@@ -1044,7 +1044,7 @@ func TestParserUnexportedHelpersDirect(t *testing.T) {
 				t.Fatal(err)
 			}
 
-			if err := rewindToEmbeddedMagic(f, header, body); err != nil {
+			if err := rewindToEmbeddedMagic(f, 200, header, body); err != nil {
 				t.Fatalf("rewindToEmbeddedMagic failed: %v", err)
 			}
 			pos, err := f.Seek(0, io.SeekCurrent)
@@ -1072,7 +1072,7 @@ func TestParserUnexportedHelpersDirect(t *testing.T) {
 				t.Fatal(err)
 			}
 
-			if err := rewindToEmbeddedMagic(f, header, body); err != nil {
+			if err := rewindToEmbeddedMagic(f, 200, header, body); err != nil {
 				t.Fatalf("rewindToEmbeddedMagic failed: %v", err)
 			}
 			pos, err := f.Seek(0, io.SeekCurrent)
@@ -1100,7 +1100,7 @@ func TestParserUnexportedHelpersDirect(t *testing.T) {
 				t.Fatal(err)
 			}
 
-			if err := rewindToEmbeddedMagic(f, header, body); err != nil {
+			if err := rewindToEmbeddedMagic(f, 200, header, body); err != nil {
 				t.Fatalf("rewindToEmbeddedMagic failed: %v", err)
 			}
 			pos, err := f.Seek(0, io.SeekCurrent)
@@ -1110,6 +1110,52 @@ func TestParserUnexportedHelpersDirect(t *testing.T) {
 			// Rewind by 3 bytes from 65 -> 62
 			if pos != 62 {
 				t.Errorf("pos = %d, want 62", pos)
+			}
+		})
+
+		t.Run("candidate offset within 63 bytes of fileSize does not seek", func(t *testing.T) {
+			f, err := os.Create(filepath.Join(tmpDir, "shorttail.bin"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer f.Close()
+
+			header := make([]byte, 64)
+			body := make([]byte, 20)
+			// End body with 'P' (magic[0])
+			body[19] = magic[0]
+			if _, err := f.Write(append(header, body...)); err != nil {
+				t.Fatal(err)
+			}
+
+			// Total file size is 84 bytes. If it rewound by 1 byte to offset 83,
+			// only 1 byte remains before fileSize, which cannot fit a 64-byte header.
+			if err := rewindToEmbeddedMagic(f, 84, header, body); err != nil {
+				t.Fatalf("rewindToEmbeddedMagic failed: %v", err)
+			}
+			pos, err := f.Seek(0, io.SeekCurrent)
+			if err != nil {
+				t.Fatal(err)
+			}
+			// Should stay at end of file (84) without seeking back
+			if pos != 84 {
+				t.Errorf("pos = %d, want 84", pos)
+			}
+
+			// Also verify ParsePar2Set on a single-packet .par2 file with corrupted MD5
+			// whose body ends with 'P' returns err == nil and len(set.Files) == 0.
+			pkt := buildPacket([16]byte{1}, typeCreator, append(bytes.Repeat([]byte{0x20}, 7), magic[0]))
+			pkt[16] ^= 0xff // corrupt MD5
+			singlePktPath := filepath.Join(tmpDir, "single_corrupt.par2")
+			if err := os.WriteFile(singlePktPath, pkt, 0o644); err != nil {
+				t.Fatal(err)
+			}
+			set, err := ParsePar2Set(singlePktPath)
+			if err != nil {
+				t.Fatalf("ParsePar2Set failed on single corrupt packet: %v", err)
+			}
+			if len(set.Files) != 0 {
+				t.Errorf("len(set.Files) = %d, want 0", len(set.Files))
 			}
 		})
 
@@ -1126,7 +1172,7 @@ func TestParserUnexportedHelpersDirect(t *testing.T) {
 				t.Fatal(err)
 			}
 
-			if err := rewindToEmbeddedMagic(f, header, body); err != nil {
+			if err := rewindToEmbeddedMagic(f, 200, header, body); err != nil {
 				t.Fatalf("rewindToEmbeddedMagic failed: %v", err)
 			}
 			pos, err := f.Seek(0, io.SeekCurrent)

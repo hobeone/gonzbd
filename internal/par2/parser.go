@@ -232,7 +232,18 @@ func isValidPacketLen(packetLen, fileSize uint64) bool {
 // recovery slice with a single corrupted body byte), the file offset stays at
 // the end of body so the parser advances to the next packet without tripping
 // MaxJunkScanBytes.
-func rewindToEmbeddedMagic(f *os.File, header, body []byte) error {
+//
+// If seeking back to the candidate position would leave fewer than 64 bytes
+// before fileSize (where no valid packet header can fit), it avoids rewinding
+// into the trailing short tail, allowing the parser to read to EOF cleanly.
+func rewindToEmbeddedMagic(f *os.File, fileSize uint64, header, body []byte) error {
+	curPos, err := f.Seek(0, io.SeekCurrent)
+	if err != nil {
+		return err
+	}
+	fitsHeader := func(backtrack int64) bool {
+		return curPos >= backtrack && uint64(curPos-backtrack)+64 <= fileSize //nolint:gosec // G115: curPos >= backtrack ensures non-negative
+	}
 	totalAfterStart := 63 + len(body)
 	// Check magic starting inside header[1:64] (which may straddle up to 7
 	// bytes into body).
@@ -242,13 +253,19 @@ func rewindToEmbeddedMagic(f *os.File, header, body []byte) error {
 	copy(boundary[63:63+boundOverlap], body[:boundOverlap])
 	if idx := bytes.Index(boundary[:63+boundOverlap], magic); idx >= 0 {
 		backtrack := int64(totalAfterStart - idx)
-		_, err := f.Seek(-backtrack, io.SeekCurrent)
-		return err
+		if fitsHeader(backtrack) {
+			_, err := f.Seek(-backtrack, io.SeekCurrent)
+			return err
+		}
+		return nil
 	}
 	if idx := bytes.Index(body, magic); idx >= 0 {
 		backtrack := int64(len(body) - idx)
-		_, err := f.Seek(-backtrack, io.SeekCurrent)
-		return err
+		if fitsHeader(backtrack) {
+			_, err := f.Seek(-backtrack, io.SeekCurrent)
+			return err
+		}
+		return nil
 	}
 	// Check whether the last 1..7 bytes of (header[1:64] + body) match a
 	// prefix of magic that could complete in the bytes immediately following
@@ -264,8 +281,12 @@ func rewindToEmbeddedMagic(f *os.File, header, body []byte) error {
 	}
 	for k := tailLen; k >= 1; k-- {
 		if bytes.Equal(tail[tailLen-k:tailLen], magic[:k]) {
-			_, err := f.Seek(-int64(k), io.SeekCurrent)
-			return err
+			backtrack := int64(k)
+			if fitsHeader(backtrack) {
+				_, err := f.Seek(-backtrack, io.SeekCurrent)
+				return err
+			}
+			return nil
 		}
 	}
 	return nil
@@ -289,12 +310,8 @@ func readNextPacketWithOptions(f *os.File, fileSize uint64, header []byte, opts 
 
 		if !bytes.Equal(header[0:8], magic) {
 			// Scan forward up to MaxJunkScanBytes to find the next magic.
-			found, scanErr := scanForMagicWithOptions(f, magic, opts.MaxJunkScanBytes)
-			if scanErr != nil {
+			if _, scanErr := scanForMagicWithOptions(f, magic, opts.MaxJunkScanBytes); scanErr != nil {
 				return [16]byte{}, nil, scanErr
-			}
-			if !found {
-				return [16]byte{}, nil, io.EOF
 			}
 			continue
 		}
@@ -302,12 +319,8 @@ func readNextPacketWithOptions(f *os.File, fileSize uint64, header []byte, opts 
 		packetLen := binary.LittleEndian.Uint64(header[8:16])
 		if !isValidPacketLen(packetLen, fileSize) {
 			slog.Warn("par2: invalid packet length, scanning for next packet", "length", packetLen, "file_size", fileSize)
-			found, scanErr := scanForMagicWithOptions(f, magic, opts.MaxJunkScanBytes)
-			if scanErr != nil {
+			if _, scanErr := scanForMagicWithOptions(f, magic, opts.MaxJunkScanBytes); scanErr != nil {
 				return [16]byte{}, nil, scanErr
-			}
-			if !found {
-				return [16]byte{}, nil, io.EOF
 			}
 			continue
 		}
@@ -323,12 +336,8 @@ func readNextPacketWithOptions(f *os.File, fileSize uint64, header []byte, opts 
 				if _, seekErr := f.Seek(-int64(n), io.SeekCurrent); seekErr != nil {
 					return [16]byte{}, nil, seekErr
 				}
-				found, scanErr := scanForMagicWithOptions(f, magic, opts.MaxJunkScanBytes)
-				if scanErr != nil {
+				if _, scanErr := scanForMagicWithOptions(f, magic, opts.MaxJunkScanBytes); scanErr != nil {
 					return [16]byte{}, nil, scanErr
-				}
-				if !found {
-					return [16]byte{}, nil, io.EOF
 				}
 				continue
 			}
@@ -337,7 +346,7 @@ func readNextPacketWithOptions(f *os.File, fileSize uint64, header []byte, opts 
 
 		if !validatePacketMD5(header, body) {
 			slog.Warn("par2: packet MD5 mismatch, scanning for next packet", "length", packetLen)
-			if seekErr := rewindToEmbeddedMagic(f, header, body); seekErr != nil {
+			if seekErr := rewindToEmbeddedMagic(f, fileSize, header, body); seekErr != nil {
 				return [16]byte{}, nil, seekErr
 			}
 			continue
