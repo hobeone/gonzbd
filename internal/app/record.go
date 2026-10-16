@@ -516,9 +516,10 @@ type nopRecordStore struct{}
 
 func (nopRecordStore) ApplyRecord(context.Context, []durability.RecordBatch) error { return nil }
 
-// recorderFlushTimeout bounds the two flushes whose callers must not block:
-// the finalizer's persistAndCommit, and the hand-over to post-processing,
-// which holds the post-processing admission. It covers the wait for wmu and
+// recorderFlushTimeout bounds the three flushes whose callers must not block:
+// the finalizer's persistAndCommit, the hand-over to post-processing, which
+// holds the post-processing admission, and the download-complete report's
+// (reportDownloadComplete). It covers the wait for wmu and
 // the write. Shutdown's flush has its own step budget instead.
 const recorderFlushTimeout = 2 * time.Second
 

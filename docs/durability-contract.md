@@ -185,11 +185,27 @@ And three ways out:
   transaction with `mu` released. On a store error it merges the snapshot
   back before releasing `wmu`. It runs every
   `defaultRecordInterval` (5 s) from `recorder.run`, under `app.ctx`, which
-  is what bounds a crash's rework (B1); and synchronously at three
+  is what bounds a crash's rework (B1); and synchronously at four
   sites — `git grep -n -E 'recorder\.flush\(' -- '*.go' ':!*_test.go'` returns
-  3 lines:
+  4 lines:
   - `Application.Shutdown`, after the assembler and the dispatcher have
     stopped, on Shutdown's step budget;
+  - `reportDownloadComplete`, before the report that moves a complete job from
+    `Fetching` to `Assessing`, bounded by `recorderFlushTimeout`: the
+    dispatcher persists the new position on its next tick, and restore
+    re-checks no completeness for a job past `Fetching`, so a file's rows and
+    `complete=1` must be in SQLite first. A flush that fails is logged and the
+    report still goes out, since no later report is owed and the job would hold
+    its lease at `Fetching`; the window then stays open until the next
+    successful flush. A `runFetch` report that reads the job complete between
+    `completeFinalizedFile`'s `MarkFileComplete` and `markFileDirty` flushes
+    the last file's rows but not its `complete` flag; a crash there costs the
+    next start one verification read of that file, which has rows and fsynced
+    bytes. That read does not finish a last file with a permanently failed
+    article, since failures are not restored for a `complete=0` file, so the
+    job restores at `Assessing` incomplete
+    (`TestReportDownloadComplete_RecordsTheFileBeforeTheReport`,
+    `TestReportDownloadComplete_ReportsDespiteAFailedFlush`);
   - `enqueuePostProc`, after `CloseJobHandles` and before post-processing can
     change the bytes the rows describe, bounded by `recorderFlushTimeout`
     (2 s), since it holds the post-processing admission;
@@ -226,9 +242,10 @@ And three ways out:
 deliberately held across `ApplyRecord`, by every `flush`, `apply` and
 `untrust` call:
 `git grep -n -E '(recorder|\br)\.(flush|apply|untrust)\(' -- '*.go' ':!*_test.go'`
-returns 9 lines. Four of them run under a deadline: Shutdown's flush (its step
-budget), the hand-over's and the finalizer's flushes (`recorderFlushTimeout`),
-and the untrust (`untrustTimeout`). The other five have none:
+returns 10 lines. Five of them run under a deadline: Shutdown's flush (its step
+budget), the download-complete report's, the hand-over's and the finalizer's
+flushes (`recorderFlushTimeout`), and the untrust (`untrustTimeout`). The other
+five have none:
 
 | Holder | Context |
 |---|---|
@@ -292,9 +309,12 @@ whole-file CRC, peeks the archive, feeds DirectUnpack, calls
 `Job.MarkFileComplete`, marks the file dirty for the recorder, and reports the
 download complete when it was the job's last file. `complete=1` therefore
 reaches SQLite at the next flush; a crash before it costs one verification read
-of the file at the next start, which finishes it by path. The hand-over to
-post-processing does not wait for the background cadence: `enqueuePostProc`
-flushes synchronously.
+of the file at the next start, which finishes it by path unless the file has a
+permanently failed article (see the `reportDownloadComplete` flush site in §1's
+list of flush sites). The report that
+leaves `Fetching` and the hand-over to post-processing do not wait for the
+background cadence: `reportDownloadComplete` and `enqueuePostProc` flush
+synchronously.
 
 **A truncated failed tail is still charged.** Failed bytes come from manifest
 article sizes (`JobProgress.chargeOf` → `FileProgress.FailedBytes`; an
@@ -359,8 +379,10 @@ verification fault would be re-read, and fault again, on every tick.
 
 Every file with `complete=0` and at least one row is read, whatever the job's
 state and the file's fetch policy: a crash between a file's completion and the
-next flush can leave such a file in a job that has already left `Fetching`, so
-no state makes the read unnecessary. For each such file, in order:
+next flush can leave such a file in a job that has already left `Fetching`
+(the flush before the download-complete report narrows that window to a report
+whose flush failed and a `runFetch` report racing the last completion, both
+described with that flush's site above), so no state makes the read unnecessary. For each such file, in order:
 
 | Case | Outcome |
 |---|---|
