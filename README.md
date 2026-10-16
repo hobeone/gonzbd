@@ -1,8 +1,6 @@
 # GoNZBD
 
-A high-performance Usenet binary newsreader written in Go, heavily inspired
-by [SABnzbd](https://sabnzbd.org). GoNZBD targets fresh installations — it
-is not a drop-in replacement for an existing Python SABnzbd install.
+A high-performance automated Usenet binary downloader written in Go.
 
 ## Features
 
@@ -621,11 +619,7 @@ preserved for forward compatibility with planned features.
 
 ## Acknowledgements
 
-GoNZBD is heavily inspired by [SABnzbd](https://sabnzbd.org), the
-original Python-based automated Usenet binary newsreader. The design,
-API schema, and behavioral spec were studied from the SABnzbd source
-code and documentation. GoNZBD is not affiliated with or endorsed by
-the SABnzbd project.
+GoNZBD implements a SABnzbd-compatible HTTP API to support third-party automation tools such as Sonarr, Radarr, and NZB360, referencing public API specifications and documentation. GoNZBD is not affiliated with or endorsed by the SABnzbd project.
 
 ## License
 
