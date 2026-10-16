@@ -403,6 +403,24 @@ func (a *postProcAdmissions) has(j *job.Job) bool {
 	return ok
 }
 
+// hasID reports whether any admitted job instance has the given ID. An
+// admission spans from enqueuePostProc until finalize or cancelled returns,
+// covering the window in finalize where persistAndCommit has deregistered
+// Attempt 1 and retryWithHeldVolumes is registering Attempt 2.
+func (a *postProcAdmissions) hasID(id string) bool {
+	if id == "" {
+		return false
+	}
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	for j := range a.jobs {
+		if j != nil && j.ID() == id {
+			return true
+		}
+	}
+	return false
+}
+
 // unlessHandedOff runs fn unless j is admitted or its admission has ended, and
 // reports whether it ran. mu is held across fn, so no admission of j begins
 // while fn runs: fn must not call into a, and must not block.

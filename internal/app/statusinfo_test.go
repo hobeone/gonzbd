@@ -17,6 +17,11 @@ import (
 
 var _ = (*Application).enqueuePostProc
 var _ = (*pipeline).run
+var _ = parseNZBBackup
+var _ = rowsFitManifest
+var _ = retryFileStates
+var _ = (*Application).newDownloaderLocked
+var _ = (*Application).resumeLocked
 
 func TestApplication_DownloadDirFreeBytes_ReturnsPositiveForRealDir(t *testing.T) {
 	t.Parallel()

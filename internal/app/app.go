@@ -2487,6 +2487,7 @@ func (app *Application) enqueuePostProc(j *job.Job, hdr dispatch.Header, failMsg
 			MetaPasswords:        readNZBMetaPasswords(gen.AdminDir, hdr.NZBBackup),
 			Script:               hdr.Script,
 			PP:                   hdr.PP.Int(),
+			Priority:             int(hdr.Priority),
 			URL:                  hdr.URL,
 			DownloadDir:          downloadDir,
 			FinalDir:             finalDir,
@@ -2625,6 +2626,7 @@ func (app *Application) rebuildJobFromNZB(entry history.Entry) (*job.Job, dispat
 		return nil, dispatch.Header{}, fmt.Errorf("app: retry %s: %w", entry.NzoID, err)
 	}
 	hdr.NZBBackup = entry.NZBBackup
+	hdr.URL = entry.URL
 	return j, hdr, nil
 }
 

@@ -11,6 +11,8 @@ import (
 	"github.com/hobeone/gonzbd/internal/job"
 )
 
+var _ = (*Job).recordScriptOutput
+
 func TestScriptStage_PathTraversalRejected(t *testing.T) {
 	t.Parallel()
 	job, _ := stageJob(t)
@@ -303,5 +305,69 @@ func TestScriptStage_SetScriptDirTakesEffect(t *testing.T) {
 	err := s.Run(t.Context(), &Job{Job: newQueueJob(t, "j", 3), Script: "post.sh"})
 	if err == nil || !strings.Contains(err.Error(), "no script_dir is set") {
 		t.Fatalf("Run after SetScriptDir(\"\") = %v, want the no-script_dir error", err)
+	}
+}
+
+// TestScriptStage_PassesPasswordAndPriority verifies that ScriptStage.Run
+// populates ScriptInput with job.Password and job.Priority so scripts receive
+// them as SAB_PASSWORD and SAB_PRIORITY.
+func TestScriptStage_PassesPasswordAndPriority(t *testing.T) {
+	t.Parallel()
+	j, _ := stageJob(t)
+	j.Password = "secretPassword123"
+	j.Priority = 2
+
+	scriptDir := t.TempDir()
+	outFile := filepath.Join(scriptDir, "out.txt")
+	scriptPath := filepath.Join(scriptDir, "env.sh")
+	writeScript(t, scriptPath, fmt.Appendf(nil, "#!/bin/sh\necho \"$SAB_PASSWORD|$SAB_PRIORITY\" > %s\n", outFile))
+
+	j.Script = "env.sh"
+	stage := NewScriptStage(scriptDir, "/tmp/complete", "test", "", "")
+
+	if err := stage.Run(t.Context(), j); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+
+	data, err := os.ReadFile(outFile)
+	if err != nil {
+		t.Fatalf("reading script output: %v", err)
+	}
+	if got := strings.TrimSpace(string(data)); got != "secretPassword123|2" {
+		t.Errorf("env = %q, want %q", got, "secretPassword123|2")
+	}
+}
+
+// TestScriptStage_RedactSecrets_MasksPasswordInLogs verifies that when
+// RedactSecrets is enabled, job.Password is redacted in recorded output lines.
+func TestScriptStage_RedactSecrets_MasksPasswordInLogs(t *testing.T) {
+	t.Parallel()
+	j, _ := stageJob(t)
+	j.Password = "superSecretPassword"
+	j.Priority = 1
+
+	scriptDir := t.TempDir()
+	scriptPath := filepath.Join(scriptDir, "echo.sh")
+	writeScript(t, scriptPath, []byte("#!/bin/sh\necho \"Password is: $SAB_PASSWORD\"\nexit 0\n"))
+
+	j.Script = "echo.sh"
+	stage := NewScriptStage(scriptDir, "/tmp/complete", "test", "", "")
+	stage.SetRedactSecrets(true)
+
+	if err := stage.Run(t.Context(), j); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+
+	foundRedacted := false
+	for _, line := range j.OutputLines {
+		if strings.Contains(line, "superSecretPassword") {
+			t.Errorf("unredacted password found in OutputLines: %q", line)
+		}
+		if strings.Contains(line, "Password is: **REDACTED**") {
+			foundRedacted = true
+		}
+	}
+	if !foundRedacted {
+		t.Errorf("expected redacted password line in OutputLines, got %v", j.OutputLines)
 	}
 }

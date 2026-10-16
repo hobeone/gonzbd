@@ -156,6 +156,7 @@ type Job struct {
 	MetaPasswords []string // MetaPasswords holds all <meta type="password"> entries from the NZB header, tried in order after Password.
 	Script        string
 	PP            int
+	Priority      int
 	URL           string
 
 	// DownloadDir is the absolute path where the assembler wrote the job's

@@ -405,3 +405,59 @@ func TestRetryWithHeldVolumes_NoEntry(t *testing.T) {
 		t.Error("retryWithHeldVolumes = true for a job with no history entry")
 	}
 }
+
+// A held recovery retry does not emit job_finalized because the retry continues
+// running. Terminal failures do emit job_finalized.
+func TestFinalize_HeldRecoveryRetry_DoesNotEmitJobFinalized(t *testing.T) {
+	t.Parallel()
+	const id = "feedface0651a00e"
+	h := newHeldRecoveryApp(t, id)
+	emitter := &captureEmitter{}
+	h.app.emitter = emitter
+
+	h.app.finalizer.finalize(h.failedPar2Run(h.job))
+
+	if emitter.hasEventType("job_finalized") {
+		t.Errorf("job_finalized was emitted when job was retried with held volumes")
+	}
+}
+
+func TestFinalize_TerminalFailure_EmitsJobFinalized(t *testing.T) {
+	t.Parallel()
+	const id = "feedface0651a00f"
+	h := newHeldRecoveryApp(t, id)
+	emitter := &captureEmitter{}
+	h.app.emitter = emitter
+
+	run := h.failedPar2Run(h.job)
+	run.NZBBackup = "" // cannot retry, terminal failure
+
+	h.app.finalizer.finalize(run)
+
+	if !emitter.hasEventType("job_finalized") {
+		t.Errorf("job_finalized was not emitted for terminal failure")
+	}
+}
+
+// rebuildJobFromNZB preserves entry.URL on the rebuilt dispatch.Header.
+func TestRebuildJobFromNZB_PreservesURL(t *testing.T) {
+	t.Parallel()
+	application, repo, adminDir := newLifecycleTestApp(t)
+	const id = "feedface0651a010"
+	const testURL = "https://usenet.example.com/item.nzb"
+	addRetryableEntry(t, repo, adminDir, id, "")
+
+	entry, err := repo.Get(t.Context(), id)
+	if err != nil {
+		t.Fatalf("repo.Get: %v", err)
+	}
+	entry.URL = testURL
+
+	_, hdr, err := application.rebuildJobFromNZB(*entry)
+	if err != nil {
+		t.Fatalf("rebuildJobFromNZB: %v", err)
+	}
+	if hdr.URL != testURL {
+		t.Errorf("hdr.URL = %q, want %q", hdr.URL, testURL)
+	}
+}

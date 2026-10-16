@@ -87,6 +87,38 @@ func TestHas_NotPresent(t *testing.T) {
 	if p.HasJob(nil) {
 		t.Error("HasJob(nil) = true")
 	}
+	if p.HasJobID("") {
+		t.Error("HasJobID(\"\") = true")
+	}
+	if p.HasJobID("nonexistent") {
+		t.Error("HasJobID(\"nonexistent\") = true")
+	}
+}
+
+func TestHasJobID_MatchesAnyInstanceUnderID(t *testing.T) {
+	block := make(chan struct{})
+	blocker := &recordStage{name: "blocker", block: block}
+	defer close(block)
+
+	p := startProcessor(t, Options{Stages: []Stage{blocker}})
+	running := makeJob(t, "running-id")
+	p.Process(running)
+	waitUntil(t, func() bool {
+		p.busyMu.Lock()
+		b := p.busy
+		p.busyMu.Unlock()
+		return b
+	}, 2*time.Second, "worker busy")
+
+	queued := makeJob(t, "queued-id")
+	p.Process(queued)
+
+	if !p.HasJobID("running-id") {
+		t.Error("HasJobID(running-id) = false while job is in flight")
+	}
+	if !p.HasJobID("queued-id") {
+		t.Error("HasJobID(queued-id) = false while job is queued")
+	}
 }
 
 func TestPPQueue_Len(t *testing.T) {
