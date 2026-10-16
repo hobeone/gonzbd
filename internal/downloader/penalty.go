@@ -38,6 +38,10 @@ func PenaltyFor(err error) time.Duration {
 		// Not a server fault — article absent from this server's spool.
 		// Move on to the next server; no penalty.
 		return 0
+	case errors.Is(err, nntp.ErrIdleClosed):
+		// Connection closed or received an unsolicited timeout while no
+		// command was in flight — normal idle teardown, not a server fault.
+		return 0
 	case errors.Is(err, nntp.ErrAuthRequired):
 		// Server asked for auth unexpectedly mid-session. Treat as transient.
 		return constants.PenaltyShort

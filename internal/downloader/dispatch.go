@@ -726,6 +726,11 @@ func (d *Downloader) fetchArticle(ctx context.Context, srv *Server, serverIdx in
 
 	body, err := c.Fetch(fetchCtx, req.messageID)
 	if err != nil {
+		if errors.Is(err, nntp.ErrIdleClosed) {
+			mc.DropIfMatches(c, d, workerID)
+			d.unmarkTried(req, serverIdx)
+			return nil, false
+		}
 		if errors.Is(err, nntp.ErrNoArticle) {
 			d.log.Debug("article not found", "server", name, "msgid", req.messageID)
 			// The server definitively said no. Try-list entry is
@@ -936,6 +941,11 @@ type managedConn struct {
 	// the parent loop and the handleRequest goroutine that is dialling share
 	// this managedConn. Readers tolerate a stale value; see disconnectChanFor.
 	open atomic.Bool
+
+	// hookAfterGet, if non-nil, runs immediately after Get resolves a live
+	// connection and releases mu. Allows tests to inject a remote idle close
+	// in the microsecond window between mc.Get and c.Fetch.
+	hookAfterGet func(*nntp.Conn)
 }
 
 // isOpen reports whether this slot currently holds a dialled connection.
@@ -944,14 +954,25 @@ func (m *managedConn) isOpen() bool { return m.open.Load() }
 
 func (m *managedConn) Get(ctx context.Context, d *Downloader, srv *Server, workerID string) (*nntp.Conn, error) {
 	m.mu.Lock()
-	defer m.mu.Unlock()
 
 	if m.conn != nil {
-		return m.conn, nil
+		if !m.conn.Closed() {
+			c := m.conn
+			m.mu.Unlock()
+			if m.hookAfterGet != nil {
+				m.hookAfterGet(c)
+			}
+			return c, nil
+		}
+		_ = m.conn.Close() //nolint:errcheck // discarding an already-closed conn
+		m.conn = nil
+		m.open.Store(false)
+		d.setConnConnected(workerID, false)
 	}
 
 	name := srv.Cfg().Name
 	if !srv.Active(time.Now()) {
+		m.mu.Unlock()
 		return nil, errServerPenalized
 	}
 
@@ -966,6 +987,7 @@ func (m *managedConn) Get(ctx context.Context, d *Downloader, srv *Server, worke
 
 	c, err := nntp.Dial(ctx, srv.srv, dialOpts...) //lockio: see managedConn doc comment — mu is also the dial-coalescing lock
 	if err != nil {
+		m.mu.Unlock()
 		return nil, err
 	}
 
@@ -974,6 +996,10 @@ func (m *managedConn) Get(ctx context.Context, d *Downloader, srv *Server, worke
 	m.conn = c
 	m.open.Store(true)
 	d.setConnConnected(workerID, true)
+	m.mu.Unlock()
+	if m.hookAfterGet != nil {
+		m.hookAfterGet(c)
+	}
 	return c, nil
 }
 

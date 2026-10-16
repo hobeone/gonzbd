@@ -13,6 +13,12 @@ var (
 	// disconnect.
 	ErrClosed = errors.New("nntp: connection closed")
 
+	// ErrIdleClosed is returned when a connection closes or receives an
+	// unsolicited server response while no command is in flight. Callers
+	// discard the connection and dial a fresh one without penalizing the
+	// server.
+	ErrIdleClosed = errors.New("nntp: idle connection closed")
+
 	// ErrInvalidState is returned when a Conn method is called in a
 	// state where it is not valid (e.g. Fetch before Authenticate).
 	ErrInvalidState = errors.New("nntp: invalid state")

@@ -102,7 +102,10 @@ slot coalesce their dial attempts:
 - **`conn == nil`**: No connection. `Get()` dials under `mu`, stores the result,
   and returns it. All concurrent `Get()` callers for the same slot block on `mu`
   until the dial resolves.
-- **`conn != nil`**: Connection live. `Get()` returns it immediately.
+- **`conn != nil`**: Connection live. If `conn.Closed()` reports true (e.g. idle
+  teardown by remote server or earlier disconnect), `Get()` discards `conn`,
+  clears worker connectivity tracking, and redials lazily under `mu`. Otherwise,
+  `Get()` returns `conn` immediately.
 - **`Close()` / `DropIfMatches()`**: Sets `conn = nil` under `mu`. The next
   `Get()` re-dials lazily.
 
@@ -290,8 +293,9 @@ Each `nntp.Conn` supports pipelined NNTP commands, bounded by a semaphore
   vanishes silently (without sending FIN or RST) while no command is in flight
   is not detected by `idleTimeoutReader` until either OS TCP keepalive fires or
   the next command is submitted and its read deadline expires (whereas a clean
-  server close that sends FIN is still observed immediately by the parked
-  `runReader`).
+  server close that sends FIN, EOF, or an unsolicited 400/205 timeout is observed
+  immediately by the parked `runReader`, which flags the connection as closed
+  under `ErrIdleClosed`).
 - **Response identity**: FIFO position alone does not establish that a response
   answers the command it was popped against. `pendingCmd.msgID` carries the
   Message-ID the command asked for — `newArticleCmd` emits it and the wire bytes
@@ -329,7 +333,10 @@ Each `nntp.Conn` supports pipelined NNTP commands, bounded by a semaphore
   semaphore slot is released either way.
 - **Connection death**: `finishReader` sets `closed=true`, closes the socket,
   cancels the Conn's internal context, and wakes all pending callers with the
-  fatal error via `wakeOrphans`.
+  fatal error via `wakeOrphans`. When `runReader` terminates before popping any
+  command for the response and the pending FIFO is empty, the cause is classified
+  as an idle disconnect (`ErrIdleClosed`), enabling callers to discard the socket
+  without applying server penalties.
 
 ### Per-connection goroutine limit
 
@@ -381,6 +388,7 @@ part of this contract — changing a duration changes server failover behavior:
 | `ErrInvalidState` (programming error) | `PenaltyShort` | 1 min |
 | `ErrTransient` (bare 4xx) | `PenaltyVeryShort` | 6 sec |
 | `ErrNoArticle` (430/423) | — | 0 (no penalty) |
+| `ErrIdleClosed` (idle disconnect/unsolicited timeout) | — | 0 (no penalty) |
 | Anything else | `PenaltyUnknown` | 3 min |
 
 `ErrDesynced` draws the same duration as the catch-all, and has its own row

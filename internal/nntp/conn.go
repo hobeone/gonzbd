@@ -109,6 +109,12 @@ func (c *Conn) State() State {
 	return c.state
 }
 
+// Closed reports whether the connection has been closed by the caller or by
+// runReader exiting.
+func (c *Conn) Closed() bool {
+	return c.closed.Load()
+}
+
 // SSLInfo returns "TLSv1.x / CIPHER_NAME" for a TLS-wrapped connection,
 // or empty string for plain NNTP.
 func (c *Conn) SSLInfo() string { return c.sslInfo }

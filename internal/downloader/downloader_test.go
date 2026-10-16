@@ -69,6 +69,9 @@ type mockNNTP struct {
 
 	// wg tracks connection goroutines so tests can Shutdown cleanly.
 	wg sync.WaitGroup
+
+	connsMu sync.Mutex
+	conns   []net.Conn
 }
 
 // mockOption configures a mockNNTP before the accept loop starts.
@@ -151,8 +154,43 @@ func (ms *mockNNTP) acceptLoop() {
 			defer ms.wg.Done()
 			defer func() { _ = c.Close() }()
 			ms.dials.Add(1)
+			ms.addConn(c)
+			defer ms.removeConn(c)
 			ms.handleConn(c)
 		}(c)
+	}
+}
+
+func (ms *mockNNTP) addConn(c net.Conn) {
+	ms.connsMu.Lock()
+	defer ms.connsMu.Unlock()
+	ms.conns = append(ms.conns, c)
+}
+
+func (ms *mockNNTP) removeConn(c net.Conn) {
+	ms.connsMu.Lock()
+	defer ms.connsMu.Unlock()
+	for i, conn := range ms.conns {
+		if conn == c {
+			ms.conns = append(ms.conns[:i], ms.conns[i+1:]...)
+			break
+		}
+	}
+}
+
+// closeIdleConns closes all active client connections after optionally sending
+// a response line (e.g. "400 Idle timeout\r\n").
+func (ms *mockNNTP) closeIdleConns(response string) {
+	ms.connsMu.Lock()
+	conns := make([]net.Conn, len(ms.conns))
+	copy(conns, ms.conns)
+	ms.connsMu.Unlock()
+
+	for _, c := range conns {
+		if response != "" {
+			_, _ = c.Write([]byte(response))
+		}
+		_ = c.Close()
 	}
 }
 

@@ -1548,6 +1548,106 @@ func TestFetchArticle_FetchFailureDuringShutdownSuppressesTelemetry(t *testing.T
 	}
 }
 
+func TestFetchArticle_IdleClosedConnRedialsWithoutPenalty(t *testing.T) {
+	ms := newMockNNTP(t)
+	ms.addArticle("art1@h", "body 1")
+	ms.addArticle("art2@h", "body 2")
+
+	srv := testServer(t, "s", ms.addr)
+	d := &Downloader{
+		dispatcher:  newTestDispatcher(t),
+		tracker:     newDispatchTracker(),
+		log:         slog.New(slog.DiscardHandler),
+		opts:        Options{NoPenalties: true},
+		completions: make(chan *ArticleResult, 2),
+		limiter:     bpsmeter.NewLimiter(0),
+	}
+	d.pauseCtx, d.pauseCancel = context.WithCancel(context.Background())
+	defer d.pauseCancel()
+
+	j, m := makeJobWithArticles(t, []string{"art1@h", "art2@h"})
+	addTestJob(t, d.dispatcher, j, m)
+
+	req1 := &articleRequest{job: j, messageID: "art1@h"}
+	mc := &managedConn{}
+	defer mc.Close(d, "worker1")
+
+	// 1. Worker fetches article 1 on mc.
+	body1, ok1 := d.fetchArticle(t.Context(), srv, 0, mc, req1, "worker1")
+	if !ok1 || !bytes.Equal(body1, []byte("body 1\n")) {
+		t.Fatalf("first fetchArticle failed: ok=%v, body=%q", ok1, string(body1))
+	}
+	if mc.conn == nil {
+		t.Fatal("expected mc.conn to be non-nil after first fetch")
+	}
+
+	// 2. While mc.conn sits idle, the server closes idle connections with 400 Idle timeout.
+	ms.closeIdleConns("400 Idle timeout\r\n")
+
+	// Wait for mc.conn.Closed() to become true (or timeout).
+	deadline := time.Now().Add(2 * time.Second)
+	for !mc.conn.Closed() && time.Now().Before(deadline) {
+		time.Sleep(10 * time.Millisecond)
+	}
+	if !mc.conn.Closed() {
+		t.Fatal("mc.conn was not closed after idle server disconnect")
+	}
+
+	// 3. Fetch article 2 via fetchArticle: mc.Get must discard the idle-closed conn,
+	// dial a fresh connection, fetch article 2 successfully, record 0 bad connections, and 0 penalty.
+	req2 := &articleRequest{job: j, artIdx: 1, messageID: "art2@h"}
+	body2, ok2 := d.fetchArticle(t.Context(), srv, 0, mc, req2, "worker1")
+	if !ok2 || !bytes.Equal(body2, []byte("body 2\n")) {
+		t.Fatalf("second fetchArticle failed after idle close: ok=%v, body=%q", ok2, string(body2))
+	}
+	if srv.BadConnections() != 0 {
+		t.Errorf("BadConnections = %d, want 0 (idle close is not a server fault)", srv.BadConnections())
+	}
+	if !srv.Active(time.Now()) {
+		t.Errorf("srv.Active = false, want true (no penalty applied)")
+	}
+
+	// 4. Test the race path: mc.Get returns c while open, but c closes while idle
+	// with ErrIdleClosed right before c.Fetch executes.
+	req3 := &articleRequest{job: j, artIdx: 1, messageID: "art2@h"}
+	key3 := keyFor(req3.job, req3.artIdx)
+	mask3 := serverMask{}
+	mask3.set(0)
+	d.tracker.Lock()
+	d.tracker.SetTriedLocked(key3, mask3)
+	d.tracker.Unlock()
+
+	mc.hookAfterGet = func(c *nntp.Conn) {
+		ms.closeIdleConns("400 Idle timeout\r\n")
+		dl := time.Now().Add(2 * time.Second)
+		for !c.Closed() && time.Now().Before(dl) {
+			time.Sleep(5 * time.Millisecond)
+		}
+	}
+
+	body3, ok3 := d.fetchArticle(t.Context(), srv, 0, mc, req3, "worker1")
+	if ok3 || body3 != nil {
+		t.Fatalf("race fetchArticle returned ok=%v, body=%q, want (nil, false)", ok3, string(body3))
+	}
+	if mc.conn != nil {
+		t.Errorf("mc.conn was not dropped on ErrIdleClosed")
+	}
+
+	d.tracker.Lock()
+	gotTryList, _ := d.tracker.TryListLocked(key3)
+	d.tracker.Unlock()
+	if gotTryList.has(0) {
+		t.Errorf("request was not unmarked tried on ErrIdleClosed")
+	}
+
+	if srv.BadConnections() != 0 {
+		t.Errorf("BadConnections = %d, want 0 on ErrIdleClosed race", srv.BadConnections())
+	}
+	if !srv.Active(time.Now()) {
+		t.Errorf("srv.Active = false, want true on ErrIdleClosed race")
+	}
+}
+
 // Verify that when multiple concurrent fetch requests share a single managedConn
 // and a connection hangup/teardown occurs, BadConnections metric is incremented
 // exactly once (by the first notifier) and all in-flight article requests are

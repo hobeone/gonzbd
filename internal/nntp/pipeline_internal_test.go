@@ -1,8 +1,10 @@
 package nntp
 
 import (
+	"bufio"
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"net"
 	"strings"
@@ -432,6 +434,239 @@ func TestMessageIDFromStatusLine(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestRunReader_IdleDisconnectClassified(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name        string
+		arrange     func(*Conn) *pendingCmd
+		respond     func(net.Conn)
+		wantIdleErr bool
+		wantSubstr  string
+	}{
+		{
+			name:        "EOF while idle",
+			arrange:     func(*Conn) *pendingCmd { return nil },
+			respond:     func(peer net.Conn) { _ = peer.Close() },
+			wantIdleErr: true,
+			wantSubstr:  io.EOF.Error(),
+		},
+		{
+			name:        "400 idle timeout while idle",
+			arrange:     func(*Conn) *pendingCmd { return nil },
+			respond:     func(peer net.Conn) { _, _ = peer.Write([]byte("400 Idle timeout\r\n")) },
+			wantIdleErr: true,
+			wantSubstr:  "unsolicited response 400",
+		},
+		{
+			name:        "205 closing connection while idle",
+			arrange:     func(*Conn) *pendingCmd { return nil },
+			respond:     func(peer net.Conn) { _, _ = peer.Write([]byte("205 closing connection\r\n")) },
+			wantIdleErr: true,
+			wantSubstr:  "unsolicited response 205",
+		},
+		{
+			name:        "unsolicited non-teardown status while idle",
+			arrange:     func(*Conn) *pendingCmd { return nil },
+			respond:     func(peer net.Conn) { _, _ = peer.Write([]byte("223 0 <art@host>\r\n")); _ = peer.Close() },
+			wantIdleErr: true,
+			wantSubstr:  "unsolicited response 223",
+		},
+		{
+			name: "EOF with command in flight (not idle)",
+			arrange: func(c *Conn) *pendingCmd {
+				pc := newPending(cmdBody, "art@host")
+				c.pending = append(c.pending, pc)
+				c.sem <- struct{}{}
+				return pc
+			},
+			respond:     func(peer net.Conn) { _ = peer.Close() },
+			wantIdleErr: false,
+			wantSubstr:  io.EOF.Error(),
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			c, peer := newTestConn(t, 1)
+			_ = tc.arrange(c)
+			go c.runReader()
+			tc.respond(peer)
+
+			<-c.readerDone
+
+			if !c.Closed() {
+				t.Errorf("c.Closed() = false, want true")
+			}
+			err := c.closeError()
+			if err == nil {
+				t.Fatalf("c.closeError() = nil, want error containing %q", tc.wantSubstr)
+			}
+			if !strings.Contains(err.Error(), tc.wantSubstr) {
+				t.Errorf("c.closeError() = %q, want substring %q", err.Error(), tc.wantSubstr)
+			}
+			gotIdle := errors.Is(err, ErrIdleClosed)
+			if gotIdle != tc.wantIdleErr {
+				t.Errorf("errors.Is(err, ErrIdleClosed) = %v, want %v (err: %v)", gotIdle, tc.wantIdleErr, err)
+			}
+		})
+	}
+}
+
+func TestFinishReaderPrePop_Direct(t *testing.T) {
+	t.Parallel()
+
+	t.Run("empty pending wraps with ErrIdleClosed", func(t *testing.T) {
+		t.Parallel()
+		c, _ := newPipeConn(t)
+		c.finishReaderWithMode(io.EOF, true)
+
+		if !c.Closed() {
+			t.Error("c.Closed() = false, want true")
+		}
+		if !errors.Is(c.closeError(), ErrIdleClosed) {
+			t.Errorf("closeError = %v, want errors.Is(..., ErrIdleClosed)", c.closeError())
+		}
+		if !errors.Is(c.closeError(), io.EOF) {
+			t.Errorf("closeError = %v, want errors.Is(..., io.EOF)", c.closeError())
+		}
+	})
+
+	t.Run("non-empty pending does not wrap with ErrIdleClosed", func(t *testing.T) {
+		t.Parallel()
+		c, _ := newPipeConn(t)
+		pc := newPending(cmdStat, "a@h")
+		c.pending = append(c.pending, pc)
+
+		c.finishReaderWithMode(io.EOF, true)
+
+		if !c.Closed() {
+			t.Error("c.Closed() = false, want true")
+		}
+		if errors.Is(c.closeError(), ErrIdleClosed) {
+			t.Errorf("closeError = %v, want NOT errors.Is(..., ErrIdleClosed)", c.closeError())
+		}
+	})
+
+	t.Run("finishReaderPrePop helper calls finishReaderWithMode true", func(t *testing.T) {
+		t.Parallel()
+		c, _ := newPipeConn(t)
+		c.finishReaderPrePop(io.EOF)
+
+		if !errors.Is(c.closeError(), ErrIdleClosed) {
+			t.Errorf("closeError = %v, want errors.Is(..., ErrIdleClosed)", c.closeError())
+		}
+	})
+}
+
+func TestIsServerIdleDisconnect(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		code int
+		text string
+		want bool
+	}{
+		{205, "closing connection", true},
+		{205, "bye", true},
+		{400, "Idle timeout", true},
+		{400, "idle connection closed", true},
+		{400, "read timeout", true},
+		{400, "service unavailable", false},
+		{500, "syntax error", false},
+		{220, "article follows", false},
+	}
+	for _, tc := range cases {
+		if got := isServerIdleDisconnect(tc.code, tc.text); got != tc.want {
+			t.Errorf("isServerIdleDisconnect(%d, %q) = %v, want %v", tc.code, tc.text, got, tc.want)
+		}
+	}
+}
+
+func TestRunReader_UnsolicitedTeardownWakesPendingWithIdleClosed(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name    string
+		respond func(net.Conn)
+	}{
+		{
+			name: "205 closing connection",
+			respond: func(peer net.Conn) {
+				_, _ = peer.Write([]byte("205 closing connection\r\n"))
+				_ = peer.Close()
+			},
+		},
+		{
+			name: "400 Idle timeout",
+			respond: func(peer net.Conn) {
+				_, _ = peer.Write([]byte("400 Idle timeout\r\n"))
+				_ = peer.Close()
+			},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			c, peer := newTestConn(t, 1)
+			pc := newPending(cmdBody, "art@host")
+			c.pending = append(c.pending, pc)
+			c.sem <- struct{}{}
+
+			go c.runReader()
+			tc.respond(peer)
+
+			<-c.readerDone
+			if !c.Closed() {
+				t.Error("c.Closed() = false, want true")
+			}
+			if !errors.Is(c.closeError(), ErrIdleClosed) {
+				t.Errorf("closeError = %v, want errors.Is(..., ErrIdleClosed)", c.closeError())
+			}
+
+			select {
+			case <-pc.done:
+				if !errors.Is(pc.result.err, ErrIdleClosed) {
+					t.Errorf("pc.result.err = %v, want errors.Is(..., ErrIdleClosed)", pc.result.err)
+				}
+			default:
+				t.Error("pending command was not woken on server disconnect")
+			}
+		})
+	}
+}
+
+func TestSubmit_WriteOrFlushErrorWhenIdleClosedReturnsCloseError(t *testing.T) {
+	t.Parallel()
+
+	t.Run("write error", func(t *testing.T) {
+		t.Parallel()
+		c, peer := newPipeConn(t)
+		_ = peer.Close()
+		c.bw = bufio.NewWriterSize(c.nc, 1) // Force unbuffered write so c.bw.Write hits peer immediately.
+		c.closeErr = fmt.Errorf("%w: remote closed", ErrIdleClosed)
+		c.sem = make(chan struct{}, 1)
+		c.sem <- struct{}{}
+		pc := newPending(cmdStat, "art@host")
+		err := c.submit(pc, []byte("STAT <art@host>\r\n"))
+		if !errors.Is(err, ErrIdleClosed) {
+			t.Errorf("submit err = %v, want errors.Is(..., ErrIdleClosed)", err)
+		}
+	})
+
+	t.Run("flush error", func(t *testing.T) {
+		t.Parallel()
+		c, peer := newPipeConn(t)
+		_ = peer.Close()
+		c.closeErr = fmt.Errorf("%w: remote closed", ErrIdleClosed)
+		c.sem = make(chan struct{}, 1)
+		c.sem <- struct{}{}
+		pc := newPending(cmdStat, "art@host")
+		err := c.submit(pc, []byte("STAT <art@host>\r\n"))
+		if !errors.Is(err, ErrIdleClosed) {
+			t.Errorf("submit err = %v, want errors.Is(..., ErrIdleClosed)", err)
+		}
+	})
 }
 
 // Dummy reference to satisfy scripts/check_test_alignment.
