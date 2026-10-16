@@ -564,3 +564,67 @@ func cleanUnrecordedFetchingFiles(jobName string, files []durability.FileRow, lo
 		}
 	}
 }
+
+// cleanUnrecordedRetryFiles removes leftover DirectUnpack staging directories
+// and unrecorded partial files whose names match the sanitized subject of a
+// manifest file with an empty recorded filename in job_files, while preserving
+// any other files (such as already-extracted archive members) in the directory.
+func cleanUnrecordedRetryFiles(jobName string, m *job.Manifest, files []durability.FileRow, sanitize fsutil.SanitizeOptions, locate func(filename string) (jobFile, error), log *slog.Logger) {
+	if locate == nil || m == nil {
+		return
+	}
+	loc, _ := locate(".") //nolint:errcheck // locate sets Dir even when the component check returns an error
+	if loc.Dir == "" {
+		return
+	}
+	unpack.CleanupStageDirs(loc.Dir)
+	recorded := make(map[string]bool, len(files))
+	emptyFilenameIdx := make(map[int]bool, len(files))
+	for _, f := range files {
+		if f.Filename != "" {
+			recorded[f.Filename] = true
+		} else {
+			emptyFilenameIdx[f.FileIndex] = true
+		}
+	}
+	unrecordedSubjects := make(map[string]bool)
+	for fi := range m.NumFiles() {
+		if !emptyFilenameIdx[fi] {
+			continue
+		}
+		cand := fsutil.SanitizeFilename(m.FileSubject(fi), sanitize)
+		if cand != "" && !recorded[cand] {
+			unrecordedSubjects[cand] = true
+		}
+	}
+	if len(unrecordedSubjects) == 0 {
+		return
+	}
+	root, err := openRoot(loc.Dir)
+	if err != nil {
+		return
+	}
+	defer func() { _ = root.Close() }()
+
+	d, err := root.Open(".")
+	if err != nil {
+		return
+	}
+	defer func() { _ = d.Close() }() //nolint:errcheck // read-only directory descriptor
+
+	entries, err := d.ReadDir(-1)
+	if err != nil {
+		return
+	}
+	for _, e := range entries {
+		if e.Type().IsRegular() && unrecordedSubjects[e.Name()] {
+			if err := root.Remove(e.Name()); err != nil {
+				if log != nil {
+					log.Warn("retry: failed to remove unrecorded partial file from incomplete directory", "job", jobName, "file", e.Name(), "err", err)
+				}
+			} else if log != nil {
+				log.Info("retry: removed unrecorded partial file from incomplete directory", "job", jobName, "file", e.Name())
+			}
+		}
+	}
+}

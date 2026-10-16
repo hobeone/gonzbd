@@ -524,6 +524,15 @@ func (j *Job) Name() string {
 	return ""
 }
 
+// RecordFileRename updates the underlying queue job's recorded filename when a
+// top-level file in DownloadDir is renamed in place from `from` to `to`.
+func (j *Job) RecordFileRename(from, to string) {
+	if j == nil || j.Job == nil {
+		return
+	}
+	j.Job.RecordFileRename(from, to)
+}
+
 // Manifest provides read-only access to the job's manifest for post-processing stages.
 type Manifest interface {
 	NumFiles() int

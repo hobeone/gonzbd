@@ -47,6 +47,7 @@ func (r *RecoverPar2NamesStage) Run(ctx context.Context, job *Job) error {
 		for _, ren := range renames {
 			from := filepath.Base(ren.From)
 			to := filepath.Base(ren.To)
+			job.RecordFileRename(from, to)
 			if ren.TrueName != "" && to != ren.TrueName {
 				// The par2-recorded target already existed; GetUniqueFilename added a
 				// numeric suffix to avoid overwriting it. Log both names so it's clear

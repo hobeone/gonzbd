@@ -37,6 +37,15 @@ func (d *DeobfuscateStage) Run(ctx context.Context, job *Job) error {
 	}
 	log = log.With("component", "deobfuscate", "job", job.JobID())
 
+	switch {
+	case job.ParError:
+		logf(ctx, log, job, slog.LevelInfo, "Skipped: repair failed, archives were not extracted")
+		return nil
+	case job.UnpackError:
+		logf(ctx, log, job, slog.LevelInfo, "Skipped: unpack failed, archives remain in directory")
+		return nil
+	}
+
 	logf(ctx, log, job, slog.LevelInfo, "Starting deobfuscation in %s (useful name: %s)", job.DownloadDir, job.Name())
 
 	exclude := job.pendingDeletionSet()
@@ -46,6 +55,9 @@ func (d *DeobfuscateStage) Run(ctx context.Context, job *Job) error {
 	} else {
 		logf(ctx, log, job, slog.LevelInfo, "Deobfuscated %d file(s)", len(renames))
 		for _, r := range renames {
+			if filepath.Dir(r.From) == job.DownloadDir && filepath.Dir(r.To) == job.DownloadDir {
+				job.RecordFileRename(filepath.Base(r.From), filepath.Base(r.To))
+			}
 			logf(ctx, log, job, slog.LevelInfo, "%s → %s", filepath.Base(r.From), filepath.Base(r.To))
 		}
 	}
@@ -55,6 +67,9 @@ func (d *DeobfuscateStage) Run(ctx context.Context, job *Job) error {
 	if len(subRenames) > 0 {
 		logf(ctx, log, job, slog.LevelInfo, "Renamed %d subtitle file(s)", len(subRenames))
 		for _, r := range subRenames {
+			if filepath.Dir(r.From) == job.DownloadDir && filepath.Dir(r.To) == job.DownloadDir {
+				job.RecordFileRename(filepath.Base(r.From), filepath.Base(r.To))
+			}
 			logf(ctx, log, job, slog.LevelInfo, "%s → %s", filepath.Base(r.From), filepath.Base(r.To))
 		}
 	}

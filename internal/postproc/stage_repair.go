@@ -443,6 +443,7 @@ func recordRepairSuccess(ctx context.Context, log *slog.Logger, set par2.Set, jo
 		}
 		for canonical, onDisk := range res.Parsed.Renames {
 			job.Par2Renames[canonical] = onDisk
+			job.RecordFileRename(onDisk, canonical)
 			logf(ctx, log, job, slog.LevelInfo, "Par2 rename: %q → %q", onDisk, canonical)
 		}
 	}

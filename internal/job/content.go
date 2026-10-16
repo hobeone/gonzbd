@@ -232,9 +232,10 @@ func (j *Job) DownloadStarted() time.Time {
 // the permanent-failure path alike. Verification restores it
 // (InstallFileVerification), and drops the rows of a complete=0 file recorded
 // without one (verifyJobFiles), so a restored or retried job with done articles
-// reports it too; ResetForRetry does not clear it. The writers of
-// FileProgress.Filename are those two —
-// `git grep -n '\]\.Filename = ' -- 'internal/job/*.go' ':!*_test.go'` returns 2 lines.
+// reports it too; ResetForRetry does not clear it, and post-processing rename
+// stages update it in place (RecordFileRename). The writers of
+// FileProgress.Filename are those three —
+// `git grep -n '\]\.Filename = ' -- 'internal/job/*.go' ':!*_test.go'` returns 3 lines.
 //
 // Before the job has a JobProgress it reads the restored start stamp, which a
 // job with a filename may lack; Dispatcher.SetName hydrates before Job.SetName

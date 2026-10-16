@@ -156,3 +156,32 @@ func TestRarVolumeRecoveryStage_DefaultLogger(t *testing.T) {
 		t.Fatal("logger returned nil")
 	}
 }
+
+func TestRarVolumeRecoveryStage_EdgeCases(t *testing.T) {
+	t.Parallel()
+
+	// 1. Missing download dir
+	stage := NewRarVolumeRecoveryStage()
+	stage.SetEnabled(true)
+	stage.Log = slog.New(slog.DiscardHandler)
+	missingJob := &Job{DownloadDir: "/nonexistent/path/for/test", Job: newQueueJob(t, "test", 0)}
+	if err := stage.Run(context.Background(), missingJob); err != nil {
+		t.Fatalf("missing dir should return nil, got %v", err)
+	}
+
+	// 2. Standalone RAR (non-multiVol) and already renamed (newPath == p)
+	dir := t.TempDir()
+	copyRARFixture(t, "single_rar5.rar", filepath.Join(dir, "archive.part001.rar"))
+	singleJob := &Job{DownloadDir: dir, Job: newQueueJob(t, "archive", 0)}
+	if err := stage.Run(context.Background(), singleJob); err != nil {
+		t.Fatalf("standalone RAR should return nil, got %v", err)
+	}
+
+	// 3. Fallback to JobID when Name is empty
+	dir2 := t.TempDir()
+	copyRARFixture(t, "single_rar5.rar", filepath.Join(dir2, "obf.bin"))
+	jobNoName := &Job{DownloadDir: dir2}
+	if err := stage.Run(context.Background(), jobNoName); err != nil {
+		t.Fatalf("fallback to JobID should return nil, got %v", err)
+	}
+}
