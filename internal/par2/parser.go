@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"os"
 	"unicode/utf8"
 
@@ -187,14 +188,16 @@ func ParsePar2SetWithOptions(path string, opts ParseOptions) (*ParsedSet, error)
 	expectedFiles = -1
 
 	header := make([]byte, 64)
+	validPackets := 0
 	for {
 		packetType, body, err := readNextPacketWithOptions(f, fileSize, header, opts)
-		if errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) {
+		if errors.Is(err, io.EOF) || (errors.Is(err, io.ErrUnexpectedEOF) && validPackets > 0) {
 			break
 		}
 		if err != nil {
 			return nil, err
 		}
+		validPackets++
 
 		handlePacket(set, &ifscPackets, packetType, header, body, &expectedFiles, &seenFileDescs, &seenIFSC)
 
@@ -210,6 +213,62 @@ func ParsePar2SetWithOptions(path string, opts ParseOptions) (*ParsedSet, error)
 	postProcessSet(set, ifscPackets)
 
 	return set, nil
+}
+
+// isValidPacketLen reports whether packetLen meets the PAR 2.0 specification:
+// minimum header size (64 bytes), upper-bounded by fileSize, and 4-byte aligned.
+func isValidPacketLen(packetLen, fileSize uint64) bool {
+	return packetLen >= 64 && packetLen <= fileSize && packetLen%4 == 0
+}
+
+// rewindToEmbeddedMagic inspects the already-read bytes after the candidate
+// magic start (header[1:64] followed by body) when a candidate packet fails
+// MD5 verification. If another PAR2 packet magic starts inside those bytes
+// (because the failed candidate was a false magic match or had a corrupted
+// length that overshot the next packet), it rewinds f to that embedded magic;
+// if the tail of the read bytes ends with a partial prefix of magic (1..7
+// bytes), it rewinds by that prefix length so the next read does not split a
+// boundary-straddling magic. When neither holds (for example, a multi-MiB
+// recovery slice with a single corrupted body byte), the file offset stays at
+// the end of body so the parser advances to the next packet without tripping
+// MaxJunkScanBytes.
+func rewindToEmbeddedMagic(f *os.File, header, body []byte) error {
+	totalAfterStart := 63 + len(body)
+	// Check magic starting inside header[1:64] (which may straddle up to 7
+	// bytes into body).
+	boundOverlap := min(len(body), len(magic)-1)
+	var boundary [63 + 7]byte
+	copy(boundary[:63], header[1:64])
+	copy(boundary[63:63+boundOverlap], body[:boundOverlap])
+	if idx := bytes.Index(boundary[:63+boundOverlap], magic); idx >= 0 {
+		backtrack := int64(totalAfterStart - idx)
+		_, err := f.Seek(-backtrack, io.SeekCurrent)
+		return err
+	}
+	if idx := bytes.Index(body, magic); idx >= 0 {
+		backtrack := int64(len(body) - idx)
+		_, err := f.Seek(-backtrack, io.SeekCurrent)
+		return err
+	}
+	// Check whether the last 1..7 bytes of (header[1:64] + body) match a
+	// prefix of magic that could complete in the bytes immediately following
+	// body.
+	var tail [7]byte
+	tailLen := min(len(magic)-1, totalAfterStart)
+	if len(body) >= tailLen {
+		copy(tail[:tailLen], body[len(body)-tailLen:])
+	} else {
+		fromHdr := tailLen - len(body)
+		copy(tail[:fromHdr], header[64-fromHdr:64])
+		copy(tail[fromHdr:tailLen], body)
+	}
+	for k := tailLen; k >= 1; k-- {
+		if bytes.Equal(tail[tailLen-k:tailLen], magic[:k]) {
+			_, err := f.Seek(-int64(k), io.SeekCurrent)
+			return err
+		}
+	}
+	return nil
 }
 
 // readNextPacket reads the next valid packet from the par2 file.
@@ -241,8 +300,16 @@ func readNextPacketWithOptions(f *os.File, fileSize uint64, header []byte, opts 
 		}
 
 		packetLen := binary.LittleEndian.Uint64(header[8:16])
-		if packetLen < 64 || packetLen > fileSize {
-			return [16]byte{}, nil, fmt.Errorf("invalid packet length: %d", packetLen)
+		if !isValidPacketLen(packetLen, fileSize) {
+			slog.Warn("par2: invalid packet length, scanning for next packet", "length", packetLen, "file_size", fileSize)
+			found, scanErr := scanForMagicWithOptions(f, magic, opts.MaxJunkScanBytes)
+			if scanErr != nil {
+				return [16]byte{}, nil, scanErr
+			}
+			if !found {
+				return [16]byte{}, nil, io.EOF
+			}
+			continue
 		}
 
 		bodyLen := packetLen - 64
@@ -250,12 +317,29 @@ func readNextPacketWithOptions(f *os.File, fileSize uint64, header []byte, opts 
 			return [16]byte{}, nil, fmt.Errorf("par2 packet body size (%d bytes) exceeds configured limit (%d bytes); increase 'par2_max_packet_body_size' in Settings -> Post-Processing if this is a valid ultra-large file: %w", bodyLen, opts.MaxPacketBodySize, ErrPacketBodySizeExceeded)
 		}
 		body := make([]byte, bodyLen)
-		if _, err := io.ReadFull(f, body); err != nil {
+		if n, err := io.ReadFull(f, body); err != nil {
+			if errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) {
+				slog.Warn("par2: packet extends past end of file, scanning for next packet", "length", packetLen, "file_size", fileSize)
+				if _, seekErr := f.Seek(-int64(n), io.SeekCurrent); seekErr != nil {
+					return [16]byte{}, nil, seekErr
+				}
+				found, scanErr := scanForMagicWithOptions(f, magic, opts.MaxJunkScanBytes)
+				if scanErr != nil {
+					return [16]byte{}, nil, scanErr
+				}
+				if !found {
+					return [16]byte{}, nil, io.EOF
+				}
+				continue
+			}
 			return [16]byte{}, nil, fmt.Errorf("read body: %w", err)
 		}
 
 		if !validatePacketMD5(header, body) {
-			// MD5 mismatch — drop this packet silently and continue.
+			slog.Warn("par2: packet MD5 mismatch, scanning for next packet", "length", packetLen)
+			if seekErr := rewindToEmbeddedMagic(f, header, body); seekErr != nil {
+				return [16]byte{}, nil, seekErr
+			}
 			continue
 		}
 
