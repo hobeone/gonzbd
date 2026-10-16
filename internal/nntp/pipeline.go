@@ -172,6 +172,20 @@ func newArticleCmd(kind cmdKind, messageID string) (pc *pendingCmd, wire []byte)
 //
 // The caller is expected to invoke runReader in its own goroutine. The
 // method holds no locks for the duration of the read; pendingLock is
+// isServerIdleDisconnect reports whether a server status line is an
+// unsolicited connection teardown (205 closing connection, or 400 with idle /
+// timeout text) rather than a response to an in-flight command.
+func isServerIdleDisconnect(code int, text string) bool {
+	if code == 205 {
+		return true
+	}
+	if code != 400 {
+		return false
+	}
+	lower := strings.ToLower(text)
+	return strings.Contains(lower, "idle") || strings.Contains(lower, "timeout")
+}
+
 // taken only momentarily to pop the FIFO head.
 func (c *Conn) runReader() {
 	defer close(c.readerDone)
@@ -190,9 +204,14 @@ func (c *Conn) runReader() {
 			return
 		}
 
+		if isServerIdleDisconnect(code, text) {
+			c.finishReader(fmt.Errorf("%w: nntp: unsolicited response %d %s", ErrIdleClosed, code, text))
+			return
+		}
+
 		pc := c.popPending()
 		if pc == nil {
-			c.finishReaderPrePop(fmt.Errorf("nntp: unsolicited response %d %s", code, text))
+			c.finishReader(fmt.Errorf("%w: nntp: unsolicited response %d %s", ErrIdleClosed, code, text))
 			return
 		}
 
@@ -278,11 +297,17 @@ func (c *Conn) submit(pc *pendingCmd, cmd []byte) error {
 	if _, err := c.bw.Write(cmd); err != nil {
 		c.unappendPending(pc)
 		c.releaseSem()
+		if closeErr := c.closeError(); errors.Is(closeErr, ErrIdleClosed) {
+			return closeErr
+		}
 		return fmt.Errorf("nntp: write: %w", err)
 	}
 	if err := c.bw.Flush(); err != nil {
 		c.unappendPending(pc)
 		c.releaseSem()
+		if closeErr := c.closeError(); errors.Is(closeErr, ErrIdleClosed) {
+			return closeErr
+		}
 		return fmt.Errorf("nntp: flush: %w", err)
 	}
 	return nil
