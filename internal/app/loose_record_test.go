@@ -26,6 +26,7 @@ import (
 	"github.com/hobeone/gonzbd/internal/job"
 	"github.com/hobeone/gonzbd/internal/nzb"
 	"github.com/hobeone/gonzbd/internal/postproc"
+	"github.com/hobeone/gonzbd/internal/storagefault"
 	"github.com/hobeone/gonzbd/internal/types"
 )
 
@@ -1101,30 +1102,63 @@ func (a *lrApp) lrWaitFinalized(t *testing.T, id string) string {
 	return e.Status
 }
 
+// failFileA hands j over from Fetching with a permanent fault on file A, after
+// file A's first n articles are written. The download-complete report flushes
+// the recorder only when every file of the job completes (reportDownloadComplete,
+// reached from completeFinalizedFile at app.go:1738), and file B never does, so
+// the hand-over's flush is the first flush that can write these rows.
+func (a *lrApp) failFileA(t *testing.T, j *job.Job, n int) {
+	t.Helper()
+	for art := range n {
+		a.deliver(t, j, art)
+	}
+	lrWaitFor(t, "file A's articles written", func() bool {
+		for art := range n {
+			if !articleDone(j, art) {
+				return false
+			}
+		}
+		return true
+	})
+	a.Fail(j, storagefault.Classify("write", filepath.Join(j.Name(), "A.bin"), syscall.EIO))
+}
+
 // TestLooseRecord_HandOverFlushesBeforePostProcessing pins enqueuePostProc's
 // synchronous flush: every written row is in SQLite before post-processing
-// can change the bytes it describes. The periodic flush never runs here.
+// can change the bytes it describes. A failed job skips its stages, so the
+// test reads SQLite while the job's finalizer cannot run: a blocker job holds
+// postproc's single worker (postproc.go:54) and the handed-over job waits
+// queued behind it. Dropping the hand-over flush is killed by cutover.spec.
 func TestLooseRecord_HandOverFlushesBeforePostProcessing(t *testing.T) {
 	t.Parallel()
 	env := newLREnv(t)
-	var seen atomic.Int64
-	seen.Store(-1)
-	var a *lrApp
+	entered := make(chan struct{})
+	release := make(chan struct{})
 	env.stage = lrFuncStage{fn: func(pj *postproc.Job) error {
-		seen.Store(int64(len(rowsFor(t, a.repo.DB(), pj.Job.ID()))))
+		if pj.Job.Name() == "blocker" {
+			close(entered)
+			<-release
+		}
 		return nil
 	}}
-	a = env.newApp(t)
+	a := env.newApp(t)
 	a.start(t)
+	blocker := a.addJob(t, "blocker", 3, 2)
+	a.deliverAll(t, blocker, 3, 2)
+	lrAwait(t, "the blocker to reach its stage", entered)
+
 	j := a.addJob(t, "handover", 3, 2)
-	a.deliverAll(t, j, 3, 2)
-	a.lrWaitFinalized(t, j.ID())
-	if got := seen.Load(); got != 3 {
-		t.Errorf("post-processing saw %d of file A's 3 rows in SQLite, want all 3", got)
+	a.failFileA(t, j, 3)
+	if got := len(rowsFor(t, a.repo.DB(), j.ID())); got != 3 {
+		t.Errorf("after the hand-over, SQLite holds %d of file A's 3 rows, want all 3", got)
 	}
+	close(release)
+	a.lrWaitFinalized(t, j.ID())
 }
 
-// failFirstRecord fails the first ApplyRecord and passes every later one.
+// failFirstRecord fails the first ApplyRecord and passes every later one. The
+// finalizer test relies on that first call being the hand-over flush, which
+// holds because failFileA leaves file B incomplete (see failFileA's doc).
 type failFirstRecord struct {
 	recordStore
 	failed atomic.Bool
@@ -1140,21 +1174,18 @@ func (f *failFirstRecord) ApplyRecord(ctx context.Context, b []durability.Record
 // TestLooseRecord_FinalizerFlushesBeforeTheJobLeaves pins the finalizer's
 // flush: rows a failed hand-over flush put back are written while the instance
 // is still the dispatcher's, so a FAILED entry's retry starts from them. Once
-// RemoveJob runs, the instance check drops them.
+// RemoveJob runs, the instance check drops them. The hand-over flush is the
+// first ApplyRecord (failFirstRecord fails it), because no download-complete
+// report precedes it.
 func TestLooseRecord_FinalizerFlushesBeforeTheJobLeaves(t *testing.T) {
 	t.Parallel()
 	env := newLREnv(t)
-	env.stage = lrFuncStage{fn: func(pj *postproc.Job) error {
-		pj.UnpackError = true
-		pj.FailMsg = "unpack refused"
-		return errors.New("unpack refused")
-	}}
 	a := env.newApp(t, func(app *Application) {
 		app.recorder.st = &failFirstRecord{recordStore: app.recorder.st}
 	})
 	a.start(t)
 	j := a.addJob(t, "finflush", 3, 2)
-	a.deliverAll(t, j, 3, 2)
+	a.failFileA(t, j, 3)
 	if status := a.lrWaitFinalized(t, j.ID()); status != "Failed" {
 		t.Fatalf("fixture: the job was filed %q, want Failed so its rows are kept", status)
 	}
