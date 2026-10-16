@@ -112,6 +112,220 @@ func TestFileJoin_OutputAlreadyExists(t *testing.T) {
 	}
 }
 
+func TestFileJoin_PreservesSubdirectoryWhenNotOneFolder(t *testing.T) {
+	t.Parallel()
+
+	t.Run("preserves distinct subdirectories when OneFolder is false", func(t *testing.T) {
+		t.Parallel()
+		outDir := t.TempDir()
+		cd1Dir := filepath.Join(outDir, "CD1")
+		cd2Dir := filepath.Join(outDir, "CD2")
+		if err := os.MkdirAll(cd1Dir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.MkdirAll(cd2Dir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+
+		cd1Part1 := filepath.Join(cd1Dir, "disc.bin.001")
+		cd1Part2 := filepath.Join(cd1Dir, "disc.bin.002")
+		if err := os.WriteFile(cd1Part1, []byte("CD1-Part1-"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(cd1Part2, []byte("CD1-Part2"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+
+		cd2Part1 := filepath.Join(cd2Dir, "disc.bin.001")
+		cd2Part2 := filepath.Join(cd2Dir, "disc.bin.002")
+		if err := os.WriteFile(cd2Part1, []byte("CD2-Part1-"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(cd2Part2, []byte("CD2-Part2"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+
+		archive1 := Archive{
+			Type:     SplitArchive,
+			Name:     "disc.bin",
+			MainFile: cd1Part1,
+			Parts:    []string{cd1Part1, cd1Part2},
+		}
+		res1, err := FileJoin(t.Context(), slog.Default(), archive1, outDir, Options{OneFolder: false})
+		if err != nil {
+			t.Fatalf("FileJoin CD1: %v", err)
+		}
+		if len(res1.ExtractedFiles) != 1 || res1.ExtractedFiles[0] != filepath.Join("CD1", "disc.bin") {
+			t.Errorf("res1.ExtractedFiles = %v, want [%s]", res1.ExtractedFiles, filepath.Join("CD1", "disc.bin"))
+		}
+		cd1Out, err := os.ReadFile(filepath.Join(outDir, "CD1", "disc.bin"))
+		if err != nil {
+			t.Fatalf("read CD1 output: %v", err)
+		}
+		if string(cd1Out) != "CD1-Part1-CD1-Part2" {
+			t.Errorf("CD1 output = %q, want %q", cd1Out, "CD1-Part1-CD1-Part2")
+		}
+
+		archive2 := Archive{
+			Type:     SplitArchive,
+			Name:     "disc.bin",
+			MainFile: cd2Part1,
+			Parts:    []string{cd2Part1, cd2Part2},
+		}
+		res2, err := FileJoin(t.Context(), slog.Default(), archive2, outDir, Options{OneFolder: false})
+		if err != nil {
+			t.Fatalf("FileJoin CD2: %v", err)
+		}
+		if len(res2.ExtractedFiles) != 1 || res2.ExtractedFiles[0] != filepath.Join("CD2", "disc.bin") {
+			t.Errorf("res2.ExtractedFiles = %v, want [%s]", res2.ExtractedFiles, filepath.Join("CD2", "disc.bin"))
+		}
+		cd2Out, err := os.ReadFile(filepath.Join(outDir, "CD2", "disc.bin"))
+		if err != nil {
+			t.Fatalf("read CD2 output: %v", err)
+		}
+		if string(cd2Out) != "CD2-Part1-CD2-Part2" {
+			t.Errorf("CD2 output = %q, want %q", cd2Out, "CD2-Part1-CD2-Part2")
+		}
+	})
+
+	t.Run("flattens to outDir when OneFolder is true", func(t *testing.T) {
+		t.Parallel()
+		outDir := t.TempDir()
+		subDir := filepath.Join(outDir, "Sub")
+		if err := os.MkdirAll(subDir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		p1 := filepath.Join(subDir, "disc.bin.001")
+		p2 := filepath.Join(subDir, "disc.bin.002")
+		if err := os.WriteFile(p1, []byte("AAA"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(p2, []byte("BBB"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+
+		archive := Archive{
+			Type:     SplitArchive,
+			Name:     "disc.bin",
+			MainFile: p1,
+			Parts:    []string{p1, p2},
+		}
+		res, err := FileJoin(t.Context(), slog.Default(), archive, outDir, Options{OneFolder: true})
+		if err != nil {
+			t.Fatalf("FileJoin OneFolder=true: %v", err)
+		}
+		if len(res.ExtractedFiles) != 1 || res.ExtractedFiles[0] != "disc.bin" {
+			t.Errorf("res.ExtractedFiles = %v, want [disc.bin]", res.ExtractedFiles)
+		}
+		flatOut, err := os.ReadFile(filepath.Join(outDir, "disc.bin"))
+		if err != nil {
+			t.Fatalf("read flat output: %v", err)
+		}
+		if string(flatOut) != "AAABBB" {
+			t.Errorf("flat output = %q, want %q", flatOut, "AAABBB")
+		}
+	})
+
+	t.Run("flattens to outDir when parts live outside outDir", func(t *testing.T) {
+		t.Parallel()
+		partsDir := t.TempDir()
+		outDir := t.TempDir()
+		p1 := filepath.Join(partsDir, "disc.bin.001")
+		p2 := filepath.Join(partsDir, "disc.bin.002")
+		if err := os.WriteFile(p1, []byte("111"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(p2, []byte("222"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+
+		archive := Archive{
+			Type:     SplitArchive,
+			Name:     "disc.bin",
+			MainFile: p1,
+			Parts:    []string{p1, p2},
+		}
+		res, err := FileJoin(t.Context(), slog.Default(), archive, outDir, Options{OneFolder: false})
+		if err != nil {
+			t.Fatalf("FileJoin parts outside outDir: %v", err)
+		}
+		if len(res.ExtractedFiles) != 1 || res.ExtractedFiles[0] != "disc.bin" {
+			t.Errorf("res.ExtractedFiles = %v, want [disc.bin]", res.ExtractedFiles)
+		}
+		flatOut, err := os.ReadFile(filepath.Join(outDir, "disc.bin"))
+		if err != nil {
+			t.Fatalf("read flat output: %v", err)
+		}
+		if string(flatOut) != "111222" {
+			t.Errorf("flat output = %q, want %q", flatOut, "111222")
+		}
+	})
+}
+
+func TestJoinOutputRel(t *testing.T) {
+	t.Parallel()
+	outDir := filepath.Join("var", "data", "complete")
+
+	tests := []struct {
+		name      string
+		archive   Archive
+		oneFolder bool
+		want      string
+	}{
+		{
+			name:      "empty parts",
+			archive:   Archive{Name: "movie.bin", Parts: nil},
+			oneFolder: false,
+			want:      "movie.bin",
+		},
+		{
+			name: "one folder true flattens subdirectory",
+			archive: Archive{
+				Name:  "movie.bin",
+				Parts: []string{filepath.Join(outDir, "CD1", "movie.bin.001")},
+			},
+			oneFolder: true,
+			want:      "movie.bin",
+		},
+		{
+			name: "subdirectory preserved when not one folder",
+			archive: Archive{
+				Name:  "movie.bin",
+				Parts: []string{filepath.Join(outDir, "CD1", "movie.bin.001")},
+			},
+			oneFolder: false,
+			want:      filepath.Join("CD1", "movie.bin"),
+		},
+		{
+			name: "root parts stay root",
+			archive: Archive{
+				Name:  "movie.bin",
+				Parts: []string{filepath.Join(outDir, "movie.bin.001")},
+			},
+			oneFolder: false,
+			want:      "movie.bin",
+		},
+		{
+			name: "external parts stay flat",
+			archive: Archive{
+				Name:  "movie.bin",
+				Parts: []string{filepath.Join("tmp", "other", "movie.bin.001")},
+			},
+			oneFolder: false,
+			want:      "movie.bin",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := joinOutputRel(tt.archive, outDir, tt.oneFolder)
+			if got != tt.want {
+				t.Errorf("joinOutputRel = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
 func TestFileJoin_ContextCancel(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()

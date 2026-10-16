@@ -605,3 +605,157 @@ func TestPar2Rename_SkipsSizeMismatchOnShared16kPrefix(t *testing.T) {
 		}
 	})
 }
+
+type testPar2Desc struct {
+	fileName string
+	fileSize uint64
+	hash16k  [16]byte
+}
+
+func writeTestPar2FileWithDescs(t *testing.T, dir, parFileName string, descs []testPar2Desc) {
+	t.Helper()
+	var allPackets []byte
+	setID := [16]byte{1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16}
+	for _, d := range descs {
+		fileNameBytes := []byte(d.fileName)
+		if pad := (4 - len(fileNameBytes)%4) % 4; pad > 0 {
+			fileNameBytes = append(fileNameBytes, make([]byte, pad)...)
+		}
+		bodyLen := uint64(16 + 16 + 16 + 8 + len(fileNameBytes))
+		packetLen := 64 + bodyLen
+		buf := make([]byte, packetLen)
+		copy(buf[0:8], []byte("PAR2\x00PKT"))
+		binary.LittleEndian.PutUint64(buf[8:16], packetLen)
+		copy(buf[32:48], setID[:])
+		copy(buf[48:64], []byte{'P', 'A', 'R', ' ', '2', '.', '0', '\x00', 'F', 'i', 'l', 'e', 'D', 'e', 's', 'c'})
+		copy(buf[64+16+16:64+32+16], d.hash16k[:])
+		binary.LittleEndian.PutUint64(buf[64+48:64+56], d.fileSize)
+		copy(buf[64+56:], fileNameBytes)
+		ph := md5.New() //nolint:gosec // MD5 is PAR2 spec; not used for security
+		ph.Write(buf[32:64])
+		ph.Write(buf[64:])
+		copy(buf[16:32], ph.Sum(nil))
+		allPackets = append(allPackets, buf...)
+	}
+	parPath := filepath.Join(dir, parFileName)
+	if err := os.WriteFile(parPath, allPackets, 0o644); err != nil {
+		t.Fatalf("WriteFile PAR2: %v", err)
+	}
+}
+
+func TestPar2Rename_SkipsAmbiguousDuplicateHash16k(t *testing.T) {
+	t.Parallel()
+
+	prefix := bytes.Repeat([]byte("B"), 16384)
+	hash16k := md5.Sum(prefix) //nolint:gosec // MD5 is PAR2 spec
+
+	const (
+		fileSize1 = 20 * 1024
+		fileSize2 = 30 * 1024
+	)
+
+	t.Run("skips rename when two files in same par2 set share 16k hash (HasDuplicate)", func(t *testing.T) {
+		t.Parallel()
+		dir := t.TempDir()
+
+		// Obfuscated file on disk matching fileSize1 and hash16k
+		obfData := append(append([]byte(nil), prefix...), make([]byte, fileSize1-len(prefix))...)
+		obfPath := filepath.Join(dir, "11112222333344445555666677778888.bin")
+		if err := os.WriteFile(obfPath, obfData, 0o644); err != nil {
+			t.Fatal(err)
+		}
+
+		// Single PAR2 file containing two FileDesc packets sharing hash16k with same filename/size
+		writeTestPar2FileWithDescs(t, dir, "multi.par2", []testPar2Desc{
+			{fileName: "FileA.bin", fileSize: fileSize1, hash16k: hash16k},
+			{fileName: "FileA.bin", fileSize: fileSize1, hash16k: hash16k},
+		})
+
+		root, err := os.OpenRoot(dir)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer root.Close()
+
+		renames, err := deobfuscate.Par2Rename(t.Context(), slog.Default(), root, dir, fsutil.SanitizeOptions{})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(renames) != 0 {
+			t.Fatalf("expected 0 renames for ambiguous hash16k in single par2 set, got %d: %+v", len(renames), renames)
+		}
+		if _, err := os.Stat(obfPath); err != nil {
+			t.Errorf("obfuscated file should not have been renamed: %v", err)
+		}
+	})
+
+	t.Run("skips rename when two distinct par2 files have conflicting FileDescs sharing 16k hash", func(t *testing.T) {
+		t.Parallel()
+		dir := t.TempDir()
+
+		obfData := append(append([]byte(nil), prefix...), make([]byte, fileSize1-len(prefix))...)
+		obfPath := filepath.Join(dir, "aaaabbbbccccddddeeeeffff00001111.bin")
+		if err := os.WriteFile(obfPath, obfData, 0o644); err != nil {
+			t.Fatal(err)
+		}
+
+		// Two distinct par2 files with different filenames sharing the same hash16k
+		writeTestPar2File(t, dir, "FileA.bin", fileSize1, hash16k)
+		writeTestPar2File(t, dir, "FileB.bin", fileSize2, hash16k)
+
+		root, err := os.OpenRoot(dir)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer root.Close()
+
+		renames, err := deobfuscate.Par2Rename(t.Context(), slog.Default(), root, dir, fsutil.SanitizeOptions{})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(renames) != 0 {
+			t.Fatalf("expected 0 renames for conflicting FileDescs across par2 files, got %d: %+v", len(renames), renames)
+		}
+		if _, err := os.Stat(obfPath); err != nil {
+			t.Errorf("obfuscated file should not have been renamed: %v", err)
+		}
+	})
+
+	t.Run("preserves rename when identical FileDesc repeated across multiple par2 files", func(t *testing.T) {
+		t.Parallel()
+		dir := t.TempDir()
+
+		obfData := append(append([]byte(nil), prefix...), make([]byte, fileSize1-len(prefix))...)
+		obfPath := filepath.Join(dir, "99998888777766665555444433332222.bin")
+		if err := os.WriteFile(obfPath, obfData, 0o644); err != nil {
+			t.Fatal(err)
+		}
+
+		// Index and volume par2 files repeating the exact same FileDesc
+		writeTestPar2File(t, dir, "UniqueFile.bin", fileSize1, hash16k)
+		writeTestPar2FileWithDescs(t, dir, "UniqueFile.vol00+01.par2", []testPar2Desc{
+			{fileName: "UniqueFile.bin", fileSize: fileSize1, hash16k: hash16k},
+		})
+
+		root, err := os.OpenRoot(dir)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer root.Close()
+
+		renames, err := deobfuscate.Par2Rename(t.Context(), slog.Default(), root, dir, fsutil.SanitizeOptions{})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(renames) != 1 {
+			t.Fatalf("expected 1 rename for repeated identical FileDesc, got %d: %+v", len(renames), renames)
+		}
+		wantTarget := filepath.Join(dir, "UniqueFile.bin")
+		if renames[0].From != obfPath || renames[0].To != wantTarget {
+			t.Errorf("renames[0] = %+v, want From=%q To=%q", renames[0], obfPath, wantTarget)
+		}
+		if _, err := os.Stat(wantTarget); err != nil {
+			t.Errorf("expected target %s to exist: %v", wantTarget, err)
+		}
+	})
+}

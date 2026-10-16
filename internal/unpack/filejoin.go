@@ -38,6 +38,22 @@ func FileJoin(ctx context.Context, log *slog.Logger, archive Archive, outDir str
 	return res, err
 }
 
+// joinOutputRel returns the root-relative output path for archive inside
+// outDir. When opts.OneFolder is false and the first part resides in a
+// subdirectory of outDir, the relative subdirectory is preserved so split
+// archives in distinct subdirectories (e.g. CD1/ and CD2/) do not collide at
+// the root of outDir.
+func joinOutputRel(archive Archive, outDir string, oneFolder bool) string {
+	if oneFolder || len(archive.Parts) == 0 {
+		return archive.Name
+	}
+	relDir, err := filepath.Rel(outDir, filepath.Dir(archive.Parts[0]))
+	if err != nil || relDir == "." || !filepath.IsLocal(relDir) {
+		return archive.Name
+	}
+	return filepath.Join(relDir, archive.Name)
+}
+
 func fileJoin(ctx context.Context, log *slog.Logger, archive Archive, outDir string, opts Options) (Result, error) {
 	if archive.Type != SplitArchive {
 		return Result{}, fmt.Errorf("filejoin: archive type is not SplitArchive")
@@ -46,10 +62,8 @@ func fileJoin(ctx context.Context, log *slog.Logger, archive Archive, outDir str
 		return Result{}, fmt.Errorf("filejoin: no parts in archive")
 	}
 
-	outPath := filepath.Join(outDir, archive.Name)
-	// outRel is just the archive name (a filename, no directory component),
-	// used for all root-relative operations.
-	outRel := archive.Name
+	outRel := joinOutputRel(archive, outDir, opts.OneFolder)
+	outPath := filepath.Join(outDir, outRel)
 
 	log.Info("filejoin: starting join",
 		"name", archive.Name,

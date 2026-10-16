@@ -1,5 +1,5 @@
 pkg ./internal/deobfuscate/
-run ^TestPar2Rename_SkipsSizeMismatchOnShared16kPrefix$
+run ^TestPar2Rename_
 
 [par2RenameFile does not check file size match]
 file internal/deobfuscate/par2.go
@@ -18,3 +18,32 @@ file internal/deobfuscate/par2.go
 		return Rename{}, false, nil
 	}
 --- end
+
+[buildHashToNameMap does not mark HasDuplicate ambiguous]
+file internal/deobfuscate/par2.go
+--- anchor
+			if d.HasDuplicate {
+				ambiguous[d.Hash16k] = true
+				continue
+			}
+--- replace
+			if false && d.HasDuplicate {
+				ambiguous[d.Hash16k] = true
+				continue
+			}
+--- end
+
+[buildHashToNameMap does not mark conflicting descriptors ambiguous]
+file internal/deobfuscate/par2.go
+--- anchor
+			if existing, ok := hashToDesc[d.Hash16k]; ok && (existing.FileName != d.FileName || existing.FileSize != d.FileSize) {
+				ambiguous[d.Hash16k] = true
+				continue
+			}
+--- replace
+			if false {
+				ambiguous[d.Hash16k] = true
+				continue
+			}
+--- end
+

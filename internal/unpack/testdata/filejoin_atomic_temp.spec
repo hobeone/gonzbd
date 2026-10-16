@@ -99,3 +99,20 @@ file internal/unpack/filejoin.go
 --- replace
 	if err := error(nil); err != nil {
 --- end
+
+[joinOutputRel ignores oneFolder option]
+file internal/unpack/filejoin.go
+--- anchor
+	if oneFolder || len(archive.Parts) == 0 {
+--- replace
+	if false || len(archive.Parts) == 0 {
+--- end
+
+[joinOutputRel always returns flat archive name]
+file internal/unpack/filejoin.go
+--- anchor
+	return filepath.Join(relDir, archive.Name)
+--- replace
+	return archive.Name
+--- end
+

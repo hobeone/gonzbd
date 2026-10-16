@@ -86,6 +86,7 @@ func findPar2Files(entries []fs.DirEntry, dir string) []string {
 
 func buildHashToNameMap(log *slog.Logger, par2Files []string) map[[16]byte]par2.FileDesc {
 	hashToDesc := make(map[[16]byte]par2.FileDesc)
+	ambiguous := make(map[[16]byte]bool)
 	for _, p := range par2Files {
 		descs, err := par2.ParseFileDescriptions(p)
 		if err != nil {
@@ -93,8 +94,19 @@ func buildHashToNameMap(log *slog.Logger, par2Files []string) map[[16]byte]par2.
 			continue
 		}
 		for _, d := range descs {
+			if d.HasDuplicate {
+				ambiguous[d.Hash16k] = true
+				continue
+			}
+			if existing, ok := hashToDesc[d.Hash16k]; ok && (existing.FileName != d.FileName || existing.FileSize != d.FileSize) {
+				ambiguous[d.Hash16k] = true
+				continue
+			}
 			hashToDesc[d.Hash16k] = d
 		}
+	}
+	for h := range ambiguous {
+		delete(hashToDesc, h)
 	}
 	return hashToDesc
 }
