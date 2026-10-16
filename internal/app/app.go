@@ -1764,7 +1764,9 @@ func (app *Application) completeFinalizedFile(fc FileComplete) error {
 // report, which a lock here would not exclude: admit reads no dispatcher
 // state.
 //
-// It also stamps the download finish, before the report, so a job reads as
+// It flushes the recorder before the report, so the position the dispatcher
+// then persists never runs ahead of the job's recorded files (#962). It also
+// stamps the download finish, before the report, so a job reads as
 // finished from the moment it can be seen at Assessing; the time spent waiting
 // for a compute slot or in Assessing is not download time. A job that Assessing
 // reports back to Fetching reopens the slot (appRunner.advance), so a stamp
@@ -1779,6 +1781,19 @@ func (app *Application) reportDownloadComplete(j *job.Job, rep reporter) (bool, 
 	}
 	if err := j.MarkDownloadFinished(time.Now()); err != nil {
 		app.log.Warn("could not record the download finish time", "job", j.ID(), "err", err)
+	}
+	// The dispatcher persists the job's position on its next tick, and a
+	// position past Fetching restores with no completeness check (#962), so
+	// the rows and complete flags that make the job complete reach SQLite
+	// first. A flush that fails is logged and the report still goes out, as
+	// at the hand-over: holding the job at Fetching would strand its lease,
+	// since no later report is owed. The window then stays open until the
+	// recorder's next successful flush.
+	flushCtx, flushCancel := context.WithTimeout(context.Background(), recorderFlushTimeout)
+	err := app.recorder.flush(flushCtx)
+	flushCancel()
+	if err != nil {
+		app.log.Warn("recorder flush before the download-complete report failed", "job", j.ID(), "err", err)
 	}
 	return true, rep.AdvanceFrom(j, job.Fetching, job.Assessing)
 }
