@@ -3,6 +3,8 @@ package downloader
 import (
 	"context"
 	"errors"
+	"fmt"
+	"io"
 	"net"
 	"os"
 	"sync"
@@ -248,6 +250,16 @@ func TestPenaltyFor(t *testing.T) {
 		{
 			name: "ErrNoArticle → 0 (no penalty)",
 			err:  nntp.ErrNoArticle,
+			want: 0,
+		},
+		{
+			name: "ErrIdleClosed → 0 (no penalty)",
+			err:  nntp.ErrIdleClosed,
+			want: 0,
+		},
+		{
+			name: "wrapped ErrIdleClosed → 0 (no penalty)",
+			err:  fmt.Errorf("%w: %w", nntp.ErrIdleClosed, io.EOF),
 			want: 0,
 		},
 		{

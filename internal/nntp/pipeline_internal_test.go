@@ -434,6 +434,125 @@ func TestMessageIDFromStatusLine(t *testing.T) {
 	}
 }
 
+func TestRunReader_IdleDisconnectClassified(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name        string
+		arrange     func(*Conn) *pendingCmd
+		respond     func(net.Conn)
+		wantIdleErr bool
+		wantSubstr  string
+	}{
+		{
+			name:        "EOF while idle",
+			arrange:     func(*Conn) *pendingCmd { return nil },
+			respond:     func(peer net.Conn) { _ = peer.Close() },
+			wantIdleErr: true,
+			wantSubstr:  io.EOF.Error(),
+		},
+		{
+			name:        "400 idle timeout while idle",
+			arrange:     func(*Conn) *pendingCmd { return nil },
+			respond:     func(peer net.Conn) { _, _ = peer.Write([]byte("400 Idle timeout\r\n")) },
+			wantIdleErr: true,
+			wantSubstr:  "unsolicited response 400",
+		},
+		{
+			name:        "205 closing connection while idle",
+			arrange:     func(*Conn) *pendingCmd { return nil },
+			respond:     func(peer net.Conn) { _, _ = peer.Write([]byte("205 closing connection\r\n")) },
+			wantIdleErr: true,
+			wantSubstr:  "unsolicited response 205",
+		},
+		{
+			name: "EOF with command in flight (not idle)",
+			arrange: func(c *Conn) *pendingCmd {
+				pc := newPending(cmdBody, "art@host")
+				c.pending = append(c.pending, pc)
+				c.sem <- struct{}{}
+				return pc
+			},
+			respond:     func(peer net.Conn) { _ = peer.Close() },
+			wantIdleErr: false,
+			wantSubstr:  io.EOF.Error(),
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			c, peer := newTestConn(t, 1)
+			_ = tc.arrange(c)
+			go c.runReader()
+			tc.respond(peer)
+
+			<-c.readerDone
+
+			if !c.Closed() {
+				t.Errorf("c.Closed() = false, want true")
+			}
+			err := c.closeError()
+			if err == nil {
+				t.Fatalf("c.closeError() = nil, want error containing %q", tc.wantSubstr)
+			}
+			if !strings.Contains(err.Error(), tc.wantSubstr) {
+				t.Errorf("c.closeError() = %q, want substring %q", err.Error(), tc.wantSubstr)
+			}
+			gotIdle := errors.Is(err, ErrIdleClosed)
+			if gotIdle != tc.wantIdleErr {
+				t.Errorf("errors.Is(err, ErrIdleClosed) = %v, want %v (err: %v)", gotIdle, tc.wantIdleErr, err)
+			}
+		})
+	}
+}
+
+func TestFinishReaderPrePop_Direct(t *testing.T) {
+	t.Parallel()
+
+	t.Run("empty pending wraps with ErrIdleClosed", func(t *testing.T) {
+		t.Parallel()
+		c, _ := newPipeConn(t)
+		c.finishReaderWithMode(io.EOF, true)
+
+		if !c.Closed() {
+			t.Error("c.Closed() = false, want true")
+		}
+		if !errors.Is(c.closeError(), ErrIdleClosed) {
+			t.Errorf("closeError = %v, want errors.Is(..., ErrIdleClosed)", c.closeError())
+		}
+		if !errors.Is(c.closeError(), io.EOF) {
+			t.Errorf("closeError = %v, want errors.Is(..., io.EOF)", c.closeError())
+		}
+	})
+
+	t.Run("non-empty pending does not wrap with ErrIdleClosed", func(t *testing.T) {
+		t.Parallel()
+		c, _ := newPipeConn(t)
+		pc := newPending(cmdStat, "a@h")
+		c.pending = append(c.pending, pc)
+
+		c.finishReaderWithMode(io.EOF, false)
+
+		if !c.Closed() {
+			t.Error("c.Closed() = false, want true")
+		}
+		if errors.Is(c.closeError(), ErrIdleClosed) {
+			t.Errorf("closeError = %v, want NOT errors.Is(..., ErrIdleClosed)", c.closeError())
+		}
+	})
+
+	t.Run("finishReaderPrePop helper calls finishReaderWithMode true", func(t *testing.T) {
+		t.Parallel()
+		c, _ := newPipeConn(t)
+		c.finishReaderPrePop(io.EOF)
+
+		if !errors.Is(c.closeError(), ErrIdleClosed) {
+			t.Errorf("closeError = %v, want errors.Is(..., ErrIdleClosed)", c.closeError())
+		}
+	})
+}
+
 // Dummy reference to satisfy scripts/check_test_alignment.
 //
 // AGENTS.md forbids these, and runReader's has been removed:

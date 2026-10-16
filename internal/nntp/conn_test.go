@@ -1812,3 +1812,19 @@ func TestConnIdleReadDeadline_EdgeCases(t *testing.T) {
 		}
 	})
 }
+
+func TestConn_Closed(t *testing.T) {
+	t.Parallel()
+	c, peer := newTestConn(t, 1)
+	defer peer.Close()
+	go c.runReader()
+
+	if c.Closed() {
+		t.Fatal("new connection reported Closed() == true")
+	}
+
+	_ = c.Close()
+	if !c.Closed() {
+		t.Fatal("closed connection reported Closed() == false")
+	}
+}

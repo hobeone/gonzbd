@@ -181,18 +181,18 @@ func (c *Conn) runReader() {
 		// command is in flight, and disarmed when no command is in flight.
 		line, err := readResponseLine(c.br)
 		if err != nil {
-			c.finishReader(err)
+			c.finishReaderPrePop(err)
 			return
 		}
 		code, text, perr := parseStatus(line)
 		if perr != nil {
-			c.finishReader(perr)
+			c.finishReaderPrePop(perr)
 			return
 		}
 
 		pc := c.popPending()
 		if pc == nil {
-			c.finishReader(fmt.Errorf("nntp: unsolicited response %d %s", code, text))
+			c.finishReaderPrePop(fmt.Errorf("nntp: unsolicited response %d %s", code, text))
 			return
 		}
 
@@ -343,17 +343,43 @@ func (c *Conn) failPopped(pc *pendingCmd, res cmdResult, err error) {
 // any callers still waiting on pending commands. Safe to call from
 // the reader goroutine; idempotent via closeOnce.
 func (c *Conn) finishReader(err error) {
+	c.finishReaderWithMode(err, false)
+}
+
+// finishReaderPrePop ends the connection from the top of runReader before
+// a command has been popped for the current response. If the pending FIFO
+// is empty under pendingLock, no command was in flight when the connection
+// ended, so err is wrapped with ErrIdleClosed.
+func (c *Conn) finishReaderPrePop(err error) {
+	c.finishReaderWithMode(err, true)
+}
+
+func (c *Conn) finishReaderWithMode(err error, prePop bool) {
 	c.closeOnce.Do(func() {
+		c.pendingLock.Lock()
+		orphans := c.pending
+		c.pending = nil
+		if prePop && len(orphans) == 0 && err != nil && !errors.Is(err, ErrIdleClosed) {
+			err = fmt.Errorf("%w: %w", ErrIdleClosed, err)
+		}
 		// Set closeErr BEFORE the atomic flag so that any concurrent
-		// reader of c.closed sees a valid closeErr.
+		// reader of c.closed sees a valid closeErr. Holding pendingLock
+		// across closed.Store(true) and draining c.pending ensures submit
+		// (which checks c.closed.Load() under pendingLock) either appends
+		// before this drain or observes c.closed == true.
 		c.closeErr = err
 		c.closed.Store(true)
+		c.pendingLock.Unlock()
+
 		if c.cancel != nil {
 			c.cancel() // release context resources; prevents leak when Close() is never called
 		}
 		_ = c.nc.Close() //nolint:errcheck // best-effort cleanup; underlying error already captured in c.closeErr
 
-		c.wakeOrphans(err)
+		for _, pc := range orphans {
+			pc.result = cmdResult{err: err}
+			close(pc.done)
+		}
 	})
 }
 
