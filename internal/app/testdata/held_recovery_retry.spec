@@ -1,5 +1,5 @@
 pkg ./internal/app/
-run Test(Finalize_ParErrorWithHeldVolumesRetriesWithThemReleased|Finalize_RetriedJobIsNotRetriedAgain|Finalize_RetryThatCannotStartLeavesTheFailureVisible|Finalize_RetriesOnlyAParErrorWithHeldVolumes|RetryHistoryJob_PrepareErrorAbortsTheRetry|Finalize_HeldVolumesEntryCarriesTheRetryNote|Finalize_HeldRecoveryRetry_DoesNotEmitJobFinalized)$
+run Test(Finalize_ParErrorWithHeldVolumesRetriesWithThemReleased|Finalize_RetriedJobIsNotRetriedAgain|Finalize_RetryThatCannotStartLeavesTheFailureVisible|Finalize_RetriesOnlyAParErrorWithHeldVolumes|RetryHistoryJob_PrepareErrorAbortsTheRetry|Finalize_HeldVolumesEntryCarriesTheRetryNote|Finalize_HeldRecoveryRetry_DoesNotEmitJobFinalized|Application_HasPostProcJob)$
 
 # #651: a par2 failure while recovery volumes were held back retries the job
 # with them released. Each clause of the trigger, the release in the retry,
@@ -112,4 +112,24 @@ file internal/app/job_finalizer.go
 		extra = append(extra, heldVolumesRetryNote)
 --- replace
 		_ = heldVolumesRetryNote
+--- end
+
+[HasPostProcJob ignores active postProcAdmissions by ID]
+file internal/app/dispatcher_wiring.go
+--- anchor
+	if app.postProcAdmissions.hasID(id) {
+		return true
+	}
+--- replace
+	if false {
+		return true
+	}
+--- end
+
+[HasPostProcJob checks pointer identity on postProcessor instead of ID]
+file internal/app/dispatcher_wiring.go
+--- anchor
+	return app.postProcessor.HasJobID(id)
+--- replace
+	return app.postProcessor.HasJob(j)
 --- end

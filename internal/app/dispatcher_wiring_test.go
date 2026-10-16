@@ -170,10 +170,42 @@ func TestApplication_HasPostProcJob(t *testing.T) {
 	if nilApp.HasPostProcJob(j) {
 		t.Fatal("nilApp.HasPostProcJob = true, want false")
 	}
+	if app.HasPostProcJob(nil) {
+		t.Fatal("app.HasPostProcJob(nil) = true, want false")
+	}
+	if app.postProcAdmissions.hasID("") {
+		t.Fatal("hasID(\"\") = true, want false")
+	}
 
 	// When job is pushed to post-processor queue, HasPostProcJob returns true.
 	app.postProcessor.Process(&postproc.Job{Job: j})
 	if !app.HasPostProcJob(j) {
 		t.Fatal("HasPostProcJob = false for job in post-processor")
+	}
+
+	// A distinct retry instance j2 under the same ID in post-processor must
+	// also be reported by HasPostProcJob(j1).
+	j1 := job.New("job-retry-id", "Attempt 1", job.Policy{})
+	j2 := job.New("job-retry-id", "Attempt 2", job.Policy{})
+	app.postProcessor.Process(&postproc.Job{Job: j2})
+	if !app.HasPostProcJob(j1) {
+		t.Fatal("HasPostProcJob(j1) = false when retry instance j2 with same ID is in post-processor")
+	}
+
+	// An admitted job in postProcAdmissions (such as during finalize after
+	// PostProcessor clears currentJob and before retryWithHeldVolumes finishes)
+	// must also be reported by HasPostProcJob(jOrig) for both the same instance
+	// and a retry instance with the same ID.
+	jOrig := job.New("job-admitted-id", "Attempt 1", job.Policy{})
+	jRetry := job.New("job-admitted-id", "Attempt 2", job.Policy{})
+	if got := app.postProcAdmissions.admit(jRetry, ""); got != admitted {
+		t.Fatalf("admit(jRetry) = %v, want admitted", got)
+	}
+	if !app.HasPostProcJob(jOrig) {
+		t.Fatal("HasPostProcJob(jOrig) = false while jRetry with same ID is admitted in postProcAdmissions")
+	}
+	app.postProcAdmissions.release(jRetry)
+	if app.HasPostProcJob(jOrig) {
+		t.Fatal("HasPostProcJob(jOrig) = true after jRetry admission was released")
 	}
 }

@@ -32,12 +32,22 @@ func (app *Application) GetJob(id string) *job.Job {
 	return j
 }
 
-// HasPostProcJob reports whether j is queued or in-flight in post-processing.
+// HasPostProcJob reports whether any job with j's ID has an active
+// post-processing admission (covering the DirectUnpack wait, post-processor
+// execution, and the jobFinalizer.finalize tail before a retry is queued) or
+// is queued/in-flight in the post-processor.
 func (app *Application) HasPostProcJob(j *job.Job) bool {
-	if app == nil || app.postProcessor == nil {
+	if app == nil || j == nil {
 		return false
 	}
-	return app.postProcessor.HasJob(j)
+	id := j.ID()
+	if app.postProcAdmissions.hasID(id) {
+		return true
+	}
+	if app.postProcessor == nil {
+		return false
+	}
+	return app.postProcessor.HasJobID(id)
 }
 
 // registered reports whether j is the instance the dispatcher holds under its
@@ -78,7 +88,7 @@ type appWorkers struct {
 // pp.HasJob takes q.mu and busyMu, and no span of either calls out of
 // internal/postproc, so it keeps the lock rule sched.Workers places on Abort.
 // `git grep -n 'q\.mu\.Lock()\|busyMu\.Lock()' -- internal/postproc/postproc.go internal/postproc/queue.go internal/postproc/has.go internal/postproc/cancel.go`
-// returns 12 lines, the spans that claim covers.
+// returns 13 lines, the spans that claim covers.
 func (w *appWorkers) Abort(j *job.Job) {
 	if j == nil {
 		return

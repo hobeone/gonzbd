@@ -31,3 +31,22 @@ func (p *PostProcessor) HasJob(j *job.Job) bool {
 	})
 	return found
 }
+
+// HasJobID reports whether any job with id is either pending in the queue or
+// currently being processed by the worker.
+func (p *PostProcessor) HasJobID(id string) bool {
+	if id == "" {
+		return false
+	}
+	var found bool
+	p.q.withLock(func(jobs []*Job) {
+		found = slices.ContainsFunc(jobs, func(queued *Job) bool { return queued.JobID() == id })
+		if found {
+			return
+		}
+		p.busyMu.Lock() //lockio: q.mu -> busyMu is intentional acyclic order
+		found = p.currentJob != nil && p.currentJob.JobID() == id
+		p.busyMu.Unlock()
+	})
+	return found
+}
