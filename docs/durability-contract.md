@@ -197,7 +197,9 @@ And three ways out:
     `complete=1` must be in SQLite first. A flush that fails is logged and the
     report still goes out, since no later report is owed and the job would hold
     its lease at `Fetching`; the window then stays open until the next
-    successful flush (`TestReportDownloadComplete_RecordsTheFileBeforeTheReport`);
+    successful flush. It also stays open for a `runFetch` report that reads the
+    job complete between `completeFinalizedFile`'s `MarkFileComplete` and
+    `markFileDirty`, which flushes before the last file is dirty (`TestReportDownloadComplete_RecordsTheFileBeforeTheReport`);
   - `enqueuePostProc`, after `CloseJobHandles` and before post-processing can
     change the bytes the rows describe, bounded by `recorderFlushTimeout`
     (2 s), since it holds the post-processing admission;

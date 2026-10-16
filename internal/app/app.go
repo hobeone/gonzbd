@@ -1788,7 +1788,10 @@ func (app *Application) reportDownloadComplete(j *job.Job, rep reporter) (bool, 
 	// first. A flush that fails is logged and the report still goes out, as
 	// at the hand-over: holding the job at Fetching would strand its lease,
 	// since no later report is owed. The window then stays open until the
-	// recorder's next successful flush.
+	// recorder's next successful flush. It also stays open for a runFetch
+	// report that reads IsComplete between completeFinalizedFile's
+	// MarkFileComplete and markFileDirty: it flushes before the last file is
+	// dirty, and completeFinalizedFile's own report then gets ErrStaleReport.
 	flushCtx, flushCancel := context.WithTimeout(context.Background(), recorderFlushTimeout)
 	err := app.recorder.flush(flushCtx)
 	flushCancel()
