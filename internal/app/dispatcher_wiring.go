@@ -23,6 +23,23 @@ func (app *Application) lookupJob(id string) (*job.Job, bool) {
 	return app.dispatcher.Job(id)
 }
 
+// GetJob returns the registered job for id from the active download queue, or nil.
+func (app *Application) GetJob(id string) *job.Job {
+	if app == nil || app.dispatcher == nil {
+		return nil
+	}
+	j, _ := app.dispatcher.Job(id)
+	return j
+}
+
+// HasPostProcJob reports whether j is queued or in-flight in post-processing.
+func (app *Application) HasPostProcJob(j *job.Job) bool {
+	if app == nil || app.postProcessor == nil {
+		return false
+	}
+	return app.postProcessor.HasJob(j)
+}
+
 // registered reports whether j is the instance the dispatcher holds under its
 // ID.
 func (app *Application) registered(j *job.Job) bool {

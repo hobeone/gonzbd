@@ -172,6 +172,8 @@ func (s *ScriptStage) Run(ctx context.Context, job *Job) error {
 		ScriptName:  name,
 		NZOID:       job.JobID(),
 		URL:         job.URL,
+		Password:    job.Password,
+		Priority:    job.Priority,
 		Version:     s.Version,
 		APIKey:      s.APIKey,
 		APIURL:      s.APIURL,

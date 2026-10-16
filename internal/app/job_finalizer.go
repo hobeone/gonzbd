@@ -107,6 +107,9 @@ func (f *jobFinalizer) finalize(ppJob *postproc.Job) {
 		case app.postProcComplete <- PostProcComplete{JobID: ppJob.Job.ID()}:
 		default:
 		}
+		// job_finalized signals a queue→history transition so both stores
+		// refresh from a single trigger and reach the new state together.
+		app.emit(Event{Type: "job_finalized", NzoID: ppJob.Job.ID()})
 		f.fireCompletionNotification(entry)
 	}
 
@@ -347,9 +350,6 @@ func (f *jobFinalizer) persistAndCommit(log *slog.Logger, entry history.Entry, p
 			app.emit(Event{Type: "queue_updated"})
 			return persistErr
 		}
-		// job_finalized signals a queue→history transition so both stores
-		// refresh from a single trigger and reach the new state together.
-		app.emit(Event{Type: "job_finalized", NzoID: ppJob.Job.ID()})
 		return nil
 	}
 

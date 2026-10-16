@@ -9,6 +9,7 @@ import (
 	"github.com/hobeone/gonzbd/internal/dispatch"
 	"github.com/hobeone/gonzbd/internal/downloader"
 	"github.com/hobeone/gonzbd/internal/job"
+	"github.com/hobeone/gonzbd/internal/postproc"
 )
 
 // TestApplicationConstructsAWiredDispatcher pins that app.New produces a
@@ -125,5 +126,54 @@ func TestAppWorkers_Abort_DelayedGoroutine_DoesNotDisruptNewAttempt(t *testing.T
 	got, ok := app.lookupJob("job-reuse")
 	if !ok || got != j2 {
 		t.Fatalf("lookupJob returned (%v, %v), want (%v, true)", got, ok, j2)
+	}
+}
+
+func TestApplication_GetJob(t *testing.T) {
+	t.Parallel()
+	app := newTestApplication(t)
+
+	// Before job is added or when nonexistent ID is queried, GetJob returns nil.
+	if got := app.GetJob("nonexistent"); got != nil {
+		t.Fatalf("GetJob(nonexistent) = %v, want nil", got)
+	}
+
+	j := job.New("job-get", "Test Job", job.Policy{})
+	if err := app.dispatcher.Add(t.Context(), j, dispatch.Header{Name: "Test Job"}); err != nil {
+		t.Fatalf("Add: %v", err)
+	}
+
+	if got := app.GetJob("job-get"); got != j {
+		t.Fatalf("GetJob(job-get) = %v, want %v", got, j)
+	}
+
+	// Nil dispatcher safely returns nil.
+	var nilApp *Application
+	if got := nilApp.GetJob("job-get"); got != nil {
+		t.Fatalf("nilApp.GetJob = %v, want nil", got)
+	}
+}
+
+func TestApplication_HasPostProcJob(t *testing.T) {
+	t.Parallel()
+	app := newTestApplication(t)
+
+	j := job.New("job-pp", "Test Job", job.Policy{})
+
+	// When job is not in post-processor, HasPostProcJob returns false.
+	if app.HasPostProcJob(j) {
+		t.Fatal("HasPostProcJob = true for job not in post-processor")
+	}
+
+	// Nil postProcessor safely returns false.
+	var nilApp *Application
+	if nilApp.HasPostProcJob(j) {
+		t.Fatal("nilApp.HasPostProcJob = true, want false")
+	}
+
+	// When job is pushed to post-processor queue, HasPostProcJob returns true.
+	app.postProcessor.Process(&postproc.Job{Job: j})
+	if !app.HasPostProcJob(j) {
+		t.Fatal("HasPostProcJob = false for job in post-processor")
 	}
 }

@@ -968,11 +968,15 @@ func waitForCompletion(ctx context.Context, application *app.Application, j *job
 				return nil
 			}
 		case <-tick.C:
-			// Secondary check: has it already reached history?
-			// This covers the case where PostProcComplete fired before we started selecting.
-			if h, err := application.GetHistory(ctx, j.ID()); err == nil {
-				log.Info("job found in history", "job", j.Name(), "status", h.Status)
-				return nil
+			// Secondary check: has it already reached history and left both
+			// post-processing and the active queue? This covers the case where
+			// PostProcComplete fired before we started selecting, without exiting
+			// mid-finalizer while an automatic held-volume retry is in flight.
+			if !application.HasPostProcJob(j) && application.GetJob(j.ID()) == nil {
+				if h, err := application.GetHistory(ctx, j.ID()); err == nil {
+					log.Info("job found in history", "job", j.Name(), "status", h.Status)
+					return nil
+				}
 			}
 		case <-deadline.C:
 			return fmt.Errorf("no completion in 60 minutes; aborting")
