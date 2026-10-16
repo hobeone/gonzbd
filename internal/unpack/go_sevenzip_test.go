@@ -949,13 +949,75 @@ func TestIsSevenZipEncrypted(t *testing.T) {
 		t.Error("isSevenZipEncrypted(unenc, wrongpass, '') = true, want false")
 	}
 
-	// Case F: Non-existent entryName
-	if isSevenZipEncrypted(storedEncPath, "wrongpass", "nonexistent.file") {
-		t.Error("isSevenZipEncrypted(storedEnc, wrongpass, nonexistent) = true, want false")
+	// Case F: Non-existent entryName falls back to the first non-empty regular file
+	if !isSevenZipEncrypted(storedEncPath, "wrongpass", "nonexistent.file") {
+		t.Error("isSevenZipEncrypted(storedEnc, wrongpass, nonexistent) = false, want true via fallback")
+	}
+	if isSevenZipEncrypted(unencPath, "wrongpass", "nonexistent.file") {
+		t.Error("isSevenZipEncrypted(unenc, wrongpass, nonexistent) = true, want false")
+	}
+
+	// Case F2: Solid archive with multiple files in the same stream probes the first file in that stream
+	secondFile := filepath.Join(dir, "second.txt")
+	if err := os.WriteFile(secondFile, []byte("second solid file content 1234567890"), 0o600); err != nil {
+		t.Fatalf("write second file: %v", err)
+	}
+	solidEncPath := filepath.Join(dir, "solid_enc.7z")
+	cmdSolid := exec.Command(sevenZipPath, "a", "-t7z", "-mx=0", "-ms=on", "-psecret123", solidEncPath, contentFile, secondFile)
+	if out, err := cmdSolid.CombinedOutput(); err != nil {
+		t.Fatalf("create solid_enc.7z failed: %v, output: %s", err, out)
+	}
+	if !isSevenZipEncrypted(solidEncPath, "wrongpass", "second.txt") {
+		t.Error("isSevenZipEncrypted(solidEnc, wrongpass, second.txt) = false, want true")
 	}
 
 	// Case G: Non-existent archive path
 	if isSevenZipEncrypted(filepath.Join(dir, "does_not_exist.7z"), "wrongpass", "") {
 		t.Error("isSevenZipEncrypted(nonexistent archive) = true, want false")
+	}
+
+	// Case H: Archive with only zero-byte files and directories (empty.7z)
+	td := sevenZipTestdata(t)
+	if isSevenZipEncrypted(filepath.Join(td, "empty.7z"), "wrongpass", "") {
+		t.Error("isSevenZipEncrypted(empty.7z) = true, want false")
+	}
+}
+
+func newTest7zFile(name string, size uint64, stream int) *sevenzip.File {
+	var f sevenzip.File
+	f.Name = name
+	f.UncompressedSize = size
+	f.Stream = stream
+	return &f
+}
+
+func TestSelectSevenZipProbeEntry(t *testing.T) {
+	t.Parallel()
+	fStream0First := newTest7zFile("s0_first.bin", 64, 0)
+	fStream0Second := newTest7zFile("s0_second.bin", 64, 0)
+	fStream1Empty := newTest7zFile("s1_empty.bin", 0, 1)
+	fStream1First := newTest7zFile("s1_first.bin", 32, 1)
+	fStream1Second := newTest7zFile("s1_second.bin", 32, 1)
+	files := []*sevenzip.File{fStream0First, fStream0Second, fStream1Empty, fStream1First, fStream1Second}
+
+	// Probing the second file in stream 1 selects the first non-empty file in stream 1 (offset 0).
+	if got := selectSevenZipProbeEntry(files, "s1_second.bin"); got != fStream1First {
+		t.Fatalf("selectSevenZipProbeEntry(s1_second.bin) = %v, want s1_first.bin", got)
+	}
+	// Probing the second file in stream 0 selects the first non-empty file in stream 0.
+	if got := selectSevenZipProbeEntry(files, "s0_second.bin"); got != fStream0First {
+		t.Fatalf("selectSevenZipProbeEntry(s0_second.bin) = %v, want s0_first.bin", got)
+	}
+	// Probing an unknown entryName falls back to the first non-empty regular file in the archive.
+	if got := selectSevenZipProbeEntry(files, "missing.bin"); got != fStream0First {
+		t.Fatalf("selectSevenZipProbeEntry(missing.bin) = %v, want s0_first.bin", got)
+	}
+	// Probing with empty entryName selects the first non-empty regular file in the archive.
+	if got := selectSevenZipProbeEntry(files, ""); got != fStream0First {
+		t.Fatalf("selectSevenZipProbeEntry('') = %v, want s0_first.bin", got)
+	}
+	// Archive with only zero-byte entries returns nil.
+	if got := selectSevenZipProbeEntry([]*sevenzip.File{fStream1Empty}, "s1_empty.bin"); got != nil {
+		t.Fatalf("selectSevenZipProbeEntry(empty only) = %v, want nil", got)
 	}
 }

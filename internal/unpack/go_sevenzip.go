@@ -239,6 +239,35 @@ func extractSevenZipEntry(ctx context.Context, f *sevenzip.File, outDir string, 
 	return true, nil
 }
 
+// selectSevenZipProbeEntry returns the first non-empty regular file in the
+// folder stream of entryName (which starts at offset 0 of that stream, avoiding
+// solid-stream seek decompression), falling back to the first non-empty regular
+// file in the archive when entryName is empty or not found.
+func selectSevenZipProbeEntry(files []*sevenzip.File, entryName string) *sevenzip.File {
+	if entryName != "" {
+		var target *sevenzip.File
+		for _, f := range files {
+			if f.Name == entryName {
+				target = f
+				break
+			}
+		}
+		if target != nil {
+			for _, f := range files {
+				if !f.FileInfo().IsDir() && f.UncompressedSize > 0 && f.Stream == target.Stream {
+					return f
+				}
+			}
+		}
+	}
+	for _, f := range files {
+		if !f.FileInfo().IsDir() && f.UncompressedSize > 0 {
+			return f
+		}
+	}
+	return nil
+}
+
 // isSevenZipEncrypted probes whether the archive or entry at archivePath is
 // encrypted by attempting to open and read it with an alternate password.
 // It is called only on error paths (e.g. checksum mismatch) and does zero
@@ -260,36 +289,18 @@ func isSevenZipEncrypted(archivePath, password, entryName string) bool {
 	}
 	defer r.Close() //nolint:errcheck // best-effort close
 
-	var f1, f2 *sevenzip.File
-	if entryName != "" {
-		for _, f := range r.File {
-			if f.Name == entryName {
-				f1 = f
-				break
-			}
-		}
-		for _, f := range altR.File {
-			if f.Name == entryName {
-				f2 = f
-				break
-			}
-		}
-	} else {
-		for _, f := range r.File {
-			if !f.FileInfo().IsDir() && f.UncompressedSize > 0 {
-				f1 = f
-				for _, af := range altR.File {
-					if af.Name == f.Name {
-						f2 = af
-						break
-					}
-				}
-				break
-			}
+	f1 := selectSevenZipProbeEntry(r.File, entryName)
+	if f1 == nil {
+		return false
+	}
+	var f2 *sevenzip.File
+	for _, af := range altR.File {
+		if af.Name == f1.Name && af.Stream == f1.Stream {
+			f2 = af
+			break
 		}
 	}
-
-	if f1 == nil || f2 == nil {
+	if f2 == nil {
 		return false
 	}
 
@@ -304,10 +315,7 @@ func isSevenZipEncrypted(archivePath, password, entryName string) bool {
 
 	rc2, err := f2.Open()
 	if err != nil {
-		if readErr, ok := errors.AsType[*sevenzip.ReadError](err); ok && readErr.Encrypted {
-			return true
-		}
-		return false
+		return true
 	}
 	defer rc2.Close() //nolint:errcheck // best-effort close
 
@@ -317,5 +325,5 @@ func isSevenZipEncrypted(archivePath, password, entryName string) bool {
 	n1, _ := io.ReadFull(rc1, buf1) //nolint:errcheck // best-effort read up to 16 bytes for comparison
 	n2, _ := io.ReadFull(rc2, buf2) //nolint:errcheck // best-effort read up to 16 bytes for comparison
 
-	return n1 > 0 && n2 > 0 && !bytes.Equal(buf1[:n1], buf2[:n2])
+	return n1 > 0 && (n1 != n2 || !bytes.Equal(buf1[:n1], buf2[:n2]))
 }
