@@ -2,12 +2,14 @@ package postproc
 
 import (
 	"context"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 
 	"github.com/hobeone/gonzbd/internal/job"
+	"github.com/hobeone/gonzbd/internal/par2"
 )
 
 // ---------- FinalizeStage edge cases ----------
@@ -574,5 +576,36 @@ func TestJob_NilDelegation(t *testing.T) {
 	}
 	if got := j.NumFiles(); got != 0 {
 		t.Fatalf("NumFiles() = %d, want 0", got)
+	}
+}
+
+func TestRecordRepairSuccess_RecordsFileRenameOnJob(t *testing.T) {
+	t.Parallel()
+	jobObj := job.New("id", "test.job", job.Policy{})
+	m := job.NewManifest([]job.JobFile{
+		{Subject: "vol", Bytes: 1024, Articles: []job.JobArticle{{ID: "<a1@x>", Bytes: 1024, Number: 1}}},
+	})
+	if err := jobObj.AttachContent(m); err != nil {
+		t.Fatalf("AttachContent: %v", err)
+	}
+	if err := jobObj.RecordFileFilename(0, "test.job", "obf.bin"); err != nil {
+		t.Fatalf("RecordFileFilename: %v", err)
+	}
+
+	ppJob := &Job{
+		Job:         jobObj,
+		DownloadDir: t.TempDir(),
+	}
+	res := par2.RepairResult{
+		Parsed: &par2.RepairOutput{
+			Renames: map[string]string{
+				"canonical.rar": "obf.bin",
+			},
+		},
+	}
+	recordRepairSuccess(t.Context(), slog.Default(), par2.Set{Name: "set"}, ppJob, nil, res)
+
+	if got := jobObj.Progress().FileFilename(0); got != "canonical.rar" {
+		t.Fatalf("FileFilename(0) = %q, want canonical.rar", got)
 	}
 }
