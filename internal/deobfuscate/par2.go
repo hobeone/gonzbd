@@ -94,10 +94,6 @@ func buildHashToNameMap(log *slog.Logger, par2Files []string) map[[16]byte]par2.
 			continue
 		}
 		for _, d := range descs {
-			if d.HasDuplicate {
-				ambiguous[d.Hash16k] = true
-				continue
-			}
 			if existing, ok := hashToDesc[d.Hash16k]; ok && (existing.FileName != d.FileName || existing.FileSize != d.FileSize) {
 				ambiguous[d.Hash16k] = true
 				continue

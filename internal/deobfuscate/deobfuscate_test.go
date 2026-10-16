@@ -654,7 +654,7 @@ func TestPar2Rename_SkipsAmbiguousDuplicateHash16k(t *testing.T) {
 		fileSize2 = 30 * 1024
 	)
 
-	t.Run("skips rename when two files in same par2 set share 16k hash (HasDuplicate)", func(t *testing.T) {
+	t.Run("skips rename when two files in same par2 set share 16k hash", func(t *testing.T) {
 		t.Parallel()
 		dir := t.TempDir()
 
@@ -665,10 +665,10 @@ func TestPar2Rename_SkipsAmbiguousDuplicateHash16k(t *testing.T) {
 			t.Fatal(err)
 		}
 
-		// Single PAR2 file containing two FileDesc packets sharing hash16k with same filename/size
+		// Single PAR2 file containing two distinct FileDesc packets sharing hash16k and size
 		writeTestPar2FileWithDescs(t, dir, "multi.par2", []testPar2Desc{
 			{fileName: "FileA.bin", fileSize: fileSize1, hash16k: hash16k},
-			{fileName: "FileA.bin", fileSize: fileSize1, hash16k: hash16k},
+			{fileName: "FileB.bin", fileSize: fileSize1, hash16k: hash16k},
 		})
 
 		root, err := os.OpenRoot(dir)
@@ -699,9 +699,12 @@ func TestPar2Rename_SkipsAmbiguousDuplicateHash16k(t *testing.T) {
 			t.Fatal(err)
 		}
 
-		// Two distinct par2 files with different filenames sharing the same hash16k
-		writeTestPar2File(t, dir, "FileA.bin", fileSize1, hash16k)
-		writeTestPar2File(t, dir, "FileB.bin", fileSize2, hash16k)
+		// Conflicting FileDesc packets with same filename but different sizes sharing hash16k.
+		// Packet 0 has fileSize2 and packet 1 has fileSize1 (matching obfPath on disk).
+		writeTestPar2FileWithDescs(t, dir, "conflicting_sizes.par2", []testPar2Desc{
+			{fileName: "FileA.bin", fileSize: fileSize2, hash16k: hash16k},
+			{fileName: "FileA.bin", fileSize: fileSize1, hash16k: hash16k},
+		})
 
 		root, err := os.OpenRoot(dir)
 		if err != nil {
@@ -721,7 +724,7 @@ func TestPar2Rename_SkipsAmbiguousDuplicateHash16k(t *testing.T) {
 		}
 	})
 
-	t.Run("preserves rename when identical FileDesc repeated across multiple par2 files", func(t *testing.T) {
+	t.Run("preserves rename when identical FileDesc repeated within and across par2 volume files", func(t *testing.T) {
 		t.Parallel()
 		dir := t.TempDir()
 
@@ -731,9 +734,11 @@ func TestPar2Rename_SkipsAmbiguousDuplicateHash16k(t *testing.T) {
 			t.Fatal(err)
 		}
 
-		// Index and volume par2 files repeating the exact same FileDesc
+		// Index and multi-block volume par2 files repeating the exact same FileDesc
+		// (including repeated FileDesc packets within the same volume file, which sets d.HasDuplicate)
 		writeTestPar2File(t, dir, "UniqueFile.bin", fileSize1, hash16k)
-		writeTestPar2FileWithDescs(t, dir, "UniqueFile.vol00+01.par2", []testPar2Desc{
+		writeTestPar2FileWithDescs(t, dir, "UniqueFile.vol01+02.par2", []testPar2Desc{
+			{fileName: "UniqueFile.bin", fileSize: fileSize1, hash16k: hash16k},
 			{fileName: "UniqueFile.bin", fileSize: fileSize1, hash16k: hash16k},
 		})
 
