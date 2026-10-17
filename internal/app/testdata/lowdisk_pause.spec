@@ -48,10 +48,12 @@ file internal/app/app.go
 --- anchor
 func (app *Application) resumeLocked() {
 	app.pauseReason = pauseReasonNone
+	app.lowDiskWarned = false
 	app.stopLowDiskWatchLocked()
 --- replace
 func (app *Application) resumeLocked() {
 	app.pauseReason = pauseReasonNone
+	app.lowDiskWarned = false
 --- end
 
 [resumeLocked does not resume the dispatcher]
@@ -59,11 +61,13 @@ file internal/app/app.go
 --- anchor
 func (app *Application) resumeLocked() {
 	app.pauseReason = pauseReasonNone
+	app.lowDiskWarned = false
 	app.stopLowDiskWatchLocked()
 	app.dispatcher.Resume()
 --- replace
 func (app *Application) resumeLocked() {
 	app.pauseReason = pauseReasonNone
+	app.lowDiskWarned = false
 	app.stopLowDiskWatchLocked()
 	_ = app.dispatcher
 --- end
@@ -197,12 +201,12 @@ file internal/app/app.go
 [handleLowDisk does not broadcast queue_updated]
 file internal/app/app.go
 --- anchor
-	app.log.Warn("low disk space, downloads paused",
+	app.log.Log(context.Background(), level, "low disk space, downloads paused",
 		"dir", dir,
 		"freeMB", freeBytes/(1024*1024))
 	app.emit(Event{Type: "queue_updated"})
 --- replace
-	app.log.Warn("low disk space, downloads paused",
+	app.log.Log(context.Background(), level, "low disk space, downloads paused",
 		"dir", dir,
 		"freeMB", freeBytes/(1024*1024))
 --- end
