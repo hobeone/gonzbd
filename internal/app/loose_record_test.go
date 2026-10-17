@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"syscall"
 	"testing"
@@ -1134,6 +1135,8 @@ func TestLooseRecord_HandOverFlushesBeforePostProcessing(t *testing.T) {
 	env := newLREnv(t)
 	entered := make(chan struct{})
 	release := make(chan struct{})
+	var releaseOnce sync.Once
+	releaseStage := func() { releaseOnce.Do(func() { close(release) }) }
 	env.stage = lrFuncStage{fn: func(pj *postproc.Job) error {
 		if pj.Job.Name() == "blocker" {
 			close(entered)
@@ -1143,6 +1146,9 @@ func TestLooseRecord_HandOverFlushesBeforePostProcessing(t *testing.T) {
 	}}
 	a := env.newApp(t)
 	a.start(t)
+	// Registered after start, so it runs before start's StopAndJoin: a
+	// failure before the release must not leave the worker parked.
+	t.Cleanup(releaseStage)
 	blocker := a.addJob(t, "blocker", 3, 2)
 	a.deliverAll(t, blocker, 3, 2)
 	lrAwait(t, "the blocker to reach its stage", entered)
@@ -1152,7 +1158,7 @@ func TestLooseRecord_HandOverFlushesBeforePostProcessing(t *testing.T) {
 	if got := len(rowsFor(t, a.repo.DB(), j.ID())); got != 3 {
 		t.Errorf("after the hand-over, SQLite holds %d of file A's 3 rows, want all 3", got)
 	}
-	close(release)
+	releaseStage()
 	a.lrWaitFinalized(t, j.ID())
 }
 
