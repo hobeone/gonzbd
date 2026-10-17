@@ -39,7 +39,8 @@ type ServerConfig struct {
 
 	// Priority dispatch order; 0 is highest. Lower-priority servers
 	// receive an article only after all higher-priority servers have
-	// either tried it or are otherwise ineligible.
+	// either tried it or are otherwise ineligible. A server whose work
+	// queue is merely full holds the article rather than passing it down.
 	Priority int `yaml:"priority" json:"priority"`
 
 	// Required marks the server as essential — the dispatcher will not
