@@ -134,8 +134,8 @@ func TestBuildHistoryEntry_Comprehensive(t *testing.T) {
 	if entry3.Status != "Failed" {
 		t.Errorf("Expected status Failed, got %q", entry3.Status)
 	}
-	if entry3.FailMessage != "some failure message" {
-		t.Errorf("Expected FailMessage %q, got %q", "some failure message", entry3.FailMessage)
+	if entry3.FailMessage != "repair failed; some failure message" {
+		t.Errorf("Expected FailMessage %q, got %q", "repair failed; some failure message", entry3.FailMessage)
 	}
 	if entry3.URLInfo != "Repair line 1" {
 		t.Errorf("Expected URLInfo %q, got %q", "Repair line 1", entry3.URLInfo)

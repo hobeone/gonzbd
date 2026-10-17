@@ -22,6 +22,10 @@ func TestFinalizeHelpers(t *testing.T) {
 		if err != nil {
 			t.Fatalf("handleFailure: %v", err)
 		}
+		const want = "Skipped final move: files remain in download directory (repair failed)"
+		if len(job.OutputLines) == 0 || job.OutputLines[len(job.OutputLines)-1] != want {
+			t.Errorf("OutputLines = %q, want last line %q", job.OutputLines, want)
+		}
 	})
 
 	// moveToDest and moveFileByFile are tested with source and dest under
