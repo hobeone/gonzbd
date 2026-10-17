@@ -1140,7 +1140,7 @@ func TestServer_ArticlesPack_FastPath(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewServer: %v", err)
 	}
-	if srv.packFile == nil {
+	if srv.releases[0].packFile == nil {
 		t.Fatalf("expected packFile to be opened")
 	}
 	if err := srv.Start(); err != nil {
@@ -1361,7 +1361,7 @@ func TestServer_StatDoesNotConsumeBodyFaultAndAcceptBackoff(t *testing.T) {
 	defer func() { _ = truncatedPack.Close() }()
 	srvTrunc := &Server{
 		limiter:  NewRateLimiter(0),
-		packFile: truncatedPack,
+		releases: []serverRelease{{packFile: truncatedPack}},
 	}
 	var outBuf bytes.Buffer
 	bw := bufio.NewWriter(&outBuf)

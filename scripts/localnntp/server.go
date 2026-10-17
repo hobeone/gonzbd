@@ -35,6 +35,30 @@ type ServerConfig struct {
 	Limiter *RateLimiter
 	// Users is an optional auth map of username to password. If empty, auth is not required.
 	Users map[string]string
+	// ExtraReleases are additional releases indexed beside ReleaseDir/Manifest. Each keeps its
+	// own articles.pack and files/ directory; Message-IDs must be unique across all releases.
+	ExtraReleases []ReleaseSource
+	// Conn is the initial connection-level fault state; adjustable at runtime via SetConnSettings.
+	Conn ConnSettings
+}
+
+// ReleaseSource is one release served by the same Server: its directory and manifest.
+type ReleaseSource struct {
+	Dir      string
+	Manifest *ReleaseManifest
+}
+
+// ConnSettings are the connection-level faults, adjustable at runtime through POST /conn.
+type ConnSettings struct {
+	// MaxConnections caps simultaneous client connections; 0 means unlimited. A connection over
+	// the cap gets "502 too many connections" and is closed.
+	MaxConnections int `json:"max_connections"`
+	// Refuse accepts then immediately closes without a greeting.
+	Refuse bool `json:"refuse"`
+	// RejectGreeting sends "400 service temporarily unavailable" and closes.
+	RejectGreeting bool `json:"reject_greeting"`
+	// AuthFail makes AUTHINFO PASS answer 481 and makes article commands require authentication.
+	AuthFail bool `json:"auth_fail"`
 }
 
 // Snapshot captures a point-in-time state of served clean articles, article requests, and recorded IDs.
@@ -52,6 +76,10 @@ type ServerStats struct {
 	FaultsFiredTotal int64               `json:"faults_fired_total"`
 	BytesSentTotal   int64               `json:"bytes_sent_total"`
 	RateMBps         float64             `json:"rate_mbps"`
+	Conn             ConnSettings        `json:"conn"`
+	ActiveConns      int                 `json:"active_connections"`
+	PeakConns        int                 `json:"peak_connections"`
+	ConnsRejected    int64               `json:"connections_rejected_total"`
 	ServedClean      map[string]int      `json:"served_clean"`
 	Requests         map[string]int      `json:"requests"`
 	Rules            []FaultRule         `json:"rules"`
@@ -59,6 +87,8 @@ type ServerStats struct {
 }
 
 type segmentLoc struct {
+	// Release indexes Server.releases: which release dir and pack this segment lives in.
+	Release     int
 	MessageID   string
 	DiskName    string
 	NZBFilename string
@@ -79,7 +109,7 @@ type Server struct {
 	segments map[string]segmentLoc
 	faults   *FaultEngine
 	limiter  *RateLimiter
-	packFile *os.File
+	releases []serverRelease
 
 	ln        net.Listener
 	addr      string
@@ -91,10 +121,22 @@ type Server struct {
 	faultsFiredTotal atomic.Int64
 	bytesSentTotal   atomic.Int64
 
+	connMu       sync.Mutex
+	connSettings ConnSettings
+	openConns    map[net.Conn]struct{}
+	peakConns    int
+	connRejected int64
+
 	statsMu     sync.Mutex
 	servedClean map[string]int
 	requests    map[string]int
 	snapshots   map[string]Snapshot
+}
+
+// serverRelease is the per-release state the serving paths need: its directory and open pack.
+type serverRelease struct {
+	dir      string
+	packFile *os.File
 }
 
 // NewServer initializes a disk-backed NNTP server with immutable pre-indexed segment locations.
@@ -115,44 +157,67 @@ func NewServer(cfg ServerConfig) (*Server, error) {
 		cfg.ListenAddr = "127.0.0.1:0"
 	}
 
+	sources := append([]ReleaseSource{{Dir: cfg.ReleaseDir, Manifest: cfg.Manifest}}, cfg.ExtraReleases...)
 	segments := make(map[string]segmentLoc)
-	for _, f := range cfg.Manifest.Files {
-		totalParts := len(f.Segments)
-		for _, seg := range f.Segments {
-			cleanID := extractMessageID(seg.MessageID)
-			segments[cleanID] = segmentLoc{
-				MessageID:   cleanID,
-				DiskName:    f.DiskName,
-				NZBFilename: f.NZBFilename,
-				Role:        f.Role,
-				PartNum:     seg.PartNum,
-				TotalParts:  totalParts,
-				Offset:      seg.Offset,
-				Length:      seg.Length,
-				TotalSize:   f.TotalSize,
-				CRC32:       seg.CRC32,
-				WireOffset:  seg.WireOffset,
-				WireLength:  seg.WireLength,
+	releases := make([]serverRelease, 0, len(sources))
+	closePacks := func() {
+		for _, r := range releases {
+			if r.packFile != nil {
+				_ = r.packFile.Close() //nolint:errcheck // best-effort close on a failed start
 			}
 		}
 	}
+	for i, src := range sources {
+		if src.Manifest == nil || src.Dir == "" {
+			closePacks()
+			return nil, fmt.Errorf("release %d: directory and manifest are required", i)
+		}
+		for _, f := range src.Manifest.Files {
+			totalParts := len(f.Segments)
+			for _, seg := range f.Segments {
+				cleanID := extractMessageID(seg.MessageID)
+				if prev, dup := segments[cleanID]; dup {
+					closePacks()
+					return nil, fmt.Errorf("duplicate message-id %q in releases %q and %q", cleanID, sources[prev.Release].Dir, src.Dir)
+				}
+				segments[cleanID] = segmentLoc{
+					Release:     i,
+					MessageID:   cleanID,
+					DiskName:    f.DiskName,
+					NZBFilename: f.NZBFilename,
+					Role:        f.Role,
+					PartNum:     seg.PartNum,
+					TotalParts:  totalParts,
+					Offset:      seg.Offset,
+					Length:      seg.Length,
+					TotalSize:   f.TotalSize,
+					CRC32:       seg.CRC32,
+					WireOffset:  seg.WireOffset,
+					WireLength:  seg.WireLength,
+				}
+			}
+		}
 
-	var packFile *os.File
-	packPath := filepath.Join(cfg.ReleaseDir, "articles.pack")
-	if f, err := os.Open(packPath); err == nil { //nolint:gosec // packPath is within ReleaseDir
-		packFile = f
+		rel := serverRelease{dir: src.Dir}
+		packPath := filepath.Join(src.Dir, "articles.pack")
+		if f, err := os.Open(packPath); err == nil { //nolint:gosec // packPath is within the release dir
+			rel.packFile = f
+		}
+		releases = append(releases, rel)
 	}
 
 	return &Server{
-		cfg:         cfg,
-		segments:    segments,
-		faults:      cfg.Faults,
-		limiter:     cfg.Limiter,
-		packFile:    packFile,
-		done:        make(chan struct{}),
-		servedClean: make(map[string]int),
-		requests:    make(map[string]int),
-		snapshots:   make(map[string]Snapshot),
+		cfg:          cfg,
+		segments:     segments,
+		faults:       cfg.Faults,
+		limiter:      cfg.Limiter,
+		releases:     releases,
+		done:         make(chan struct{}),
+		connSettings: cfg.Conn,
+		openConns:    make(map[net.Conn]struct{}),
+		servedClean:  make(map[string]int),
+		requests:     make(map[string]int),
+		snapshots:    make(map[string]Snapshot),
 	}, nil
 }
 
@@ -184,8 +249,10 @@ func (s *Server) Close() error {
 			closeErr = s.ln.Close()
 		}
 		s.wg.Wait()
-		if s.packFile != nil {
-			_ = s.packFile.Close() //nolint:errcheck // best-effort packfile close
+		for _, r := range s.releases {
+			if r.packFile != nil {
+				_ = r.packFile.Close() //nolint:errcheck // best-effort packfile close
+			}
 		}
 	})
 	return closeErr
@@ -212,16 +279,83 @@ func (s *Server) Stats() ServerStats {
 	}
 	s.statsMu.Unlock()
 
+	s.connMu.Lock()
+	conn, active, peak, rejected := s.connSettings, len(s.openConns), s.peakConns, s.connRejected
+	s.connMu.Unlock()
+
 	return ServerStats{
 		ServedCleanTotal: s.servedCleanTotal.Load(),
 		FaultsFiredTotal: s.faultsFiredTotal.Load(),
 		BytesSentTotal:   s.bytesSentTotal.Load(),
 		RateMBps:         s.limiter.RateMBps(),
+		Conn:             conn,
+		ActiveConns:      active,
+		PeakConns:        peak,
+		ConnsRejected:    rejected,
 		ServedClean:      scClone,
 		Requests:         reqClone,
 		Rules:            s.faults.Rules(),
 		Snapshots:        snapsClone,
 	}
+}
+
+// SetConnSettings replaces the connection-level fault state; it applies to later connections
+// and, for AuthFail, to commands on connections already open.
+func (s *Server) SetConnSettings(c ConnSettings) {
+	s.connMu.Lock()
+	s.connSettings = c
+	s.connMu.Unlock()
+}
+
+// ConnSettings returns the current connection-level fault state.
+func (s *Server) ConnSettings() ConnSettings {
+	s.connMu.Lock()
+	defer s.connMu.Unlock()
+	return s.connSettings
+}
+
+// KillActive abruptly closes every open client connection and returns how many it closed.
+func (s *Server) KillActive() int {
+	s.connMu.Lock()
+	defer s.connMu.Unlock()
+	for c := range s.openConns {
+		_ = c.Close() //nolint:errcheck // abrupt close is the point
+	}
+	return len(s.openConns)
+}
+
+// admit applies the connection-level faults to a freshly accepted connection. It returns
+// the greeting line to send and whether the connection is admitted (tracked in openConns).
+// A non-admitted connection is closed by the caller after the greeting, if any.
+func (s *Server) admit(c net.Conn) (greeting string, ok bool) {
+	s.connMu.Lock()
+	defer s.connMu.Unlock()
+	cs := s.connSettings
+	switch {
+	case cs.Refuse:
+		s.connRejected++
+		return "", false
+	case cs.RejectGreeting:
+		s.connRejected++
+		return "400 service temporarily unavailable", false
+	case cs.MaxConnections > 0 && len(s.openConns) >= cs.MaxConnections:
+		s.connRejected++
+		return "502 too many connections", false
+	}
+	s.openConns[c] = struct{}{}
+	s.peakConns = max(s.peakConns, len(s.openConns))
+	return "200 localnntp ready", true
+}
+
+func (s *Server) release(c net.Conn) {
+	s.connMu.Lock()
+	delete(s.openConns, c)
+	s.connMu.Unlock()
+}
+
+// authRequired reports whether article commands must be preceded by authentication.
+func (s *Server) authRequired() bool {
+	return len(s.cfg.Users) > 0 || s.ConnSettings().AuthFail
 }
 
 // TakeSnapshot records an immutable snapshot of currently served articles along with recorded IDs.
@@ -341,7 +475,16 @@ func (s *Server) serveConn(c net.Conn) {
 	cs := &connState{}
 	var wireBuf []byte
 
-	if err := s.send(bw, "200 localnntp ready"); err != nil {
+	greeting, admitted := s.admit(c)
+	if admitted {
+		defer s.release(c)
+	}
+	if greeting != "" {
+		if err := s.send(bw, greeting); err != nil {
+			return
+		}
+	}
+	if !admitted {
 		return
 	}
 
@@ -410,6 +553,12 @@ func (s *Server) serveConn(c net.Conn) {
 					return
 				}
 			case "PASS":
+				if s.ConnSettings().AuthFail {
+					if err := s.send(bw, "481 authentication failed"); err != nil {
+						return
+					}
+					continue
+				}
 				if len(s.cfg.Users) > 0 {
 					expected, ok := s.cfg.Users[cs.pendingUser]
 					if !ok || expected != val {
@@ -475,7 +624,7 @@ func (s *Server) serveConn(c net.Conn) {
 }
 
 func (s *Server) handleStat(bw *bufio.Writer, cs *connState, rawID string) bool {
-	if len(s.cfg.Users) > 0 && !cs.authed {
+	if s.authRequired() && !cs.authed {
 		return s.send(bw, "480 authentication required") == nil
 	}
 	cleanID := extractMessageID(rawID)
@@ -533,7 +682,7 @@ func (s *Server) writeRateLimited(ctx context.Context, bw *bufio.Writer, payload
 }
 
 func (s *Server) handleBodyOrArticle(ctx context.Context, bw *bufio.Writer, cs *connState, rawID string, isArticle bool, wireBuf *[]byte) bool {
-	if len(s.cfg.Users) > 0 && !cs.authed {
+	if s.authRequired() && !cs.authed {
 		return s.send(bw, "480 authentication required") == nil
 	}
 	cleanID := extractMessageID(rawID)
@@ -572,7 +721,7 @@ func (s *Server) handleBodyOrArticle(ctx context.Context, bw *bufio.Writer, cs *
 		return false
 	}
 
-	if !hasFault && s.packFile != nil && loc.WireLength > 0 {
+	if !hasFault && s.releases[loc.Release].packFile != nil && loc.WireLength > 0 {
 		return s.serveFastPath(ctx, bw, cleanID, loc, isArticle, wireBuf)
 	}
 
@@ -586,7 +735,7 @@ func (s *Server) serveFastPath(ctx context.Context, bw *bufio.Writer, cleanID st
 		*wireBuf = (*wireBuf)[:loc.WireLength]
 	}
 	buf := *wireBuf
-	if _, err := s.packFile.ReadAt(buf, loc.WireOffset); err != nil {
+	if _, err := s.releases[loc.Release].packFile.ReadAt(buf, loc.WireOffset); err != nil {
 		return s.send(bw, "430 no article with that message-id") == nil
 	}
 
@@ -605,7 +754,7 @@ func (s *Server) serveFastPath(ctx context.Context, bw *bufio.Writer, cleanID st
 }
 
 func (s *Server) serveSlowOrFaultPath(ctx context.Context, bw *bufio.Writer, cleanID string, loc segmentLoc, isArticle, hasFault bool, rule FaultRule) bool {
-	filePath := filepath.Join(s.cfg.ReleaseDir, "files", loc.DiskName)
+	filePath := filepath.Join(s.releases[loc.Release].dir, "files", loc.DiskName)
 	f, err := os.Open(filePath) //nolint:gosec // path is operator-configured release dir
 	if err != nil {
 		return s.send(bw, "430 no article with that message-id") == nil

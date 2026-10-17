@@ -120,12 +120,24 @@ func runServe(ctx context.Context, args []string, stdout, stderr io.Writer) int 
 	fs.SetOutput(stderr)
 
 	var (
-		dir      = fs.String("dir", "", "release directory containing manifest.json (required)")
 		listen   = fs.String("listen", "127.0.0.1:11190", "NNTP listen address")
 		control  = fs.String("control", "127.0.0.1:11191", "HTTP control API listen address")
 		rateMBps = fs.Float64("rate-mbps", 0.0, "bandwidth rate limit in MB/s (0 = unlimited)")
 		seed     = fs.Uint64("seed", 1, "RNG seed for fault engine")
 	)
+
+	var (
+		maxConns       = fs.Int("max-connections", 0, "max simultaneous client connections; extras get 502 (0 = unlimited)")
+		refuse         = fs.Bool("refuse", false, "accept then immediately close without a greeting")
+		rejectGreeting = fs.Bool("reject-greeting", false, "greet with 400 service temporarily unavailable and close")
+		authFail       = fs.Bool("auth-fail", false, "answer AUTHINFO PASS with 481 and require auth for article commands")
+	)
+
+	var dirs []string
+	fs.Func("dir", "release directory containing manifest.json (required, repeatable)", func(s string) error {
+		dirs = append(dirs, s)
+		return nil
+	})
 
 	var faultRules []FaultRule
 	fs.Func("fault", "repeatable fault specification (e.g. drop:part01.rar:parts=1,2)", func(s string) error {
@@ -141,27 +153,38 @@ func runServe(ctx context.Context, args []string, stdout, stderr io.Writer) int 
 		return 1
 	}
 
-	if *dir == "" {
+	if len(dirs) == 0 {
 		printMsgln(stderr, "error: --dir is required")
 		return 1
 	}
 
-	manifestPath := filepath.Join(*dir, "manifest.json")
-	manifest, err := LoadManifest(manifestPath)
-	if err != nil {
-		printMsg(stderr, "error loading manifest from %s: %v\n", manifestPath, err)
-		return 1
+	sources := make([]ReleaseSource, 0, len(dirs))
+	for _, d := range dirs {
+		manifestPath := filepath.Join(d, "manifest.json")
+		manifest, err := LoadManifest(manifestPath)
+		if err != nil {
+			printMsg(stderr, "error loading manifest from %s: %v\n", manifestPath, err)
+			return 1
+		}
+		sources = append(sources, ReleaseSource{Dir: d, Manifest: manifest})
 	}
 
 	faults := NewFaultEngine(*seed, faultRules)
 	limiter := NewRateLimiter(*rateMBps)
 
 	srv, err := NewServer(ServerConfig{
-		ReleaseDir: *dir,
-		Manifest:   manifest,
-		ListenAddr: *listen,
-		Faults:     faults,
-		Limiter:    limiter,
+		ReleaseDir:    sources[0].Dir,
+		Manifest:      sources[0].Manifest,
+		ExtraReleases: sources[1:],
+		ListenAddr:    *listen,
+		Faults:        faults,
+		Limiter:       limiter,
+		Conn: ConnSettings{
+			MaxConnections: *maxConns,
+			Refuse:         *refuse,
+			RejectGreeting: *rejectGreeting,
+			AuthFail:       *authFail,
+		},
 	})
 	if err != nil {
 		printMsg(stderr, "error creating server: %v\n", err)
