@@ -148,17 +148,6 @@ func (f *FinalizeStage) deletePending(ctx context.Context, log *slog.Logger, job
 }
 
 func (f *FinalizeStage) handleFailure(ctx context.Context, log *slog.Logger, job *Job, folderRename bool) error {
-	var reasons []string
-	if job.ParError {
-		reasons = append(reasons, "repair failed")
-	}
-	if job.UnpackError {
-		reasons = append(reasons, "unpack failed")
-	}
-	if job.FailMsg != "" {
-		reasons = append(reasons, job.FailMsg)
-	}
-
 	// When FolderRename is enabled, rename the download directory
 	// in-place with a _FAILED_ prefix so users can visually identify
 	// it. The files stay in the incomplete/download area (NOT moved
@@ -174,7 +163,7 @@ func (f *FinalizeStage) handleFailure(ctx context.Context, log *slog.Logger, job
 	}
 
 	recordWalkedOutputFiles(job)
-	logf(ctx, log, job, slog.LevelInfo, "Skipped final move: files remain in download directory (%s)", strings.Join(reasons, "; "))
+	logf(ctx, log, job, slog.LevelInfo, "Skipped final move: files remain in download directory (%s)", job.FailReason())
 	return nil // Skip move if failed, so files stay in DownloadDir for retry
 }
 
