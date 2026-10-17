@@ -245,7 +245,14 @@ func runVerify(ctx context.Context, args []string, stdout, stderr io.Writer) int
 		snapshotAs           = fs.String("snapshot-as", "", "optional snapshot name to record on crash")
 		snapshot             = fs.String("snapshot", "", "optional snapshot name to compare against upon completion")
 		expectArchiveCleanup = fs.Bool("expect-archive-cleanup", true, "fail if .rar or .par2 files remain in complete dir")
+		expectSingleFetch    = fs.Bool("expect-single-fetch", false, "fail if any Message-ID was served clean more than once across --servers-for-fetch-check servers")
 	)
+
+	var fetchCheckURLs []string
+	fs.Func("servers-for-fetch-check", "repeatable control URL whose /stats is summed for the cross-server fetch check", func(s string) error {
+		fetchCheckURLs = append(fetchCheckURLs, s)
+		return nil
+	})
 
 	if err := fs.Parse(args); err != nil {
 		return 1
@@ -267,6 +274,8 @@ func runVerify(ctx context.Context, args []string, stdout, stderr io.Writer) int
 		SnapshotAs:         *snapshotAs,
 		CompareSnapshot:    *snapshot,
 		SkipArchiveCleanup: !*expectArchiveCleanup,
+		FetchCheckURLs:     fetchCheckURLs,
+		ExpectSingleFetch:  *expectSingleFetch,
 	}
 
 	report, err := Verify(ctx, cfg)

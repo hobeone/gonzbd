@@ -39,6 +39,10 @@ type VerifyConfig struct {
 	SnapshotAs         string
 	CompareSnapshot    string
 	SkipArchiveCleanup bool
+	// FetchCheckURLs are control URLs of every server the download used; their /stats are
+	// summed per Message-ID. ExpectSingleFetch turns any ID served more than once into a failure.
+	FetchCheckURLs    []string
+	ExpectSingleFetch bool
 }
 
 // VerifyReport summarizes the verification results.
@@ -50,6 +54,12 @@ type VerifyReport struct {
 	RecordedIDs     []string `json:"recorded_ids,omitempty"`
 	RefetchedIDs    []string `json:"refetched_ids,omitempty"`
 	OutputsVerified int      `json:"outputs_verified"`
+	// ServedCleanSum and DistinctIDsServed summarize the cross-server fetch check: total clean
+	// serves across all servers, and how many distinct Message-IDs they covered. Par2 volumes
+	// may be served without being needed, so only IDs in MultiServedIDs are an error.
+	ServedCleanSum    int      `json:"served_clean_sum,omitempty"`
+	DistinctIDsServed int      `json:"distinct_ids_served,omitempty"`
+	MultiServedIDs    []string `json:"multi_served_ids,omitempty"`
 }
 
 // Verify checks the database and disk state of gonzbd after a crash or upon completion.
@@ -65,6 +75,12 @@ func Verify(ctx context.Context, cfg VerifyConfig) (*VerifyReport, error) {
 	}
 	if cfg.CompareSnapshot != "" && cfg.ServerControlURL == "" {
 		return nil, errors.New("--snapshot requires --server")
+	}
+	if cfg.ExpectSingleFetch && len(cfg.FetchCheckURLs) == 0 {
+		return nil, errors.New("--expect-single-fetch requires at least one --servers-for-fetch-check")
+	}
+	if len(cfg.FetchCheckURLs) > 0 && cfg.Mode != "complete" {
+		return nil, errors.New("--servers-for-fetch-check applies only to --mode complete")
 	}
 
 	m, err := LoadManifest(cfg.ManifestPath)
@@ -916,9 +932,68 @@ func verifyComplete(ctx context.Context, db *sql.DB, m *ReleaseManifest, cfg Ver
 		}
 	}
 
-	return &VerifyReport{
+	report := &VerifyReport{
 		Mode:            "complete",
 		JobID:           h.jobID,
 		OutputsVerified: outputsVerified,
-	}, nil
+	}
+
+	if len(cfg.FetchCheckURLs) > 0 {
+		var all []ServerStats
+		for _, u := range cfg.FetchCheckURLs {
+			st, err := fetchServerStats(ctx, u)
+			if err != nil {
+				return nil, err
+			}
+			all = append(all, st)
+		}
+		report.ServedCleanSum, report.DistinctIDsServed, report.MultiServedIDs = sumServedClean(all)
+		if cfg.ExpectSingleFetch && len(report.MultiServedIDs) > 0 {
+			return report, fmt.Errorf("message-ids served clean more than once across %d servers: %v",
+				len(all), report.MultiServedIDs)
+		}
+	}
+
+	return report, nil
+}
+
+func fetchServerStats(ctx context.Context, controlURL string) (ServerStats, error) {
+	statsURL := strings.TrimRight(controlURL, "/") + "/stats"
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, statsURL, http.NoBody)
+	if err != nil {
+		return ServerStats{}, fmt.Errorf("create stats request: %w", err)
+	}
+	resp, err := (&http.Client{Timeout: 5 * time.Second}).Do(req)
+	if err != nil {
+		return ServerStats{}, fmt.Errorf("fetch stats %s: %w", statsURL, err)
+	}
+	defer func() { _ = resp.Body.Close() }() //nolint:errcheck // best-effort close of HTTP response body
+	if resp.StatusCode != http.StatusOK {
+		return ServerStats{}, fmt.Errorf("fetch stats %s returned status %d", statsURL, resp.StatusCode)
+	}
+	var st ServerStats
+	if err := json.NewDecoder(resp.Body).Decode(&st); err != nil {
+		return ServerStats{}, fmt.Errorf("decode stats from %s: %w", statsURL, err)
+	}
+	return st, nil
+}
+
+// sumServedClean adds served_clean per Message-ID across servers. It returns the total number
+// of clean serves, the number of distinct IDs served, and the sorted IDs whose total exceeds 1,
+// each formatted "<id> x<total>".
+func sumServedClean(all []ServerStats) (sum, distinct int, multi []string) {
+	totals := make(map[string]int)
+	for _, st := range all {
+		for id, n := range st.ServedClean {
+			totals[extractMessageID(id)] += n
+			sum += n
+		}
+	}
+	for id, n := range totals {
+		if n > 1 {
+			multi = append(multi, fmt.Sprintf("%s x%d", id, n))
+		}
+	}
+	slices.Sort(multi)
+	return sum, len(totals), multi
 }
