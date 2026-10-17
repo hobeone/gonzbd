@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"log/slog"
 	"maps"
 	"net"
@@ -173,9 +174,11 @@ func NewServer(cfg ServerConfig) (*Server, error) {
 			closePacks()
 			return nil, fmt.Errorf("release %d: directory and manifest are required", i)
 		}
+		var packEnd int64 // the furthest byte any segment's wire form needs from articles.pack
 		for _, f := range src.Manifest.Files {
 			totalParts := len(f.Segments)
 			for _, seg := range f.Segments {
+				packEnd = max(packEnd, seg.WireOffset+int64(seg.WireLength))
 				cleanID := extractMessageID(seg.MessageID)
 				if prev, dup := segments[cleanID]; dup {
 					closePacks()
@@ -199,12 +202,16 @@ func NewServer(cfg ServerConfig) (*Server, error) {
 			}
 		}
 
-		rel := serverRelease{dir: src.Dir}
-		packPath := filepath.Join(src.Dir, "articles.pack")
-		if f, err := os.Open(packPath); err == nil { //nolint:gosec // packPath is within the release dir
-			rel.packFile = f
+		if fi, err := os.Stat(filepath.Join(src.Dir, "files")); err != nil || !fi.IsDir() {
+			closePacks()
+			return nil, fmt.Errorf("release %d: %q has no files/ directory", i, src.Dir)
 		}
-		releases = append(releases, rel)
+		pack, err := openArticlesPack(src.Dir, packEnd)
+		if err != nil {
+			closePacks()
+			return nil, fmt.Errorf("release %d: %w", i, err)
+		}
+		releases = append(releases, serverRelease{dir: src.Dir, packFile: pack})
 	}
 
 	s := &Server{
@@ -222,6 +229,32 @@ func NewServer(cfg ServerConfig) (*Server, error) {
 	}
 	s.authFail.Store(cfg.Conn.AuthFail)
 	return s, nil
+}
+
+// openArticlesPack opens dir/articles.pack for the fast path. A missing file falls back to
+// serving from files/; a pack that cannot be opened, is not a regular file, or ends before the
+// last segment's wire bytes is an error at startup rather than a 430 on some later request.
+func openArticlesPack(dir string, packEnd int64) (*os.File, error) {
+	packPath := filepath.Join(dir, "articles.pack")
+	f, err := os.Open(packPath) //nolint:gosec // packPath is within the release dir
+	if errors.Is(err, fs.ErrNotExist) {
+		slog.Info("localnntp: no articles.pack, serving from files/ without the fast path", "dir", dir)
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("open articles.pack: %w", err)
+	}
+	fi, err := f.Stat()
+	if err == nil && !fi.Mode().IsRegular() {
+		err = fmt.Errorf("%s is not a regular file", packPath)
+	}
+	if err == nil && fi.Size() < packEnd {
+		err = fmt.Errorf("%s is %d bytes but the manifest needs %d", packPath, fi.Size(), packEnd)
+	}
+	if err != nil {
+		return nil, errors.Join(err, f.Close())
+	}
+	return f, nil
 }
 
 // Start binds the TCP listener and spawns the connection accept loop.

@@ -129,6 +129,7 @@ func TestVerify_Crash_HappyPath(t *testing.T) {
 	}
 
 	// Setup mock server control handler
+	mkFilesDir(t, tempDir)
 	srv, err := NewServer(ServerConfig{
 		Releases:   []ReleaseSource{{Dir: tempDir, Manifest: manifest}},
 		ListenAddr: "127.0.0.1:0",
@@ -693,6 +694,7 @@ func TestVerify_Complete_HappyPath(t *testing.T) {
 	}
 
 	// Setup mock server
+	mkFilesDir(t, tempDir)
 	srv, err := NewServer(ServerConfig{
 		Releases:   []ReleaseSource{{Dir: tempDir, Manifest: manifest}},
 		ListenAddr: "127.0.0.1:0",
@@ -1116,7 +1118,7 @@ func TestCLI_Run(t *testing.T) {
 	// Subtest 6: serve with context cancellation
 	t.Run("serve canceled", func(t *testing.T) {
 		outDir := filepath.Join(tempDir, "serve-release")
-		_ = os.MkdirAll(outDir, 0o755)
+		mkFilesDir(t, outDir)
 		manifest := &ReleaseManifest{Name: "rel", PartSize: 1024}
 		_ = SaveManifest(filepath.Join(outDir, "manifest.json"), manifest)
 
@@ -1365,6 +1367,7 @@ func TestVerify_ReviewFixesAndEdgeCases(t *testing.T) {
 	}
 
 	// 7. compareSnapshotRefetches detects faulted re-fetch via Requests map and handles error statuses
+	mkFilesDir(t, tempDir)
 	srv, err := NewServer(ServerConfig{
 		Releases: []ReleaseSource{{Dir: tempDir, Manifest: manifest}},
 	})

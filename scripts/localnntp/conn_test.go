@@ -609,6 +609,98 @@ func TestServer_MultiRelease(t *testing.T) {
 	}
 }
 
+// With packs in both releases and the files/ contents removed, only the fast path can serve, so
+// each ID must be read from its own release's pack.
+func TestServer_MultiRelease_FastPathUsesOwnPack(t *testing.T) {
+	dirA := t.TempDir()
+	mA := createTestRelease(t, dirA)
+	dirB, mB, singleB := writeSecondRelease(t, "-b")
+	for _, r := range []ReleaseSource{{Dir: dirA, Manifest: mA}, {Dir: dirB, Manifest: mB}} {
+		filesDir := filepath.Join(r.Dir, "files")
+		if err := WriteArticlesPack(filepath.Join(r.Dir, "articles.pack"), filesDir, r.Manifest.Files); err != nil {
+			t.Fatal(err)
+		}
+		for _, f := range r.Manifest.Files {
+			if err := os.Remove(filepath.Join(filesDir, f.DiskName)); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+
+	srv, err := NewServer(ServerConfig{Releases: []ReleaseSource{{Dir: dirA, Manifest: mA}, {Dir: dirB, Manifest: mB}}})
+	if err != nil {
+		t.Fatalf("NewServer: %v", err)
+	}
+	if err := srv.Start(); err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = srv.Close() }()
+	if srv.releases[0].packFile == nil || srv.releases[1].packFile == nil {
+		t.Fatal("both releases should have opened a pack")
+	}
+
+	conn := dialNNTP(t, srv, "", "")
+	for _, tt := range []struct {
+		id   string
+		want func(got []byte) bool
+	}{
+		{"single-part-1@localnntp.test", func(got []byte) bool { return bytes.HasPrefix(got, []byte("hello single")) }},
+		{"single-part-1-b@localnntp.test", func(got []byte) bool { return bytes.Equal(got, singleB) }},
+	} {
+		body, err := conn.Fetch(t.Context(), tt.id)
+		if err != nil {
+			t.Fatalf("Fetch %s: %v", tt.id, err)
+		}
+		art, err := decoder.DecodeArticle(body)
+		if err != nil {
+			t.Fatalf("DecodeArticle %s: %v", tt.id, err)
+		}
+		if !tt.want(art.Data) {
+			t.Fatalf("%s served %q: read from the wrong release's pack", tt.id, art.Data)
+		}
+	}
+}
+
+// A release with a pack served beside one without: the fast-path decision is per release.
+func TestServer_MultiRelease_FastPathIsPerRelease(t *testing.T) {
+	dirA := t.TempDir()
+	mA := createTestRelease(t, dirA) // no pack: slow path from files/
+	dirB, mB, singleB := writeSecondRelease(t, "-b")
+	filesB := filepath.Join(dirB, "files")
+	if err := WriteArticlesPack(filepath.Join(dirB, "articles.pack"), filesB, mB.Files); err != nil {
+		t.Fatal(err)
+	}
+	for _, f := range mB.Files {
+		if err := os.Remove(filepath.Join(filesB, f.DiskName)); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	srv, err := NewServer(ServerConfig{Releases: []ReleaseSource{{Dir: dirA, Manifest: mA}, {Dir: dirB, Manifest: mB}}})
+	if err != nil {
+		t.Fatalf("NewServer: %v", err)
+	}
+	if err := srv.Start(); err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = srv.Close() }()
+
+	conn := dialNNTP(t, srv, "", "")
+	for _, id := range []string{"single-part-1@localnntp.test", "single-part-1-b@localnntp.test"} {
+		body, err := conn.Fetch(t.Context(), id)
+		if err != nil {
+			t.Fatalf("Fetch %s: %v", id, err)
+		}
+		art, err := decoder.DecodeArticle(body)
+		if err != nil {
+			t.Fatalf("DecodeArticle %s: %v", id, err)
+		}
+		if id == "single-part-1-b@localnntp.test" && !bytes.Equal(art.Data, singleB) {
+			t.Fatalf("%s = %q, want release B's payload", id, art.Data)
+		}
+	}
+}
+
 func TestServer_MultiRelease_DuplicateMessageID(t *testing.T) {
 	dirA := t.TempDir()
 	mA := createTestRelease(t, dirA)
