@@ -269,6 +269,35 @@ of their failure ratio.
    early-abort accounting, stats, file registration or assembler write, and
    the handlers after it act on `res.Job`.
 
+8. **Strict priority tiers**: an article is offered to a server of priority P
+   only once every server with a lower `Priority` value has tried it (its bit
+   is in the article's `serverMask`) or is not an active candidate for it
+   (disabled, penalized, deactivated, or excluded by `top_only` or
+   `max_art_opt`).
+   `selectServerForArticle` owns the rule: the article's tier is the lowest
+   `Priority` among its candidates that are `Active`, and a full work channel
+   on every server of that tier makes the article wait for it, never fall to
+   a worse tier. Servers sharing the tier still share the load, taken in
+   slice order. The order of the configured servers does not decide the tier.
+
+   A waiting article holds no state: every pass re-evaluates it, so a better
+   server that becomes inactive mid-wait (a penalty, an optional server's
+   deactivation) stops holding it back on the next pass. The completion that
+   applied the penalty triggers that pass through `handleRequest`'s deferred
+   `signalDispatch`. A request already queued for the penalized server is
+   fetched if its worker still holds a live connection, and otherwise
+   returned unfetched by `managedConn.Get` (`errServerPenalized`), which
+   checks `Active` only before a dial.
+
+   A pass that finds the tier of a fresh article (one with no try-list entry)
+   full does not stop there, because an article later in the queue may
+   already have been tried by that tier and be dispatchable to the next one.
+   It stops walking a job once it has visited every try-list entry that job's
+   instance had when the pass began (`TriedCounts`): every later article of
+   the job is fresh, and one `selectServerForArticle` call over an empty mask
+   answers for all of them (`freshArticlesWait`). The pass then moves to the
+   next job, and ends only when every server is full.
+
 ## `nntp.Conn` pipelining contract
 
 Each `nntp.Conn` supports pipelined NNTP commands, bounded by a semaphore
@@ -491,6 +520,8 @@ a server that intermittently succeeds will never trigger auto-deactivation.
   completion leaves a retry's in-flight count and try-list alone (#665).
 - `CancelJob` reaps the entries of every instance no longer registered under
   its ID, not only those under the cancelled ID (#679).
+- Strict priority tiers: a busy higher-priority server makes an article wait
+  rather than overflow to a backup (#985).
 
 ### Open Gaps
 - None recorded.

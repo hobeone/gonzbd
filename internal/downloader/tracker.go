@@ -177,8 +177,18 @@ func (m *dispatchTracker) DropInstances(stale map[weak.Pointer[job.Job]]struct{}
 	}
 }
 
-// Len returns the number of tracked entries.
-// Self-locking, used primarily for tests and assertions.
+// TriedCounts returns, per instance, how many try-list entries it has. O(entries).
+func (m *dispatchTracker) TriedCounts() map[weak.Pointer[job.Job]]int {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	out := make(map[weak.Pointer[job.Job]]int)
+	for k := range m.tryList {
+		out[k.inst]++
+	}
+	return out
+}
+
+// Len returns the number of tracked entries. Self-locking.
 func (m *dispatchTracker) Len() (tryListLen, inFlightLen int) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
