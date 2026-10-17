@@ -207,12 +207,14 @@ type Job struct {
 	// the caller before the job is pushed. processJob skips every stage for
 	// a job that arrives with it set, sets it itself when the pre-check finds
 	// no usable download directory, and reads it for the summary's
-	// Completed/Failed headline; it is also preserved for history/UI.
+	// Completed/Failed headline; it is one component of FailReason, which is
+	// what history and finalize's log line report.
 	FailMsg string
 
 	// ParError is set by the repair and extracted_repair stages, UnpackError
 	// by the unpack stage. unpack reads ParError; extracted_repair,
 	// par2_cleanup and script read both, and Failed reads both with FailMsg.
+	// runStage keeps the error a stage returned as the cause (see FailReason).
 	// Scripts surface them via the pp_status argv and SAB_PP_STATUS env var.
 	ParError    bool
 	UnpackError bool
