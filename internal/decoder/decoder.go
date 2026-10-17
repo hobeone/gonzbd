@@ -17,6 +17,7 @@ import (
 	"bytes"
 	"errors"
 	"hash/crc32"
+	"math/bits"
 	"strconv"
 	"sync"
 	"unsafe"
@@ -148,41 +149,70 @@ type Article struct {
 // the decoded length, and errMissingTrailer / errMalformed / ErrNotYEnc on
 // structural problems.
 
-var decodePool = sync.Pool{
-	New: func() any {
-		b := make([]byte, 0, 768*1024)
-		return &b
-	},
+// Decode buffers come in size classes, one sync.Pool per class, so a buffer
+// is about the size of the article it holds: a decoded article waiting to be
+// written pins its buffer's whole capacity, and a single 768 KiB class made a
+// 64 KiB article pin twelve times its payload (#988).
+//
+// The classes are minBufferClass, then four per power of two: a request in
+// (2^k, 2^(k+1)] rounds up to a multiple of 2^(k-2), so a buffer is at most
+// a quarter larger than its request. The last class is maxDecodeSize itself
+// (10 MiB is 5 × 2 MiB).
+const (
+	minBufferClass      = 16 * 1024
+	minBufferClassShift = 14 // log2(minBufferClass)
+	numBufferClasses    = 38 // bufferClass(maxDecodeSize) is index 37
+)
+
+var decodePools [numBufferClasses]sync.Pool
+
+// bufferClass returns the pool index and capacity of the class GetBuffer
+// serves a request of n bytes from. n must be at most maxDecodeSize.
+func bufferClass(n int64) (idx int, size int64) {
+	if n <= minBufferClass {
+		return 0, minBufferClass
+	}
+	k := bits.Len64(uint64(n-1)) - 1 // 2^k < n <= 2^(k+1)
+	step := int64(1) << (k - 2)
+	size = (n + step - 1) / step * step
+	return (k-minBufferClassShift)*4 + int(size/step) - 4, size
 }
 
-// GetBuffer retrieves a byte slice from the decoding pool with at least capacity capReq,
-// up to maxDecodeSize. The returned slice has length 0.
+// BufferCap is the capacity of the buffer GetBuffer(capReq) returns.
+func BufferCap(capReq int64) int64 {
+	_, size := bufferClass(clampBufferRequest(capReq))
+	return size
+}
+
+// clampBufferRequest bounds a requested capacity to (0, maxDecodeSize].
+func clampBufferRequest(capReq int64) int64 {
+	return max(min(capReq, maxDecodeSize), 1)
+}
+
+// GetBuffer returns a length-0 slice whose capacity is BufferCap(capReq): at
+// least capReq, clamped to maxDecodeSize, and at most a quarter larger.
 func GetBuffer(capReq int64) []byte {
-	maxCap := min(capReq, maxDecodeSize)
-	if maxCap <= 0 {
-		maxCap = 768 * 1024
+	idx, size := bufferClass(clampBufferRequest(capReq))
+	if bp, ok := decodePools[idx].Get().(*[]byte); ok && bp != nil {
+		return (*bp)[:0]
 	}
-	bp, ok := decodePool.Get().(*[]byte)
-	if !ok || bp == nil {
-		return make([]byte, 0, maxCap)
-	}
-	buf := *bp
-	if int64(cap(buf)) < maxCap {
-		buf = make([]byte, 0, maxCap)
-	} else {
-		buf = buf[:0]
-	}
-	return buf
+	return make([]byte, 0, size)
 }
 
-// PutBuffer returns a byte slice to the decoding pool.
-// Slices with capacity 0 or greater than maxDecodeSize are discarded to prevent pool pollution.
+// PutBuffer returns a byte slice to the pool of its size class. A slice whose
+// capacity is not exactly a class size is dropped, so every pooled buffer has
+// its class's capacity and GetBuffer's capacity is exact.
 func PutBuffer(buf []byte) {
-	if cap(buf) == 0 || cap(buf) > maxDecodeSize {
+	c := int64(cap(buf))
+	if c < minBufferClass || c > maxDecodeSize {
+		return
+	}
+	idx, size := bufferClass(c)
+	if size != c {
 		return
 	}
 	buf = buf[:0]
-	decodePool.Put(&buf)
+	decodePools[idx].Put(&buf)
 }
 
 // DecodeArticle decodes a yEnc-encoded NNTP article body using DecodeArticleBuf with a nil scratch buffer.
