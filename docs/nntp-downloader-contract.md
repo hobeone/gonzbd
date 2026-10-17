@@ -360,9 +360,11 @@ Each `nntp.Conn` supports pipelined NNTP commands, bounded by a semaphore
   `pc.done`, the `pendingCmd` is marked `orphaned`. The reader goroutine still
   reads and discards the response to keep the connection in protocol sync. The
   semaphore slot is released either way.
-- **Connection death**: `finishReader` sets `closed=true`, closes the socket,
+- **Connection death**: `finishReader` marks the Conn closed, closes the socket,
   cancels the Conn's internal context, and wakes all pending callers with the
-  fatal error via `wakeOrphans`. When `runReader` terminates before popping any
+  fatal error. The closed mark and the fatal error are one atomic value
+  (`Conn.closed`), so any goroutine can read the error at any time without a
+  lock. When `runReader` terminates before popping any
   command for the response and the pending FIFO is empty, the cause is classified
   as an idle disconnect (`ErrIdleClosed`), enabling callers to discard the socket
   without applying server penalties.
@@ -493,8 +495,44 @@ penalized one alike.
 | **Completions Channel (`completions`)** | Downloader-wide | Bounded buffer (`opts.CompletionsBuffer`, default 256). Backpressures dispatcher when assembler is slow. |
 | **Per-Server Work Queue (`workCh`)** | Per-server pool | Capacity = `2 × Connections × PipeliningRequests`; both factors are at least 1 for a checked server. |
 | **Per-Connection Goroutines** | Per-worker slot | Bounded to `pipelineDepth × 2` via local semaphore in `connWorker`. |
-| **Decoding Buffers** | Worker payload | Allocated via `decoder.GetBuffer`, returned to `sync.Pool` on failure or after downstream consumption. |
+| **Decoding Buffers** | Worker payload | Allocated via `decoder.GetBuffer` from one of 38 size classes, so above 16 KiB a buffer is at most a quarter larger than its request; returned to the class's `sync.Pool` on failure or after downstream consumption. |
+| **Held-bytes budget (`heldbytes.Budget`)** | Downloader-wide | Bounds the decode-buffer capacity reserved for articles between `handleRequest`'s charge, taken before the fetch, and the assembler's worker finishing with the decoded buffer (`Options.HeldBytesLimit`, default 256 MiB). Each article is charged `decoder.BufferCap` of its NZB-declared size, so the bound assumes honest `bytes` values: an NZB that under-declares is charged less than it holds, and the article-count queues are then its only bound. See *Held-bytes budget* below. |
 | **Try-List (`serverMask`)** | Per-article | `uint64` bitmask for ≤64 servers (zero allocation); dynamic `[]uint64` slice only for >64 servers. |
+
+### Held-bytes budget
+
+The channels and queues between decode and disk count articles, not bytes:
+up to `pipelineDepth × 2` `handleRequest` goroutines per connection, the
+`completions` channel, the app pipeline's work channel and workers, and the
+assembler's `reqs` (2048). For 32 connections at pipelining 8 on 32 cores
+that is room for about 2,900 decoded articles, which is what a 2.2 GB heap
+plateau of 768 KiB buffers measured (#988). The budget bounds them in bytes
+instead.
+
+- **One acquire point.** `handleRequest` acquires the article's charge
+  before `fetchArticle`, holding its wire slot and no lock. When the budget
+  is spent the connection stops fetching there, so neither a fetched body
+  nor a decoded copy waits behind a slow writer. An article charged more
+  than the whole budget is charged the whole budget, so it proceeds once
+  nothing else is held. The wait ends with the downloader's context, and
+  the article goes back to the pool as a fetch cut short by shutdown does.
+- **The hold travels with the data** (`ArticleResult.Held`) and is released
+  once, by whoever ends the decoded buffer's life:
+
+  | Path | Release |
+  |---|---|
+  | fetch yields no body (gate, pause, dial or connection error, 430) | `handleRequest` |
+  | decode error, including CRC mismatch | `processFetchedArticle` |
+  | result dropped at shutdown | `emitResult` (`ArticleResult.Release`) |
+  | result for a superseded instance, a failure result, a file that cannot be registered, a `WriteArticle` error, a result dropped when the pipeline's context ends | the app pipeline (`ArticleResult.Release`) |
+  | article handed to the assembler: written, refused, faulted, a late duplicate, or discarded for a cancelled job | the assembler worker, through `WriteRequest.Release` (`ArticleResult.ReleaseHeld`) once `dispatchRequest` returns |
+
+  `Hold.Release` is idempotent, so a path that ran two of these would not
+  give bytes back twice.
+- **No deadlock.** Nothing that releases a hold waits on the budget:
+  `handleRequest` is the one acquirer (`git grep -n 'held\.Acquire(' --
+  '*.go' ':!*_test.go'` returns 1 line, in `dispatch.go`), so the assembler worker and the
+  pipeline workers, which release, never wait for room.
 
 ## Failing versus degrading
 
@@ -525,6 +563,12 @@ penalized one alike.
   (watching `ctx.Done()` for shutdown). The dispatcher is not directly blocked,
   but workers stop calling `signalDispatch` until they unblock, so dispatch
   passes produce no new work. No data is dropped or corrupted.
+
+- **Held-bytes budget spent**: when decoded articles are written more slowly
+  than they arrive, the budget fills before the queues do. Each
+  `handleRequest` then waits in its acquire before fetching, holding its wire
+  slot, so a connection stops pulling work from `workCh` once its wire slots
+  are all waiting. Writes free budget and fetching resumes.
 
 ## Compiler & architectural enforcement
 
@@ -561,6 +605,7 @@ penalized one alike.
   its ID, not only those under the cancelled ID (#679).
 - Strict priority tiers: a busy higher-priority server makes an article wait
   rather than overflow to a backup (#985).
+- The held-bytes budget and size-classed decode buffers (#988).
 - A connection fault mid-fetch costs its connection, not its server, until a
   run of them outnumbers the server's connections (#986).
 

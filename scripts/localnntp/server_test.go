@@ -223,6 +223,8 @@ func TestServer_HappyPath_SingleAndMultiPart(t *testing.T) {
 		t.Fatalf("multi part 2 length: got %d, want 800", len(art2.Data))
 	}
 
+	// The server counts an article after writing it, so the client can see the body first.
+	waitFor(t, func() bool { return srv.Stats().ServedCleanTotal >= 3 })
 	stats := srv.Stats()
 	if stats.ServedCleanTotal != 3 {
 		t.Errorf("ServedCleanTotal = %d, want 3", stats.ServedCleanTotal)
@@ -1203,6 +1205,7 @@ func TestServer_ArticlesPack_FastPath(t *testing.T) {
 		}
 	}
 
+	waitFor(t, func() bool { return srv.Stats().ServedCleanTotal >= 3 })
 	stats := srv.Stats()
 	if stats.ServedCleanTotal != 3 {
 		t.Errorf("ServedCleanTotal = %d, want 3", stats.ServedCleanTotal)
@@ -1239,6 +1242,7 @@ func TestServer_ArticlesPack_FastPath(t *testing.T) {
 		t.Fatalf("expected ErrCRCMismatch for corrupt-wire over packfile, got: %v", err)
 	}
 
+	waitFor(t, func() bool { return srv.Stats().FaultsFiredTotal >= 2 })
 	stats = srv.Stats()
 	if stats.FaultsFiredTotal != 2 {
 		t.Errorf("FaultsFiredTotal = %d, want 2", stats.FaultsFiredTotal)

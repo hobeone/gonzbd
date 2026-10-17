@@ -447,7 +447,7 @@ func TestFetchStatAfterReaderError(t *testing.T) {
 	}
 	defer func() { _ = conn.Close() }()
 
-	// Wait for runReader to observe the closed socket and record closeErr.
+	// Wait for runReader to observe the closed socket and record its reason.
 	<-conn.ctx.Done()
 
 	wantErr := conn.closeError()

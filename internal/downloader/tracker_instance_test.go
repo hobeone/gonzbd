@@ -154,11 +154,11 @@ func TestTracker_ARemovedInstancesLateCompletionLeavesTheRetrysEntries(t *testin
 		}, true},
 		{"a successful fetch", func(t *testing.T, d *Downloader, req *articleRequest) {
 			d.processFetchedArticle(t.Context(), checkedServer(config.ServerConfig{Name: "s1"}), req,
-				yencBody("test.bin", []byte("payload")))
+				yencBody("test.bin", []byte("payload")), nil)
 		}, false},
 		{"a terminal decode error", func(t *testing.T, d *Downloader, req *articleRequest) {
 			d.processFetchedArticle(t.Context(), checkedServer(config.ServerConfig{Name: "s1"}), req,
-				[]byte("neither yEnc nor UU\r\n"))
+				[]byte("neither yEnc nor UU\r\n"), nil)
 		}, false},
 		{"an exhausted try-list", func(t *testing.T, d *Downloader, req *articleRequest) {
 			d.applyDispatchPlan(t.Context(), dispatchPlan{exhausted: []*articleRequest{req}}, dispatchOpts{})

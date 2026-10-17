@@ -172,7 +172,7 @@ func TestProcessFetchedArticle_OffsetUnknownForPartIsTerminal(t *testing.T) {
 		job: j, fileIdx: 0, artIdx: artIdx, messageID: "msg1@h", partNumber: 2,
 	}
 
-	d.processFetchedArticle(t.Context(), srv, req, []byte(uuBody))
+	d.processFetchedArticle(t.Context(), srv, req, []byte(uuBody), nil)
 
 	select {
 	case res := <-d.completions:

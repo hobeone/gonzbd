@@ -282,10 +282,10 @@ func (c *Conn) submit(pc *pendingCmd, cmd []byte) error {
 	defer c.sendLock.Unlock()
 
 	// Check closed inside pendingLock to prevent a race with
-	// finishReader: if finishReader sets closed=true and drains
+	// finishReader: if finishReader marks the Conn closed and drains
 	// pending, a concurrent submit must not re-append after the drain.
 	c.pendingLock.Lock()
-	if c.closed.Load() {
+	if c.Closed() {
 		c.pendingLock.Unlock()
 		c.releaseSem()
 		return c.closeError()
@@ -348,7 +348,7 @@ func (c *Conn) popPending() *pendingCmd {
 // pc — the command the reader has already taken off the FIFO.
 //
 // That ordering is the whole reason this exists as a named step. The
-// reader's usual teardown, wakeOrphans, drains the FIFO, and pc is no
+// reader's usual teardown, finishReaderWithMode, drains the FIFO, and pc is no
 // longer in it; nothing else will ever close its done channel, so
 // finishReader alone leaves pc's caller blocked until its context
 // expires. Every fatal path taken between popPending and the final
@@ -387,19 +387,16 @@ func (c *Conn) finishReaderWithMode(err error, prePop bool) {
 		if prePop && len(orphans) == 0 && err != nil && !errors.Is(err, ErrIdleClosed) {
 			err = fmt.Errorf("%w: %w", ErrIdleClosed, err)
 		}
-		// Set closeErr BEFORE the atomic flag so that any concurrent
-		// reader of c.closed sees a valid closeErr. Holding pendingLock
-		// across closed.Store(true) and draining c.pending ensures submit
-		// (which checks c.closed.Load() under pendingLock) either appends
-		// before this drain or observes c.closed == true.
-		c.closeErr = err
-		c.closed.Store(true)
+		// Holding pendingLock across the store and the drain ensures
+		// submit (which checks c.closed under pendingLock) either appends
+		// before this drain or observes the Conn closed.
+		c.closed.Store(&closeState{err: err})
 		c.pendingLock.Unlock()
 
 		if c.cancel != nil {
 			c.cancel() // release context resources; prevents leak when Close() is never called
 		}
-		_ = c.nc.Close() //nolint:errcheck // best-effort cleanup; underlying error already captured in c.closeErr
+		_ = c.nc.Close() //nolint:errcheck // best-effort cleanup; underlying error already captured in c.closed
 
 		for _, pc := range orphans {
 			pc.result = cmdResult{err: err}
@@ -409,8 +406,9 @@ func (c *Conn) finishReaderWithMode(err error, prePop bool) {
 }
 
 // wakeOrphans drains the pending FIFO and signals all waiting callers
-// with the given error. Called by both finishReader and Close inside
-// closeOnce.Do, so it runs at most once per connection.
+// with the given error. Close calls it inside closeOnce.Do, so it runs
+// at most once per connection; finishReaderWithMode drains the FIFO
+// itself, under the same lock as its store to c.closed.
 func (c *Conn) wakeOrphans(err error) {
 	c.pendingLock.Lock()
 	orphans := c.pending
@@ -433,11 +431,27 @@ func (c *Conn) releaseSem() {
 	}
 }
 
+// closeState is what Conn.closed holds once the Conn has closed. err is
+// the reason finishReaderWithMode recorded, and nil when Close ended
+// the Conn first.
+type closeState struct{ err error }
+
+// closeCause returns the reason the reader goroutine recorded for ending
+// the connection, or nil while the Conn is open or when Close ended it.
+// It is safe to call from any goroutine at any time: the reason is read
+// through the same atomic load that reports the Conn closed.
+func (c *Conn) closeCause() error {
+	if s := c.closed.Load(); s != nil {
+		return s.err
+	}
+	return nil
+}
+
 // closeError returns the recorded reason the connection became unusable,
 // or a generic ErrClosed if none was captured.
 func (c *Conn) closeError() error {
-	if c.closeErr != nil {
-		return c.closeErr
+	if err := c.closeCause(); err != nil {
+		return err
 	}
 	return ErrClosed
 }
