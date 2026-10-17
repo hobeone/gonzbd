@@ -103,9 +103,18 @@ func TestSliceFileSegments(t *testing.T) {
 		t.Fatalf("WriteFile: %v", err)
 	}
 
-	rf, err := SliceFileSegments(fpath, 0, "data.bin", "obf_data.bin", RoleRARVolume, 1, 500)
+	rf, err := SliceFileSegments("relA/1", fpath, 0, "data.bin", "obf_data.bin", RoleRARVolume, 1, 500)
 	if err != nil {
 		t.Fatalf("SliceFileSegments: %v", err)
+	}
+	other, err := SliceFileSegments("relB/1", fpath, 0, "data.bin", "obf_data.bin", RoleRARVolume, 1, 500)
+	if err != nil {
+		t.Fatalf("SliceFileSegments other namespace: %v", err)
+	}
+	for i := range rf.Segments {
+		if rf.Segments[i].MessageID == other.Segments[i].MessageID {
+			t.Fatalf("seg[%d] Message-ID %q is shared by two namespaces; a multi-release server would refuse them", i, rf.Segments[i].MessageID)
+		}
 	}
 	if rf.TotalSize != 1600 {
 		t.Fatalf("TotalSize = %d, want 1600", rf.TotalSize)
@@ -335,10 +344,10 @@ func TestSliceFileSegments_Errors(t *testing.T) {
 		t.Fatalf("WriteFile: %v", err)
 	}
 
-	if _, err := SliceFileSegments(fpath, 0, "dummy.bin", "dummy.bin", RoleSidecar, 0, 0); err == nil {
+	if _, err := SliceFileSegments("ns", fpath, 0, "dummy.bin", "dummy.bin", RoleSidecar, 0, 0); err == nil {
 		t.Error("expected error for partSize=0")
 	}
-	if _, err := SliceFileSegments("/nonexistent_dir/dummy.bin", 0, "dummy.bin", "dummy.bin", RoleSidecar, 0, 100); err == nil {
+	if _, err := SliceFileSegments("ns", "/nonexistent_dir/dummy.bin", 0, "dummy.bin", "dummy.bin", RoleSidecar, 0, 100); err == nil {
 		t.Error("expected error for nonexistent file")
 	}
 }
