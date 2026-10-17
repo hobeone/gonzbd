@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 )
@@ -50,20 +51,39 @@ type DiskProbe struct {
 	// exercised without a real 10-minute wait.
 	evictAfter time.Duration
 
+	// wrote is the total NoteWritten has added.
+	wrote atomic.Int64
+
 	mu   sync.Mutex
 	dirs map[string]*probeState
 }
 
 // probeState is the per-directory cache/in-flight-tracking state. pending is
 // non-nil exactly while a probe goroutine is outstanding for this
-// directory; free, err, and fetchedAt are written only by that goroutine
+// directory; free, err and fetchedAt are written only by that goroutine
 // (under mu) when it completes.
+//
+// wroteAtProbe is DiskProbe.wrote when claim launched the probe behind free.
+// The difference from the current total is what has been written since the
+// reading, and estimate subtracts it. A total that is differenced, rather than
+// a counter that is reset, keeps bytes written while the statfs was in flight:
+// the reading may or may not include them, and counting them twice errs on the
+// side of too little free space.
 type probeState struct {
-	mu        sync.Mutex
-	pending   chan struct{}
-	free      int64
-	err       error
-	fetchedAt time.Time
+	mu           sync.Mutex
+	pending      chan struct{}
+	free         int64
+	err          error
+	fetchedAt    time.Time
+	wroteAtProbe int64
+}
+
+// estimate is the free space to report for st's reading: the statfs result
+// less the bytes written, to any directory, since it was launched, floored at
+// zero. Called with st.mu held; p.wrote is atomic so as not to invert the
+// p.mu then st.mu order claim takes.
+func (p *DiskProbe) estimate(st *probeState) int64 {
+	return max(st.free-(p.wrote.Load()-st.wroteAtProbe), 0)
 }
 
 // NewDiskProbe returns a DiskProbe that caches statfs results for ttl.
@@ -76,12 +96,35 @@ func NewDiskProbe(ttl time.Duration) *DiskProbe {
 	}
 }
 
+// NoteWritten records that n bytes were written, so that FreeBytes can report
+// less than the cached reading until the next probe, for every directory: job
+// directories share a filesystem, so the total is not split by directory.
+// Directories on different filesystems therefore lower each other's estimate,
+// which errs toward less free space. Without it a
+// cached reading is blind to the caller's own writes, and at disk speeds the
+// floor is overshot by write rate times ttl (#987). Writes it is not told of
+// (faulted writes, other processes) are not subtracted; see
+// docs/durability-contract.md § "Disk-space pre-flight".
+//
+// Bytes noted before a directory's first probe are not subtracted from it: the
+// probe sees them. NoteWritten performs no I/O, so it is safe to call from a
+// write path.
+func (p *DiskProbe) NoteWritten(n int64) {
+	// A nil receiver is an Assembler built without New, as several tests do;
+	// New always sets diskProbe.
+	if p == nil || n <= 0 {
+		return
+	}
+	p.wrote.Add(n)
+}
+
 // FreeBytes returns the number of bytes available to unprivileged processes
 // on the filesystem containing dir, per the same semantics as the
 // package-level FreeBytes, but deduped and cached: concurrent or rapid
 // repeated calls for the same directory share at most one in-flight statfs
 // call, and a completed result is reused for ttl before a fresh probe is
-// launched.
+// launched. A result is reduced by the bytes NoteWritten has recorded since
+// its probe was launched.
 //
 // ctx must be non-nil and cancellable (ctx.Done() != nil), matching
 // FreeBytes' invariant — a nil-Done() ctx would make the caller's select
@@ -105,7 +148,7 @@ func (p *DiskProbe) FreeBytes(ctx context.Context, dir string) (int64, error) {
 	select {
 	case <-pending.done:
 		pending.st.mu.Lock()
-		free, err := pending.st.free, pending.st.err
+		free, err := p.estimate(pending.st), pending.st.err
 		pending.st.mu.Unlock()
 		return free, err
 	case <-ctx.Done():
@@ -146,11 +189,12 @@ func (p *DiskProbe) claim(dir string) (result claimResult, free int64, err error
 	st.mu.Lock()
 	defer st.mu.Unlock()
 	if st.pending == nil && !st.fetchedAt.IsZero() && time.Since(st.fetchedAt) < p.ttl {
-		return claimResult{}, st.free, st.err, true
+		return claimResult{}, p.estimate(st), st.err, true
 	}
 	if st.pending == nil {
 		pending := make(chan struct{})
 		st.pending = pending
+		st.wroteAtProbe = p.wrote.Load()
 		go p.probe(st, dir, pending)
 	}
 	return claimResult{st: st, done: st.pending}, 0, nil, false

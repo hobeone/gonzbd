@@ -9,6 +9,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+	"weak"
 
 	"github.com/hobeone/gonzbd/internal/config"
 	"github.com/hobeone/gonzbd/internal/constants"
@@ -44,6 +45,7 @@ type UnfinishedArticle struct {
 // without needing to drive goroutines or NNTP connections.
 type dispatchPlan struct {
 	dispatched   int                 // number of articles handed to a server
+	scanned      int                 // number of articles the pass examined
 	activeJobs   map[string]struct{} // jobs that got at least one article dispatched
 	hopelessJobs map[string]struct{} // jobs whose job.RepairState is Hopeless()
 	exhausted    []*articleRequest   // articles with no eligible server this pass
@@ -75,6 +77,11 @@ func (d *Downloader) buildDispatchPlan(ctx context.Context, opts dispatchOpts) d
 	if d.allServersFull(opts.serverCfgs) {
 		return plan
 	}
+
+	// The try-list entries of each instance when the pass began; see
+	// freshArticlesWait. Entries deleted meanwhile only keep the walk going
+	// longer.
+	tried := d.tracker.TriedCounts()
 
 	for _, row := range d.dispatcher.List() {
 		// != IntentRun, not == IntentPause: a cancelled job (IntentCancel)
@@ -114,6 +121,12 @@ func (d *Downloader) buildDispatchPlan(ctx context.Context, opts dispatchOpts) d
 			continue
 		}
 
+		// triedLeft counts the entries of this job's walk not yet visited.
+		triedLeft := tried[weak.Make(j)]
+		if triedLeft == 0 && d.freshArticlesWait(opts) {
+			continue
+		}
+
 		jobAdded := j.Added()
 		stopAll := false
 		_ = j.ForEachUnfinishedArticle(func(fi int, artIdx int32, id string, bytes int, number int, subject string) bool { //nolint:errcheck // an evicted job (ErrNotResident, its one refusal) has nothing to dispatch this pass
@@ -128,7 +141,11 @@ func (d *Downloader) buildDispatchPlan(ctx context.Context, opts dispatchOpts) d
 				PartNumber:  number,
 				RepairState: repairState,
 			}
-			handled, exReq := d.tryDispatch(ctx, a, opts) //lockio: tracker lock is leaf under contentMu
+			handled, exReq, hadTryList := d.tryDispatch(ctx, a, opts) //lockio: tracker lock is leaf under contentMu
+			plan.scanned++
+			if hadTryList {
+				triedLeft--
+			}
 			if handled {
 				plan.dispatched++
 				plan.activeJobs[j.ID()] = struct{}{}
@@ -136,15 +153,21 @@ func (d *Downloader) buildDispatchPlan(ctx context.Context, opts dispatchOpts) d
 			if exReq != nil {
 				plan.exhausted = append(plan.exhausted, exReq)
 			}
-			if d.allServersFull(opts.serverCfgs) {
-				stopAll = true
-				return false
-			}
 			if ctx.Err() != nil {
 				stopAll = true
 				return false
 			}
-			return true
+			if triedLeft > 0 || !d.freshArticlesWait(opts) {
+				if d.allServersFull(opts.serverCfgs) {
+					stopAll = true
+					return false
+				}
+				return true
+			}
+			// Nothing left in this job can be dispatched; later jobs can only
+			// if some server still has room.
+			stopAll = d.allServersFull(opts.serverCfgs)
+			return false
 		})
 		if stopAll {
 			break
@@ -152,6 +175,24 @@ func (d *Downloader) buildDispatchPlan(ctx context.Context, opts dispatchOpts) d
 	}
 
 	return plan
+}
+
+// freshArticlesWait reports whether an article with no try-list entry must
+// wait this pass. Such an article has the candidates of an empty mask, so one
+// selectServerForArticle call answers for all of them, and buildDispatchPlan
+// stops walking a job once it is true and the job has no entry left to
+// visit: every unvisited article of the job is then such an article. An
+// entry is created only by SetTriedLocked, whose one caller is tryDispatch,
+// for the article it is visiting
+// (`git grep -n 'SetTriedLocked(' -- '*.go' ':!*_test.go'` finds 3 lines:
+// that call, the declaration, and this comment). UnmarkTried rewrites an
+// entry only while it exists.
+//
+// An exhausted article (-1) does not count as waiting: the walk must reach
+// every article to report it.
+func (d *Downloader) freshArticlesWait(opts dispatchOpts) bool {
+	srv, idx := d.selectServerForArticle(serverMask{}, false, opts)
+	return srv == nil && idx != -1
 }
 
 // allServersFull reports whether every active, enabled server has a full work channel.
@@ -244,12 +285,14 @@ func (d *Downloader) hasDownloadableJobs() bool {
 //  1. Server is Enable && Active(now) (not under penalty / deactivated).
 //  2. The article has not already been definitively rejected by this
 //     server (try-list miss).
+//  3. No eligible server has a better (lower) Priority value
+//     (selectServerForArticle).
 //
 // Sending is non-blocking: if the server's work channel is full, the
-// dispatcher skips to the next server for that article. If no server
-// can accept the article this pass, the article is simply left alone;
-// a future signalDispatch (worker completion) or dispatcher.Notify (queue
-// mutation) will trigger another pass.
+// dispatcher tries the next server of the same priority, and otherwise
+// leaves the article alone for this pass; a future signalDispatch (worker
+// completion) or dispatcher.Notify (queue mutation) will trigger another
+// pass.
 func (d *Downloader) dispatchPass(ctx context.Context) {
 	if d.paused.Load() || d.dispatcher.Paused() {
 		return
@@ -286,8 +329,8 @@ func (d *Downloader) dispatchPass(ctx context.Context) {
 	d.applyDispatchPlan(ctx, plan, opts)
 }
 
-// tryDispatch hands the article to the first eligible server with
-// spare capacity. The server is recorded in the try-list and the
+// tryDispatch hands the article to the server selectServerForArticle
+// picks, if any. The server is recorded in the try-list and the
 // article's in-flight counter is incremented atomically with the
 // send, so a later dispatch pass cannot re-send the same article
 // while one is still being fetched.
@@ -304,7 +347,7 @@ func (d *Downloader) dispatchPass(ctx context.Context) {
 // the current server is unmarked; on a definitive 430 the entry
 // stays so the article falls through to the next server.
 //
-// Returns (handled, exhausted):
+// Returns (handled, exhausted, hadTryList):
 //   - handled=true means the caller should treat the article as done for
 //     this pass (either because we fanned it out to a server or because
 //     every server is already in its try-list).
@@ -313,17 +356,21 @@ func (d *Downloader) dispatchPass(ctx context.Context) {
 //     emit ErrNoServersLeft for it *after* releasing any locks held
 //     across the dispatchPass iteration — emitting inline would deadlock
 //     the dispatcher if the completions channel is full.
+//   - hadTryList reports whether the article had a try-list entry when
+//     this call looked, before any entry this call adds.
 //
 // A future dispatchReady signal from any worker will bring us back to
 // re-try articles that returned (false, nil).
-func (d *Downloader) tryDispatch(ctx context.Context, a UnfinishedArticle, opts dispatchOpts) (bool, *articleRequest) {
+func (d *Downloader) tryDispatch(ctx context.Context, a UnfinishedArticle, opts dispatchOpts) (handled bool, exhausted *articleRequest, hadTryList bool) {
 	key := keyFor(a.Job, a.ArtIdx)
 
 	d.tracker.Lock()
 
+	mask, hasTried := d.tracker.TryListLocked(key)
+
 	if d.tracker.InFlightLocked(key) > 0 {
 		d.tracker.Unlock()
-		return false, nil
+		return false, nil, hasTried
 	}
 
 	// Allocate the request only after confirming the article is not
@@ -344,10 +391,8 @@ func (d *Downloader) tryDispatch(ctx context.Context, a UnfinishedArticle, opts 
 	// substantially cheaper in runtime.selectgo.
 	if ctx.Err() != nil {
 		d.tracker.Unlock()
-		return false, nil
+		return false, nil, hasTried
 	}
-
-	mask, hasTried := d.tracker.TryListLocked(key)
 
 	// MaxArtTries: if the article has already been tried on the maximum
 	// number of servers, declare it permanently failed. This prevents
@@ -357,7 +402,7 @@ func (d *Downloader) tryDispatch(ctx context.Context, a UnfinishedArticle, opts 
 		d.tracker.Unlock()
 		// --- No lock held below this line ---
 		d.log.Warn("article exceeded max retries", "msgid", a.MessageID, "job", a.Job.ID(), "tries", tries, "max", opts.maxArtTries)
-		return true, req
+		return true, req, hasTried
 	}
 
 	srv, idx := d.selectServerForArticle(mask, hasTried, opts)
@@ -370,28 +415,34 @@ func (d *Downloader) tryDispatch(ctx context.Context, a UnfinishedArticle, opts 
 				d.tracker.SetTriedLocked(key, mask)
 				d.tracker.IncrementInFlightLocked(key)
 				d.tracker.Unlock()
-				return true, nil
+				return true, nil, hasTried
 			default:
 				// server queue filled between selectServerForArticle and ch <- req
 			}
 		}
 		d.tracker.Unlock()
-		return false, nil
+		return false, nil, hasTried
 	}
 	if idx == -1 {
 		d.tracker.Unlock()
 		// --- No lock held below this line ---
 		d.log.Warn("article failed on all servers", "msgid", a.MessageID, "job", a.Job.ID())
-		return true, req
+		return true, req, hasTried
 	}
 	d.tracker.Unlock()
-	return false, nil
+	return false, nil, hasTried
 }
 
-// selectServerForArticle scans servers for the first eligible candidate with an available work slot.
+// selectServerForArticle picks the server an article goes to now, under strict
+// priority tiers (#985). The article's tier is the lowest Priority value among
+// its candidates (isServerCandidate) that are Active, and only a server of
+// that tier with a free work slot is returned: a full tier makes the article
+// wait for it rather than fall to a worse one. An inactive candidate does not
+// hold the article back. Servers sharing the tier are taken in slice order.
+//
 // Returns (srv, idx) if a server can accept the article right now.
-// Returns (nil, -1) if no eligible server exists and all enabled servers have been definitively tried (exhausted).
-// Returns (nil, -2) if no server can accept right now (e.g. queues full or temporarily penalized).
+// Returns (nil, -1) if the article has no candidate left (exhausted).
+// Returns (nil, -2) if it must wait: its tier is full, or no candidate is active.
 func (d *Downloader) selectServerForArticle(mask serverMask, hasTried bool, opts dispatchOpts) (srv *Server, serverIdx int) {
 	var minPriority int
 	if opts.topOnly {
@@ -411,32 +462,44 @@ func (d *Downloader) selectServerForArticle(mask serverMask, hasTried bool, opts
 		}
 	}
 
-	anyEligible := false
-	allTried := true // assume all tried until proven otherwise
+	anyCandidate := false
+	tierFound := false
+	tier := 0
+	var pick *Server
+	pickIdx := -2
 	for idx, srv := range d.servers {
 		cfg := &opts.serverCfgs[idx]
 		if !isServerCandidate(cfg, mask, hasTried, idx, opts.topOnly, minPriority, optionalTried, opts.maxArtOpt) {
 			continue
 		}
+		anyCandidate = true
 		if !srv.Active(opts.now) {
-			allTried = false
 			continue
 		}
-		anyEligible = true
-		ch, ok := d.workCh[cfg.Name]
-		if !ok {
+		if tierFound && cfg.Priority > tier {
 			continue
 		}
-		if len(ch) < cap(ch) {
-			return srv, idx
+		if !tierFound || cfg.Priority < tier {
+			tierFound, tier = true, cfg.Priority
+			pick, pickIdx = nil, -2
+		}
+		if pick == nil && hasRoom(d.workCh[cfg.Name]) {
+			pick, pickIdx = srv, idx
 		}
 	}
 
-	if !anyEligible && allTried {
+	if pick != nil {
+		return pick, pickIdx
+	}
+	if !anyCandidate {
 		return nil, -1
 	}
 	return nil, -2
 }
+
+// hasRoom reports whether a send to ch would not block. A server with no work
+// channel (nil) has none.
+func hasRoom(ch chan *articleRequest) bool { return len(ch) < cap(ch) }
 
 // clampPenalty enforces d.opts.NoPenalties and d.opts.MaxPenalty: when
 // MaxPenalty is set or NoPenalties is true, no server penalty may exceed the

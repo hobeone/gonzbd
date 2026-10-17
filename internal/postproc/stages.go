@@ -4,6 +4,7 @@
 package postproc
 
 import (
+	"cmp"
 	"context"
 	"encoding/json"
 	"errors"
@@ -206,15 +207,23 @@ type Job struct {
 	// the caller before the job is pushed. processJob skips every stage for
 	// a job that arrives with it set, sets it itself when the pre-check finds
 	// no usable download directory, and reads it for the summary's
-	// Completed/Failed headline; it is also preserved for history/UI.
+	// Completed/Failed headline; it is one component of FailReason, which is
+	// what history and finalize's log line report.
 	FailMsg string
 
 	// ParError is set by the repair and extracted_repair stages, UnpackError
 	// by the unpack stage. unpack reads ParError; extracted_repair,
 	// par2_cleanup and script read both, and Failed reads both with FailMsg.
+	// runStage keeps the error a stage returned as the cause (see FailReason).
 	// Scripts surface them via the pp_status argv and SAB_PP_STATUS env var.
 	ParError    bool
 	UnpackError bool
+
+	// parCause and unpackCause are the error text of the stage that set
+	// ParError and UnpackError. They are written in recordStageFailure and
+	// read in FailReason. A flag set without a stage error has no cause.
+	parCause    string
+	unpackCause string
 
 	// quickCheck is what the quickcheck stage was able to determine about
 	// this job's file CRCs. See QuickCheckOutcome. QuickCheckStage is its
@@ -352,6 +361,39 @@ func (e StageLogEntry) MarshalJSON() ([]byte, error) {
 // finds 4 lines).
 func (j *Job) Failed() bool {
 	return j.ParError || j.UnpackError || j.FailMsg != ""
+}
+
+// FailReason is the one statement of why a failed job failed: the cause of
+// each failed stage, then FailMsg, joined by "; ". It is empty exactly when
+// Failed is false. A repair or unpack failure with no recorded cause reads
+// "repair failed" or "unpack failed".
+func (j *Job) FailReason() string {
+	var reasons []string
+	if j.ParError {
+		reasons = append(reasons, cmp.Or(j.parCause, "repair failed"))
+	}
+	if j.UnpackError {
+		reasons = append(reasons, cmp.Or(j.unpackCause, "unpack failed"))
+	}
+	if j.FailMsg != "" {
+		reasons = append(reasons, j.FailMsg)
+	}
+	return strings.Join(reasons, "; ")
+}
+
+// recordStageFailure keeps err as the cause of whichever of ParError and
+// UnpackError the stage that returned it newly set. parBefore and
+// unpackBefore are those flags as they were before the stage ran.
+func (j *Job) recordStageFailure(parBefore, unpackBefore bool, err error) {
+	if err == nil {
+		return
+	}
+	if j.ParError && !parBefore {
+		j.parCause = err.Error()
+	}
+	if j.UnpackError && !unpackBefore {
+		j.unpackCause = err.Error()
+	}
 }
 
 // payloadDeleter marks a stage that removes files from DownloadDir as it runs,

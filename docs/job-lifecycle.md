@@ -1128,8 +1128,8 @@ queue-wide pause every job still carries `IntentRun`, so keying on
 `IntentPause` alone renders the whole queue `Queued` — a live API regression,
 pinned by `TestToSABnzbd_GlobalPauseRendersAsPaused`. `WaitReason.IsPause()`
 covers `UserPaused` and `GlobalPause` both. A low-disk pause (`handleLowDisk`
-in `internal/app/app.go`, triggered when `assembler.checkDiskSpace` observes
-`free < minFreeBytes`) sets the same queue-wide `GlobalPause` alongside
+in `internal/app/app.go`, triggered when `assembler.checkDiskSpace`'s estimated
+free space, a cached reading less its own writes, is `< minFreeBytes`) sets the same queue-wide `GlobalPause` alongside
 `downloader.Pause()` under `app.mu`, gating every new `Advance` state move
 (including `Assessing`, `Repairing`, `Extracting`, and `Finalizing` entry)
 while leaving already-launched workers running until `tryAutoResumeLowDisk`

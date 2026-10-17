@@ -476,7 +476,9 @@ func (p *PostProcessor) runStage(ctx context.Context, stage Stage, job *Job) (St
 		Started: time.Now(),
 	}
 
+	parBefore, unpackBefore := job.ParError, job.UnpackError
 	err := stage.Run(ctx, job)
+	job.recordStageFailure(parBefore, unpackBefore, err)
 	entry.Elapsed = time.Since(entry.Started)
 	entry.Err = err
 
