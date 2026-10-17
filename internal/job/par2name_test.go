@@ -36,3 +36,31 @@ func TestIsRecoveryVolume(t *testing.T) {
 		})
 	}
 }
+
+func TestRecoveryVolumeBlocks(t *testing.T) {
+	tests := []struct {
+		name   string
+		blocks int
+		ok     bool
+	}{
+		{"movie.vol00+01.par2", 1, true},
+		{"movie.vol63+13.par2", 13, true},
+		{"Movie.VOL07+08.PAR2", 8, true},
+		{"movie.vol000+100.par2", 100, true},
+		{`[3/12] - "movie.vol31+32.par2" yEnc (1/97)`, 32, true},
+		// The - form names a volume number, not a block count.
+		{"movie.vol03-07.par2", 0, false},
+		// Not recovery volumes at all.
+		{"movie.vol000+00.par2", 0, false},
+		{"movie.par2", 0, false},
+		{"movie.mkv", 0, false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			blocks, ok := RecoveryVolumeBlocks(tt.name)
+			if blocks != tt.blocks || ok != tt.ok {
+				t.Errorf("RecoveryVolumeBlocks(%q) = (%d, %v), want (%d, %v)", tt.name, blocks, ok, tt.blocks, tt.ok)
+			}
+		})
+	}
+}
