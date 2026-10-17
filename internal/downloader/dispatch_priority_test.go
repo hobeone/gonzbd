@@ -455,7 +455,9 @@ func TestDownloader_WorkMovesToTheBackupWhenThePrimaryIsPenalized(t *testing.T) 
 		primary.addArticle(id, body)
 		backup.addArticle(id, body)
 	}
-	primary.hangupOnFetch(ids[failAt])
+	// A 502 penalizes the server at once; a mid-fetch hang-up would only cost
+	// the connection (#986).
+	primary.respondOnFetch(ids[failAt], "502 service unavailable")
 	disp := newTestDispatcher(t)
 	j, m := makeJobWithArticles(t, ids)
 	addTestJob(t, disp, j, m)
@@ -475,9 +477,9 @@ func TestDownloader_WorkMovesToTheBackupWhenThePrimaryIsPenalized(t *testing.T) 
 		served[r.MessageID] = r.ServerName
 	}
 	if p.Active(time.Now()) {
-		t.Fatal("primary is not penalized; the hang-up did not exercise the penalty path")
+		t.Fatal("primary is not penalized; the 502 did not exercise the penalty path")
 	}
-	// How many articles the primary served before the hang-up depends on when
+	// How many articles the primary served before the 502 depends on when
 	// its slot frees during a pass, so only "some" is asserted: the first
 	// pass queues art00 on it ahead of everything else.
 	if got := primary.fetches.Load(); got < 1 {
@@ -487,7 +489,7 @@ func TestDownloader_WorkMovesToTheBackupWhenThePrimaryIsPenalized(t *testing.T) 
 		t.Errorf("primary and backup served %d articles together, want %d", got, len(ids))
 	}
 	if got := served[ids[failAt]]; got != "backup" {
-		t.Errorf("the article the primary hung up on was served by %q, want backup", got)
+		t.Errorf("the article the primary answered 502 for was served by %q, want backup", got)
 	}
 }
 

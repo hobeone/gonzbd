@@ -2,7 +2,9 @@ package downloader
 
 import (
 	"errors"
+	"io"
 	"net"
+	"syscall"
 	"time"
 
 	"github.com/hobeone/gonzbd/internal/constants"
@@ -23,9 +25,11 @@ import (
 //	ErrAuthRequired      → PenaltyShort  (re-auth prompt; transient)
 //	ErrClosed            → PenaltyUnknown (unexpected disconnect)
 //	ErrDesynced          → PenaltyUnknown (protocol desync; see below)
+//	a timeout            → PenaltyUnknown (dial or handshake)
 //	anything else        → PenaltyUnknown (catch-all)
 //
-// A zero return means no penalty should be applied.
+// A zero return means no penalty should be applied. A connection fault
+// during a fetch is charged by chargeFetchFailure, not here.
 func PenaltyFor(err error) time.Duration {
 	switch {
 	case errors.Is(err, nntp.ErrAuthRejected):
@@ -61,9 +65,34 @@ func PenaltyFor(err error) time.Duration {
 	case errors.Is(err, nntp.ErrInvalidState):
 		// Programming error; log and apply a short hold to avoid spin.
 		return constants.PenaltyShort
+	case isTimeout(err):
+		// A dial or handshake that timed out. The catch-all's figure,
+		// stated so it is a decision; a fetch's timeout is a connection
+		// fault and chargeFetchFailure does not ask PenaltyFor about it.
+		return constants.PenaltyUnknown
 	default:
 		return constants.PenaltyUnknown
 	}
+}
+
+// isConnFault reports whether a Fetch error is a fault of the connection
+// that returned it rather than of its server: the transport timed out, was
+// reset or ended while a command was outstanding. A loss with no command
+// outstanding is ErrIdleClosed, which fetchArticle handles before this.
+func isConnFault(err error) bool {
+	return errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) ||
+		errors.Is(err, syscall.ECONNRESET) || errors.Is(err, syscall.ECONNABORTED) ||
+		errors.Is(err, syscall.EPIPE) || isTimeout(err)
+}
+
+// isTimeout reports whether err is a timeout. *net.OpError implements
+// Timeout() too, so this must be asked before matching on *net.OpError.
+func isTimeout(err error) bool {
+	t, ok := errors.AsType[interface {
+		error
+		Timeout() bool
+	}](err)
+	return ok && t.Timeout()
 }
 
 // classifyConnError maps a connection-level failure (a dial error, or a
@@ -99,13 +128,7 @@ func classifyConnError(err error) string {
 		// into the catch-all it is invisible.
 		return telemetry.ErrClassNNTPDesynced
 	}
-	// Check Timeout() before *net.OpError: net.OpError itself implements
-	// Timeout() bool, so checking OpError first would swallow every real
-	// network timeout into "network_error" and leave "timeout" dead code.
-	if timeoutErr, ok := errors.AsType[interface {
-		error
-		Timeout() bool
-	}](err); ok && timeoutErr.Timeout() {
+	if isTimeout(err) {
 		return telemetry.ErrClassTimeout
 	}
 	if _, ok := errors.AsType[*net.OpError](err); ok {

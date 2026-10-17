@@ -84,6 +84,17 @@ func (s *Server) goodConnections() int64 { return s.goodConns.Load() }
 // RecordBadConnection increments the bad-connection counter. Thread-safe.
 func (s *Server) RecordBadConnection() { s.badConns.Add(1) }
 
+// RecordConnFault records a bad connection that was a connection fault (see
+// isConnFault) and reports whether s is now owed a penalty: whether more bad
+// connections than s has connections were recorded since the last
+// RecordGoodConnection. Losing each connection once from a clean count, as a
+// provider restart or a NAT flush does, therefore earns none. Reporting true resets the count, so
+// one run of faults earns one penalty. Thread-safe.
+func (s *Server) RecordConnFault() bool {
+	n := s.badConns.Add(1)
+	return n > int64(s.cfg.Connections) && s.badConns.CompareAndSwap(n, 0)
+}
+
 // RecordGoodConnection increments the good-connection counter. Thread-safe.
 func (s *Server) RecordGoodConnection() {
 	s.goodConns.Add(1)

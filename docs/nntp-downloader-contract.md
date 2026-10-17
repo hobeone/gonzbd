@@ -40,12 +40,12 @@ The downloader pipeline operates across four isolated tiers of ownership:
 | Tier | Owned By | Responsibility | Lock / Synchronization |
 |---|---|---|---|
 | **Dispatcher** | Main loop (`run`) | Queue scanning, server selection, work fan-out via `workCh` sends | `Dispatcher.List()` / `Dispatcher.Job()` under dispatcher mutex; `optsMu` RLock for pass options. Never blocks on I/O. |
-| **Tracker** | `dispatchTracker` | In-flight deduplication, per-article try-bitmaps (`serverMask`) | Internal `tracker.Mutex`. Lock-held periods bounded to O(1) bitmap ops, except the reap's scans (`Instances`, `DropInstances`), which are O(entries). |
+| **Tracker** | `dispatchTracker` | In-flight deduplication, per-article try-bitmaps (`serverMask`), per-article, per-server connection-fault counts | Internal `tracker.Mutex`. Lock-held periods bounded to O(1) bitmap ops, except the reap's scans (`Instances`, `DropInstances`), which are O(entries). |
 | **Server state** | `Server` | Per-server penalty tracking, bad/good connection counters, optional-server auto-deactivation | `Server.mu` (RWMutex) for penalty/deactivation; atomic counters for bad/good. |
 | **Worker / Connection** | `connWorker` & `managedConn` | Pipelined NNTP network I/O (`nntp.Conn`), yEnc decoding, rate shaping, TLS | `managedConn.mu` for dial-coalescing only; `nntp.Conn` internal locks for pipelining. |
 
 **The Tracker's identity is `(job instance, artIdx)`, not the Message-ID and not
-the job ID.** Both of its maps are keyed on that pair, built by `keyFor` in
+the job ID.** Each of its three maps (try-lists, in-flight counts, connection-fault counts) is keyed on that pair, built by `keyFor` in
 `tracker.go`. The job is part of the key rather than decoration: two resident
 jobs can legitimately hold the same Message-ID — the same NZB added twice, or a
 reposted par2 volume — and keyed on the Message-ID alone they shared one
@@ -388,7 +388,8 @@ downstream action:
 | **Success (NNTP 222)** | Cleared (`clearTried`) | None | `Job.MarkArticleEmitted`, emits `ArticleResult` with data. |
 | **NNTP 430 / 423 (Not Found)** | Retained (`mask.set(idx)`) | None — server healthy, `RecordGoodConnection` | Emits retryable `ArticleResult` (`ErrNoArticle`), leaves un-emitted so next pass tries fallback server. Pipeline filters retryable error. |
 | **CRC Mismatch** | Retained (`mask.set(idx)`) | None — `RecordGoodConnection` | Increments `ErrClassCRCMismatch`, emits retryable `ArticleResult` (`ErrCRCMismatch`), leaves un-emitted so dispatcher tries alternate server. Pipeline filters retryable error. |
-| **Connection / Socket Error** | Unmarked (`unmarkTried`) | Yes — `PenaltyFor(err)` | Drops socket via `DropIfMatches`, returns article to pool. Only the first goroutine to observe the failure records `RecordBadConnection` and applies penalty. |
+| **Connection fault** (`isConnFault`: timeout, reset, EOF or broken pipe with a command outstanding) | Unmarked (`UnmarkTriedAfterFault`), except on the article's `maxConnFaultsPerArticle`-th (3) fault on that server, which leaves the server marked | Only for a run — `PenaltyTimeout` once `RecordConnFault` reports one | Drops socket via `DropIfMatches`, returns article to pool; the same server may retry it, up to that bound. Only the first goroutine to observe the failure records it. |
+| **Other Connection-Level Error** (any other: an NNTP error response, a desync, a protocol error, `ErrClosed`) | Unmarked (`unmarkTried`) | Yes — `PenaltyFor(err)` | Drops socket via `DropIfMatches`, returns article to pool. Only the first goroutine to observe the failure records `RecordBadConnection` and applies penalty. |
 | **Penalized Server Dial** | Unmarked (`unmarkTried`) | Existing penalty retained | Silently returns article to dispatch pool. No result emitted, no telemetry counted. |
 | **Context Cancelled (pause/shutdown)** | Unmarked (`unmarkTried`) | None — not a server fault | `Job.ClearArticleEmitted`, article re-dispatched on resume. |
 | **Decode Error (non-CRC)** | Cleared (`clearTried`) | None | `Job.MarkArticleEmitted` (terminal), emits failed `ArticleResult`. Includes DMCA/takedown (`ErrArticleRemoved`). |
@@ -420,7 +421,35 @@ part of this contract — changing a duration changes server failover behavior:
 | `ErrTransient` (bare 4xx) | `PenaltyVeryShort` | 6 sec |
 | `ErrNoArticle` (430/423) | — | 0 (no penalty) |
 | `ErrIdleClosed` (idle disconnect/unsolicited timeout) | — | 0 (no penalty) |
+| A timeout (dial or handshake) | `PenaltyUnknown` | 3 min |
 | Anything else | `PenaltyUnknown` | 3 min |
+
+`fetchArticle`'s fetch-failure path asks `PenaltyFor` only about errors that
+are not connection faults. A connection fault — `isConnFault`: a timeout, a
+reset, an EOF or a broken pipe while a command was outstanding — is a fault of
+that one connection: `chargeFetchFailure` passes it to
+`Server.RecordConnFault`. That counts it as a bad connection and applies no
+penalty until more bad connections than the server has connections have been
+recorded since its last successful fetch, the latest being a connection fault;
+then it applies `PenaltyTimeout` (10 min). So one stalled article costs one
+connection and a retry, and losing every connection once from a clean count (a
+provider restart, a NAT flush) costs a redial each. A server that keeps losing
+connections is penalized on the first fault after every connection has been
+lost once, rather than being redialled without bound (#986). SABnzbd counts
+timed-out and errored connections too, but takes a server out only if it is
+optional, at a bad-connection ratio above 0.3; GoNZBD takes out any server, so
+its work moves to the next one. A dial failure, timeouts included, still costs `PenaltyFor(err)` at
+once.
+
+The server-wide count cannot catch one article that faults every time on a
+server whose other fetches succeed, because each success resets it. So the
+tracker also counts each article's connection faults, per server:
+`UnmarkTriedAfterFault` leaves the server marked in the article's try-list on
+the article's `maxConnFaultsPerArticle`-th (3) fault there, and the article moves to the next
+server, or to `ErrNoServersLeft` when none is left, without the server it left
+being penalized. SABnzbd's `max_art_tries` (default 3) bounds the same case.
+Every request on a connection that dies counts a fault, including pipelined
+requests that were only queued behind the one being read.
 
 `ErrDesynced` draws the same duration as the catch-all, and has its own row
 anyway: the figure is chosen rather than inherited, so a later change to the
@@ -433,9 +462,10 @@ When `opts.MaxPenalty` is set or `opts.NoPenalties` is true, `clampPenalty` caps
 all penalties (to `opts.MaxPenalty`, or `PenaltyShort` (1 min) by default when
 `NoPenalties` is true) regardless of the error class.
 
-*(Note: `constants.PenaltyTimeout`, `constants.PenaltyShare`, and `constants.PenaltyTooMany`
-are defined in `internal/constants` as protocol constants from the upstream spec, but are
-reserved and not currently mapped by `PenaltyFor`.)*
+*(Note: `constants.PenaltyShare` and `constants.PenaltyTooMany` are defined in
+`internal/constants` as protocol constants from the upstream spec, but are reserved
+and not currently mapped by `PenaltyFor`. `constants.PenaltyTimeout` is not mapped
+by `PenaltyFor` either; `chargeFetchFailure` applies it, as above.)*
 
 ### Optional server auto-deactivation
 
@@ -447,8 +477,15 @@ called by `checkExpiredPenalties`. A required server is never optional:
 `ServerConfig.validate` refuses both flags together.
 
 `RecordGoodConnection` resets the bad-connection counter to zero atomically.
-A single successful fetch after N failures forgives all bad history. This means
-a server that intermittently succeeds will never trigger auto-deactivation.
+A single successful fetch after N failures forgives all bad history. So a server
+whose failures are interleaved with successes keeps resetting the count, and
+triggers neither auto-deactivation nor the connection-fault penalty above,
+which counts on the same counter.
+`RecordConnFault` resets the counter when it reports a run, before the caller's
+`ApplyPenalty`, so that penalty does not also deactivate an optional server
+unless another fault lands between the two; the penalty alone takes it out of
+the pool for the same time, since `Active` reads a deactivated server and a
+penalized one alike.
 
 ## Memory & allocation budget
 
@@ -499,9 +536,11 @@ instead.
 
 ## Failing versus degrading
 
-- **Single server outage**: When a server drops connections or returns 5xx
-  errors, `PenaltyFor` determines the hold-out duration (6s to 10min depending
-  on error class). Optional servers may be auto-deactivated if their bad-ratio
+- **Single server outage**: When a server returns 5xx errors or refuses
+  dials, `PenaltyFor` determines the hold-out duration (6s to 10min depending
+  on error class). When it keeps dropping or stalling connections mid-fetch,
+  `RecordConnFault` applies `PenaltyTimeout` once its bad connections since
+  the last success outnumber its connections. Optional servers may be auto-deactivated if their bad-ratio
   exceeds 0.3. Dispatch degrades gracefully to remaining active servers and
   backup groups.
 
@@ -567,6 +606,8 @@ instead.
 - Strict priority tiers: a busy higher-priority server makes an article wait
   rather than overflow to a backup (#985).
 - The held-bytes budget and size-classed decode buffers (#988).
+- A connection fault mid-fetch costs its connection, not its server, until a
+  run of them outnumbers the server's connections (#986).
 
 ### Open Gaps
 - None recorded.
