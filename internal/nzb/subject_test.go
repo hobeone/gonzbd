@@ -55,6 +55,34 @@ func TestExtractFilenameFromSubject(t *testing.T) {
 		{"first_obfuscated_second_real",
 			`"a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4.rar" "real_name.rar"`,
 			"real_name.rar"},
+
+		// --- A hex name is still a filename ---
+		// With no better candidate it must be returned rather than the whole
+		// subject: a subject-line "filename" fails par2.IsPar2Name, so
+		// FindPar2Files does not see the par2 index.
+		{"hex_par2_index_quoted",
+			`[1/8] - "ecb7badfd74c9e56b3e236fbab8204b2.par2" yEnc (1/1)`,
+			"ecb7badfd74c9e56b3e236fbab8204b2.par2"},
+		{"hex_payload_quoted",
+			`[N3wZ] \jW1cYP215407\::[1/1] - "7cd3f152172740d64dc050297e422836.mkv" yEnc (1/4566)`,
+			"7cd3f152172740d64dc050297e422836.mkv"},
+		{"hex_unquoted",
+			`ecb7badfd74c9e56b3e236fbab8204b2.par2 yEnc (1/1)`,
+			"ecb7badfd74c9e56b3e236fbab8204b2.par2"},
+		// The unquoted search can match any dotted token, so a quoted hex
+		// name outranks it.
+		{"hex_quoted_preferred_over_basic",
+			`Show 1.00 [1/8] - "ecb7badfd74c9e56b3e236fbab8204b2.par2" yEnc (1/1)`,
+			"ecb7badfd74c9e56b3e236fbab8204b2.par2"},
+		{"first_hex_wins",
+			`"11111111111111111111111111111111.par2" "22222222222222222222222222222222.mkv" yEnc`,
+			"11111111111111111111111111111111.par2"},
+		{"private_hex_with_ext",
+			`[PRiVATE]-[grp]-[a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4.par2]-[01/10] - "" yEnc`,
+			"a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4.par2"},
+		{"quoted_real_beats_private_hex",
+			`[PRiVATE]-[grp]-[a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4.rar]-[01/10] - "real.name.mkv" yEnc`,
+			"real.name.mkv"},
 	}
 
 	for _, tt := range tests {
@@ -164,6 +192,7 @@ func TestExtractFilenameIdempotency(t *testing.T) {
 		{"h264_no_ext", "Show.S01E01.1080p.WEB-DL.DD.2.0.H.264"},
 		{"dots_only", "a.b.c.d.e.f.g.h.rar"},
 		{"single_dot_ext", "filename.r"},
+		{"hex_par2", "ecb7badfd74c9e56b3e236fbab8204b2.par2"},
 	}
 
 	for _, tt := range idempotent {

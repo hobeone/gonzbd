@@ -134,13 +134,6 @@ func parseNZB(path string) (*nzb.NZB, error) {
 // carries that result through to Manifest.FileSubject — which is exactly what
 // both call sites hand to par2 as AssembledFile.FileName. Re-extracting a
 // quoted run here would probe a name production never sees.
-//
-// The distinction is not academic for this NZB. ExtractFilenameFromSubject
-// REFUSES a purely-hex name — reExcessiveObfuscation is
-// `^[0-9a-f]{16,}\.[a-z0-9]{2,4}$` — so "a0576589….tar" is rejected and the
-// whole subject is used instead, sanitized to "[1_1]". The .volN+M.par2 names
-// escape the same rule only because "+" and the extra dot break the pattern.
-// So the name par2 is asked to match against is a part counter.
 func deliveredName(subject string) string { return subject }
 
 // productionName reproduces what both call sites hand par2 as
@@ -229,10 +222,7 @@ func probeIndex(cfgPath string, doc *nzb.NZB, full bool) error {
 	// par2.AssembledFile list from a name that prefers FileProgress.Filename
 	// over Manifest.FileSubject when it is set (app.resolvedName), and
 	// Filename comes from the yEnc header — so probing Subject alone would
-	// compare a name the real code never uses. For this
-	// NZB the difference is total: Subject for the payload is the whole
-	// sanitized subject line, because ExtractFilenameFromSubject refuses its
-	// purely-hex name.
+	// compare a name the real code never uses.
 	fmt.Printf("\n=== yEnc headers (one article per file)\n")
 	fmt.Printf("%-46s %16s  %s\n", "yEnc name=", "yEnc size=", "NZB DECLARED")
 	fmt.Println(strings.Repeat("-", 88))
@@ -262,14 +252,10 @@ func probeIndex(cfgPath string, doc *nzb.NZB, full bool) error {
 		fmt.Printf("%-46s %16d  %14d\n", truncate(art.Filename, 46), art.TotalSize, f.Bytes)
 	}
 
-	// The index is found by its yEnc name, not its subject: for this NZB the
-	// subject sanitizes to "[1_5] - _3f2…par2_ yEnc (1_1)", which does not
-	// end in .par2 at all.
-	// Neither name is usable for this: the yEnc names carry no extension at
-	// all, and the subject-derived name has been sanitized into a whole
-	// subject line. What survives is that the SUBJECT still mentions .par2,
-	// so classify on that and write the file out under the name the subject
-	// claims — which is what has to be on disk for FindPar2Files to see it.
+	// The index is classified by its subject, not its yEnc name: for this NZB
+	// the yEnc names carry no extension, while the subject-derived name keeps
+	// ".par2". It is written out as index.par2, the name FindPar2Files needs
+	// on disk.
 	var index *nzb.File
 	var indexName string
 	for i := range doc.Files {
