@@ -3,8 +3,8 @@
 //
 // The downloader acquires an article's share before it fetches the article
 // and attaches the Hold to the decoded result; whoever ends the decoded
-// buffer's life releases it. The queues between decode and write count articles, not bytes,
-// so without this a fast download held ~2,900 decoded articles, 2.2 GB (#988).
+// buffer's life releases it. The queues between decode and write count
+// articles, not bytes, so on their own they do not bound memory.
 package heldbytes
 
 import (

@@ -179,9 +179,10 @@ type Options struct {
 	// picks a reasonable default (256).
 	CompletionsBuffer int
 
-	// HeldBytesLimit bounds the bytes of articles fetched or about to be,
-	// whose decoded data the assembler has not yet finished with; a fetch
-	// waits for room. Zero selects defaultHeldBytesLimit.
+	// HeldBytesLimit bounds the decode-buffer capacity reserved for articles
+	// from before their fetch until the assembler has finished with their
+	// decoded data; a fetch waits for room. Zero selects
+	// defaultHeldBytesLimit.
 	HeldBytesLimit int64
 
 	// PerServerQueue is the cap of each per-server work channel.

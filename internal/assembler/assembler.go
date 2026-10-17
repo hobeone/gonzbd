@@ -88,9 +88,10 @@ type WriteRequest struct {
 	// OnArticleWritten.
 	CRC32 uint32
 
-	// Release, when non-nil, is called on the worker once it has finished
-	// with the request, whatever became of it: written, refused, faulted, or
-	// discarded for a cancelled job. A WriteArticle that returns an error
+	// Release, when non-nil, is called on the worker once it has dispatched
+	// the request, whatever became of it: written, refused, faulted, or
+	// discarded for a cancelled job. A request still queued when the worker
+	// exits is not released. A WriteArticle that returns an error
 	// never calls it, so the caller still owns what it releases. The pipeline
 	// sets it to give the article's bytes back to the downloader's budget.
 	Release func()

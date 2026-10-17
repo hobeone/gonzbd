@@ -427,8 +427,8 @@ a server that intermittently succeeds will never trigger auto-deactivation.
 | **Completions Channel (`completions`)** | Downloader-wide | Bounded buffer (`opts.CompletionsBuffer`, default 256). Backpressures dispatcher when assembler is slow. |
 | **Per-Server Work Queue (`workCh`)** | Per-server pool | Capacity = `2 × Connections × PipeliningRequests`; both factors are at least 1 for a checked server. |
 | **Per-Connection Goroutines** | Per-worker slot | Bounded to `pipelineDepth × 2` via local semaphore in `connWorker`. |
-| **Decoding Buffers** | Worker payload | Allocated via `decoder.GetBuffer` from one of 38 size classes, so a buffer is at most a quarter larger than its request; returned to the class's `sync.Pool` on failure or after downstream consumption. |
-| **Held-bytes budget (`heldbytes.Budget`)** | Downloader-wide | Bounds the bytes of articles between `handleRequest`'s charge, taken before the fetch, and the assembler's worker finishing with the decoded buffer (`Options.HeldBytesLimit`, default 256 MiB). Each article is charged `decoder.BufferCap` of its NZB-declared size. See *Held-bytes budget* below. |
+| **Decoding Buffers** | Worker payload | Allocated via `decoder.GetBuffer` from one of 38 size classes, so above 16 KiB a buffer is at most a quarter larger than its request; returned to the class's `sync.Pool` on failure or after downstream consumption. |
+| **Held-bytes budget (`heldbytes.Budget`)** | Downloader-wide | Bounds the decode-buffer capacity reserved for articles between `handleRequest`'s charge, taken before the fetch, and the assembler's worker finishing with the decoded buffer (`Options.HeldBytesLimit`, default 256 MiB). Each article is charged `decoder.BufferCap` of its NZB-declared size, so the bound assumes honest `bytes` values: an NZB that under-declares is charged less than it holds, and the article-count queues are then its only bound. See *Held-bytes budget* below. |
 | **Try-List (`serverMask`)** | Per-article | `uint64` bitmask for ≤64 servers (zero allocation); dynamic `[]uint64` slice only for >64 servers. |
 
 ### Held-bytes budget
@@ -462,8 +462,8 @@ instead.
   `Hold.Release` is idempotent, so a path that ran two of these would not
   give bytes back twice.
 - **No deadlock.** Nothing that releases a hold waits on the budget:
-  `handleRequest` is the one acquirer (`git grep -n -E '\.Acquire\(' --
-  '*.go' ':!*_test.go'` returns 1 line), so the assembler worker and the
+  `handleRequest` is the one acquirer (`git grep -n 'held\.Acquire(' --
+  '*.go' ':!*_test.go'` returns 1 line, in `dispatch.go`), so the assembler worker and the
   pipeline workers, which release, never wait for room.
 
 ## Failing versus degrading

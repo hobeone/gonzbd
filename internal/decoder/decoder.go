@@ -155,8 +155,9 @@ type Article struct {
 // 64 KiB article pin twelve times its payload (#988).
 //
 // The classes are minBufferClass, then four per power of two: a request in
-// (2^k, 2^(k+1)] rounds up to a multiple of 2^(k-2), so a buffer is at most
-// a quarter larger than its request. The last class is maxDecodeSize itself
+// (2^k, 2^(k+1)] rounds up to a multiple of 2^(k-2), so above minBufferClass
+// a buffer is at most a quarter larger than its request; a smaller request
+// gets minBufferClass. The last class is maxDecodeSize itself
 // (10 MiB is 5 × 2 MiB).
 const (
 	minBufferClass      = 16 * 1024
@@ -190,7 +191,8 @@ func clampBufferRequest(capReq int64) int64 {
 }
 
 // GetBuffer returns a length-0 slice whose capacity is BufferCap(capReq): at
-// least capReq, clamped to maxDecodeSize, and at most a quarter larger.
+// least capReq, clamped to maxDecodeSize, and at most a quarter larger, or
+// minBufferClass for a request no larger than that.
 func GetBuffer(capReq int64) []byte {
 	idx, size := bufferClass(clampBufferRequest(capReq))
 	if bp, ok := decodePools[idx].Get().(*[]byte); ok && bp != nil {

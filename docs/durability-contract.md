@@ -1095,7 +1095,8 @@ What bounds those bytes is the downloader's held-bytes budget
 (`docs/nntp-downloader-contract.md` § "Held-bytes budget"), which charges an
 article from before its fetch until the worker has finished with it: the
 worker calls a request's `WriteRequest.Release` once `dispatchRequest` returns
-for it, on every disposition. `reqs` itself counts requests, so on its own it
+for it, on every disposition; a request still queued when the worker exits
+at shutdown is not released. `reqs` itself counts requests, so on its own it
 would hold 2048 of them, whatever their size.
 
 Decoder buffers are returned to `sync.Pool` (`decoder.PutBuffer`) on every path,
