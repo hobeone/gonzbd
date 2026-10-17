@@ -218,10 +218,8 @@ type Job struct {
 	UnpackError bool
 
 	// parCause and unpackCause are the error text of the stage that set
-	// ParError and UnpackError. recordStageFailure is their only writer and
-	// FailReason their only reader: `grep -nE 'parCause|unpackCause'
-	// stages.go` finds them nowhere else in non-test code. A flag set
-	// without a stage error has no cause.
+	// ParError and UnpackError. They are written in recordStageFailure and
+	// read in FailReason. A flag set without a stage error has no cause.
 	parCause    string
 	unpackCause string
 
