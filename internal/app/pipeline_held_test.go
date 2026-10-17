@@ -1,9 +1,11 @@
 package app
 
 import (
+	"context"
 	"errors"
 	"log/slog"
 	"testing"
+	"time"
 
 	"github.com/hobeone/gonzbd/internal/assembler"
 	"github.com/hobeone/gonzbd/internal/decoder"
@@ -119,4 +121,51 @@ func TestPipeline_GivesBackTheBudgetOnEveryPath(t *testing.T) {
 		}
 		requireNothingHeld(t, budget, "written by the assembler")
 	})
+}
+
+// TestPipeline_GivesBackTheBudgetOfAResultDroppedAtShutdown: a result run()
+// has taken from completions but cannot hand to a busy worker before its
+// context ends is released by run() itself, at once, not left charged.
+func TestPipeline_GivesBackTheBudgetOfAResultDroppedAtShutdown(t *testing.T) {
+	t.Parallel()
+	app := newTestApplication(t)
+	_, j := helperJob(t, app, "helddrop", 1, 1)
+	budget := heldbytes.New(1 << 20)
+	completions := make(chan *downloader.ArticleResult)
+	p := &pipeline{
+		log:         slog.New(slog.DiscardHandler),
+		dispatcher:  app.Dispatcher(),
+		downloadDir: t.TempDir(),
+		assembler: assembler.New(assembler.Options{
+			FileInfo: func(string, int) (assembler.FileInfo, error) { return assembler.FileInfo{}, nil },
+		}, slog.New(slog.DiscardHandler)),
+		fileInfo:    make(map[fileKey]assembler.FileInfo),
+		numWorkers:  1,
+		completions: completions,
+	}
+
+	// The one worker parks in registerFile's RLock on the first result, so
+	// work (capacity 2) fills and run() blocks handing over the fourth.
+	p.mu.Lock()
+	ctx, cancel := context.WithCancel(t.Context())
+	ran := make(chan struct{})
+	go func() { p.run(ctx); close(ran) }()
+	for range 4 {
+		completions <- heldResult(t, budget, j, 0)
+	}
+	cancel()
+
+	// Still holding the lock: only run()'s own drop can give bytes back.
+	deadline := time.Now().Add(10 * time.Second)
+	for budget.Held() != 300 {
+		if time.Now().After(deadline) {
+			p.mu.Unlock()
+			t.Fatalf("Held() = %d after run() dropped a result at shutdown, want 300: the dropped result kept its hold", budget.Held())
+		}
+		time.Sleep(time.Millisecond)
+	}
+
+	p.mu.Unlock()
+	<-ran
+	requireNothingHeld(t, budget, "shutdown with results queued for a worker")
 }

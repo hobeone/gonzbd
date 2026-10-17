@@ -1,5 +1,5 @@
 pkg ./internal/app/
-run TestPipeline_GivesBackTheBudgetOnEveryPath
+run TestPipeline_GivesBackTheBudget
 
 [a result for an instance no longer registered keeps its hold]
 file internal/app/pipeline.go
@@ -37,4 +37,16 @@ file internal/app/pipeline.go
 		Release: res.ReleaseHeld,
 --- replace
 		Release: nil,
+--- end
+
+[a result run() drops at shutdown keeps its hold]
+file internal/app/pipeline.go
+--- anchor
+				p.inFlight.Done()
+				res.Release()
+				return
+--- replace
+				p.inFlight.Done()
+				_ = res
+				return
 --- end

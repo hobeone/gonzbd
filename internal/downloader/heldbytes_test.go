@@ -221,6 +221,22 @@ func TestProcessFetchedArticle_HandsTheHoldOnWithTheResult(t *testing.T) {
 	}
 }
 
+// TestArticleResult_ReleaseHeldKeepsTheData: the assembler gives the bytes
+// back through ReleaseHeld after it has finished with Data itself, so
+// ReleaseHeld must release the hold and leave Data alone.
+func TestArticleResult_ReleaseHeldKeepsTheData(t *testing.T) {
+	budget := heldbytes.New(1 << 20)
+	held, err := budget.Acquire(t.Context(), 1000)
+	if err != nil {
+		t.Fatal(err)
+	}
+	res := &ArticleResult{Data: decoder.GetBuffer(10), Held: held}
+	res.ReleaseHeld()
+	if got := budget.Held(); got != 0 || res.Data == nil {
+		t.Fatalf("after ReleaseHeld: Held() = %d, Data nil = %v; want 0 and false", got, res.Data == nil)
+	}
+}
+
 func TestEmitResult_ADroppedResultReleasesItsHold(t *testing.T) {
 	budget := heldbytes.New(1 << 20)
 	d := New(newTestDispatcher(t), nil, nil, Options{CompletionsBuffer: 1}, nil)
