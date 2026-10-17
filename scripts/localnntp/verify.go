@@ -39,6 +39,12 @@ type VerifyConfig struct {
 	SnapshotAs         string
 	CompareSnapshot    string
 	SkipArchiveCleanup bool
+	// FetchCheckURLs are control URLs of every server the download used; their /stats are
+	// summed per Message-ID. Duplicates are rejected, since each would count a server twice.
+	// ExpectSingleFetch turns three things into failures: an ID served clean more than once,
+	// nothing served clean at all, and a non-par2 manifest segment never served clean.
+	FetchCheckURLs    []string
+	ExpectSingleFetch bool
 }
 
 // VerifyReport summarizes the verification results.
@@ -50,6 +56,14 @@ type VerifyReport struct {
 	RecordedIDs     []string `json:"recorded_ids,omitempty"`
 	RefetchedIDs    []string `json:"refetched_ids,omitempty"`
 	OutputsVerified int      `json:"outputs_verified"`
+	// The next three fields are populated only when --servers-for-fetch-check is given, and are
+	// omitted from the JSON when zero. ServedCleanSum and DistinctIDsServed summarize the
+	// cross-server fetch check: total clean serves across all servers, and how many distinct
+	// Message-IDs they covered; MultiServedIDs lists IDs served more than once. None of them fails
+	// verification unless ExpectSingleFetch is set.
+	ServedCleanSum    int      `json:"served_clean_sum,omitempty"`
+	DistinctIDsServed int      `json:"distinct_ids_served,omitempty"`
+	MultiServedIDs    []string `json:"multi_served_ids,omitempty"`
 }
 
 // Verify checks the database and disk state of gonzbd after a crash or upon completion.
@@ -65,6 +79,20 @@ func Verify(ctx context.Context, cfg VerifyConfig) (*VerifyReport, error) {
 	}
 	if cfg.CompareSnapshot != "" && cfg.ServerControlURL == "" {
 		return nil, errors.New("--snapshot requires --server")
+	}
+	if cfg.ExpectSingleFetch && len(cfg.FetchCheckURLs) == 0 {
+		return nil, errors.New("--expect-single-fetch requires at least one --servers-for-fetch-check")
+	}
+	if len(cfg.FetchCheckURLs) > 0 && cfg.Mode != "complete" {
+		return nil, errors.New("--servers-for-fetch-check applies only to --mode complete")
+	}
+	seenURLs := make(map[string]bool, len(cfg.FetchCheckURLs))
+	for _, u := range cfg.FetchCheckURLs {
+		norm := strings.TrimRight(u, "/")
+		if seenURLs[norm] {
+			return nil, fmt.Errorf("--servers-for-fetch-check %q is given twice; each server must appear once or its serves are double-counted", u)
+		}
+		seenURLs[norm] = true
 	}
 
 	m, err := LoadManifest(cfg.ManifestPath)
@@ -805,43 +833,14 @@ func checkIncompleteHygiene(downloadDir, releaseName, historyName, jobID string)
 }
 
 func compareSnapshotRefetches(ctx context.Context, controlURL, snapshotName string) ([]string, error) {
-	baseURL := strings.TrimRight(controlURL, "/")
-	client := &http.Client{Timeout: 5 * time.Second}
-
-	snapURL := fmt.Sprintf("%s/snapshot?name=%s", baseURL, url.QueryEscape(snapshotName))
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, snapURL, http.NoBody)
-	if err != nil {
-		return nil, fmt.Errorf("create snapshot request: %w", err)
-	}
-	resp, err := client.Do(req)
-	if err != nil {
-		return nil, fmt.Errorf("fetch snapshot %s: %w", snapURL, err)
-	}
-	defer func() { _ = resp.Body.Close() }() //nolint:errcheck // best-effort close of HTTP response body
-	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("fetch snapshot returned status %d", resp.StatusCode)
-	}
+	snapURL := fmt.Sprintf("%s/snapshot?name=%s", strings.TrimRight(controlURL, "/"), url.QueryEscape(snapshotName))
 	var snap Snapshot
-	if err := json.NewDecoder(resp.Body).Decode(&snap); err != nil {
-		return nil, fmt.Errorf("decode snapshot: %w", err)
+	if err := getControlJSON(ctx, snapURL, &snap); err != nil {
+		return nil, err
 	}
-
-	statsURL := baseURL + "/stats"
-	reqStats, err := http.NewRequestWithContext(ctx, http.MethodGet, statsURL, http.NoBody)
+	stats, err := fetchServerStats(ctx, controlURL)
 	if err != nil {
-		return nil, fmt.Errorf("create stats request: %w", err)
-	}
-	respStats, err := client.Do(reqStats)
-	if err != nil {
-		return nil, fmt.Errorf("fetch stats %s: %w", statsURL, err)
-	}
-	defer func() { _ = respStats.Body.Close() }() //nolint:errcheck // best-effort close of HTTP response body
-	if respStats.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("fetch stats returned status %d", respStats.StatusCode)
-	}
-	var stats ServerStats
-	if err := json.NewDecoder(respStats.Body).Decode(&stats); err != nil {
-		return nil, fmt.Errorf("decode stats: %w", err)
+		return nil, err
 	}
 
 	useRequests := len(stats.Requests) > 0 || len(snap.Requests) > 0
@@ -916,9 +915,123 @@ func verifyComplete(ctx context.Context, db *sql.DB, m *ReleaseManifest, cfg Ver
 		}
 	}
 
-	return &VerifyReport{
+	report := &VerifyReport{
 		Mode:            "complete",
 		JobID:           h.jobID,
 		OutputsVerified: outputsVerified,
-	}, nil
+	}
+
+	if len(cfg.FetchCheckURLs) > 0 {
+		if err := runFetchCheck(ctx, cfg, m, report); err != nil {
+			return report, err
+		}
+	}
+
+	return report, nil
+}
+
+// runFetchCheck sums the servers' clean serves into report and, with ExpectSingleFetch, turns a
+// vacuous or incomplete result into an error: a pass needs at least one clean serve, every
+// non-par2 manifest segment served, and no ID served twice.
+func runFetchCheck(ctx context.Context, cfg VerifyConfig, m *ReleaseManifest, report *VerifyReport) error {
+	all := make([]ServerStats, 0, len(cfg.FetchCheckURLs))
+	for _, u := range cfg.FetchCheckURLs {
+		st, err := fetchServerStats(ctx, u)
+		if err != nil {
+			return err
+		}
+		all = append(all, st)
+	}
+	sum, totals := servedTotals(all)
+	report.ServedCleanSum, report.DistinctIDsServed, report.MultiServedIDs = sum, len(totals), multiServed(totals)
+	if !cfg.ExpectSingleFetch {
+		return nil
+	}
+	if len(report.MultiServedIDs) > 0 {
+		return fmt.Errorf("message-ids served clean more than once across %d servers: %v", len(all), report.MultiServedIDs)
+	}
+	if sum == 0 {
+		return fmt.Errorf("no article was served clean by any of the %d servers; the single-fetch check would pass vacuously", len(all))
+	}
+	if missing := unservedSegments(m, totals); len(missing) > 0 {
+		return fmt.Errorf("%d non-par2 segments were never served clean (first: %v)", len(missing), missing[:min(len(missing), 5)])
+	}
+	return nil
+}
+
+// getControlJSON GETs rawURL from a localnntp control API and decodes the 200 response into out.
+func getControlJSON(ctx context.Context, rawURL string, out any) error {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, rawURL, http.NoBody)
+	if err != nil {
+		return fmt.Errorf("create request for %s: %w", rawURL, err)
+	}
+	resp, err := (&http.Client{Timeout: 5 * time.Second}).Do(req)
+	if err != nil {
+		return fmt.Errorf("fetch %s: %w", rawURL, err)
+	}
+	defer func() { _ = resp.Body.Close() }() //nolint:errcheck // best-effort close of HTTP response body
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("fetch %s returned status %d", rawURL, resp.StatusCode)
+	}
+	if err := json.NewDecoder(resp.Body).Decode(out); err != nil {
+		return fmt.Errorf("decode %s: %w", rawURL, err)
+	}
+	return nil
+}
+
+// fetchServerStats reads one server's /stats.
+func fetchServerStats(ctx context.Context, controlURL string) (ServerStats, error) {
+	var st ServerStats
+	err := getControlJSON(ctx, strings.TrimRight(controlURL, "/")+"/stats", &st)
+	return st, err
+}
+
+// servedTotals adds served_clean per Message-ID across servers, returning the total number of
+// clean serves and the per-ID totals.
+func servedTotals(all []ServerStats) (sum int, totals map[string]int) {
+	totals = make(map[string]int)
+	for _, st := range all {
+		for id, n := range st.ServedClean {
+			totals[extractMessageID(id)] += n
+			sum += n
+		}
+	}
+	return sum, totals
+}
+
+// multiServed lists the IDs whose total exceeds 1, sorted, each formatted "<id> x<total>".
+func multiServed(totals map[string]int) []string {
+	var multi []string
+	for id, n := range totals {
+		if n > 1 {
+			multi = append(multi, fmt.Sprintf("%s x%d", id, n))
+		}
+	}
+	slices.Sort(multi)
+	return multi
+}
+
+// sumServedClean returns the total clean serves, the number of distinct IDs served, and the
+// IDs served more than once.
+func sumServedClean(all []ServerStats) (sum, distinct int, multi []string) {
+	sum, totals := servedTotals(all)
+	return sum, len(totals), multiServed(totals)
+}
+
+// unservedSegments returns the sorted Message-IDs of the manifest's non-par2 segments that no
+// server served clean.
+func unservedSegments(m *ReleaseManifest, totals map[string]int) []string {
+	var missing []string
+	for _, f := range m.Files {
+		if f.Role == RolePar2Index || f.Role == RolePar2Volume {
+			continue
+		}
+		for _, seg := range f.Segments {
+			if id := extractMessageID(seg.MessageID); totals[id] == 0 {
+				missing = append(missing, id)
+			}
+		}
+	}
+	slices.Sort(missing)
+	return missing
 }

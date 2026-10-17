@@ -108,6 +108,13 @@ func createTestRelease(t *testing.T, releaseDir string) *ReleaseManifest {
 	return manifest
 }
 
+func mkFilesDir(t *testing.T, releaseDir string) {
+	t.Helper()
+	if err := os.MkdirAll(filepath.Join(releaseDir, "files"), 0o750); err != nil {
+		t.Fatalf("mkdir files dir: %v", err)
+	}
+}
+
 func dialNNTP(t *testing.T, srv *Server, user, pass string) *nntp.Conn {
 	t.Helper()
 
@@ -153,8 +160,7 @@ func TestServer_HappyPath_SingleAndMultiPart(t *testing.T) {
 	manifest := createTestRelease(t, dir)
 
 	srv, err := NewServer(ServerConfig{
-		ReleaseDir: dir,
-		Manifest:   manifest,
+		Releases: []ReleaseSource{{Dir: dir, Manifest: manifest}},
 	})
 	if err != nil {
 		t.Fatalf("NewServer: %v", err)
@@ -234,8 +240,7 @@ func TestServer_NNTPProtocol(t *testing.T) {
 	manifest := createTestRelease(t, dir)
 
 	srv, err := NewServer(ServerConfig{
-		ReleaseDir: dir,
-		Manifest:   manifest,
+		Releases: []ReleaseSource{{Dir: dir, Manifest: manifest}},
 	})
 	if err != nil {
 		t.Fatalf("NewServer: %v", err)
@@ -364,9 +369,8 @@ func TestServer_Auth(t *testing.T) {
 	manifest := createTestRelease(t, dir)
 
 	srv, err := NewServer(ServerConfig{
-		ReleaseDir: dir,
-		Manifest:   manifest,
-		Users:      map[string]string{"alice": "secret123"},
+		Releases: []ReleaseSource{{Dir: dir, Manifest: manifest}},
+		Users:    map[string]string{"alice": "secret123"},
 	})
 	if err != nil {
 		t.Fatalf("NewServer: %v", err)
@@ -449,8 +453,7 @@ func TestServer_Faults(t *testing.T) {
 	manifest := createTestRelease(t, dir)
 
 	srv, err := NewServer(ServerConfig{
-		ReleaseDir: dir,
-		Manifest:   manifest,
+		Releases: []ReleaseSource{{Dir: dir, Manifest: manifest}},
 	})
 	if err != nil {
 		t.Fatalf("NewServer: %v", err)
@@ -601,8 +604,7 @@ func TestServer_Snapshots(t *testing.T) {
 	manifest := createTestRelease(t, dir)
 
 	srv, err := NewServer(ServerConfig{
-		ReleaseDir: dir,
-		Manifest:   manifest,
+		Releases: []ReleaseSource{{Dir: dir, Manifest: manifest}},
 	})
 	if err != nil {
 		t.Fatalf("NewServer: %v", err)
@@ -650,8 +652,7 @@ func TestControl_API(t *testing.T) {
 	manifest := createTestRelease(t, dir)
 
 	srv, err := NewServer(ServerConfig{
-		ReleaseDir: dir,
-		Manifest:   manifest,
+		Releases: []ReleaseSource{{Dir: dir, Manifest: manifest}},
 	})
 	if err != nil {
 		t.Fatalf("NewServer: %v", err)
@@ -963,15 +964,19 @@ func TestControl_API(t *testing.T) {
 }
 
 func TestNewServer_Validation(t *testing.T) {
-	_, err := NewServer(ServerConfig{ReleaseDir: ""})
+	_, err := NewServer(ServerConfig{})
 	if err == nil {
-		t.Errorf("expected error for nil manifest")
+		t.Errorf("expected error for no releases")
 	}
 
 	manifest := &ReleaseManifest{Name: "test"}
-	_, err = NewServer(ServerConfig{Manifest: manifest, ReleaseDir: ""})
+	_, err = NewServer(ServerConfig{Releases: []ReleaseSource{{Manifest: manifest}}})
 	if err == nil {
 		t.Errorf("expected error for empty release dir")
+	}
+	_, err = NewServer(ServerConfig{Releases: []ReleaseSource{{Dir: t.TempDir()}}})
+	if err == nil {
+		t.Errorf("expected error for nil manifest")
 	}
 }
 
@@ -980,9 +985,8 @@ func TestServer_NNTPProtocol_Edges(t *testing.T) {
 	manifest := createTestRelease(t, dir)
 
 	srv, err := NewServer(ServerConfig{
-		ReleaseDir: dir,
-		Manifest:   manifest,
-		Users:      map[string]string{"user": "pass"},
+		Releases: []ReleaseSource{{Dir: dir, Manifest: manifest}},
+		Users:    map[string]string{"user": "pass"},
 	})
 	if err != nil {
 		t.Fatalf("NewServer: %v", err)
@@ -1134,13 +1138,12 @@ func TestServer_ArticlesPack_FastPath(t *testing.T) {
 	}
 
 	srv, err := NewServer(ServerConfig{
-		ReleaseDir: dir,
-		Manifest:   manifest,
+		Releases: []ReleaseSource{{Dir: dir, Manifest: manifest}},
 	})
 	if err != nil {
 		t.Fatalf("NewServer: %v", err)
 	}
-	if srv.packFile == nil {
+	if srv.releases[0].packFile == nil {
 		t.Fatalf("expected packFile to be opened")
 	}
 	if err := srv.Start(); err != nil {
@@ -1257,8 +1260,7 @@ func TestServer_ArticlesPack_FastPath(t *testing.T) {
 		},
 	})
 	srvMissing, err := NewServer(ServerConfig{
-		ReleaseDir: dir,
-		Manifest:   manifestMissing,
+		Releases: []ReleaseSource{{Dir: dir, Manifest: manifestMissing}},
 	})
 	if err != nil {
 		t.Fatalf("NewServer srvMissing: %v", err)
@@ -1274,13 +1276,107 @@ func TestServer_ArticlesPack_FastPath(t *testing.T) {
 	}
 }
 
+func TestNewServer_ReleaseDirChecks(t *testing.T) {
+	newDir := func(t *testing.T) (string, *ReleaseManifest) {
+		t.Helper()
+		dir := t.TempDir()
+		m := createTestRelease(t, dir)
+		if err := WriteArticlesPack(filepath.Join(dir, "articles.pack"), filepath.Join(dir, "files"), m.Files); err != nil {
+			t.Fatal(err)
+		}
+		return dir, m
+	}
+	start := func(dir string, m *ReleaseManifest) (*Server, error) {
+		return NewServer(ServerConfig{Releases: []ReleaseSource{{Dir: dir, Manifest: m}}})
+	}
+
+	t.Run("intact pack is opened", func(t *testing.T) {
+		dir, m := newDir(t)
+		srv, err := start(dir, m)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer func() { _ = srv.Close() }()
+		if srv.releases[0].packFile == nil {
+			t.Fatal("pack not opened")
+		}
+	})
+
+	t.Run("missing pack falls back to files", func(t *testing.T) {
+		dir, m := newDir(t)
+		if err := os.Remove(filepath.Join(dir, "articles.pack")); err != nil {
+			t.Fatal(err)
+		}
+		srv, err := start(dir, m)
+		if err != nil {
+			t.Fatalf("NewServer without a pack: %v", err)
+		}
+		defer func() { _ = srv.Close() }()
+		if srv.releases[0].packFile != nil {
+			t.Fatal("packFile set without a pack")
+		}
+	})
+
+	t.Run("pack that cannot be opened for a reason other than absence is fatal", func(t *testing.T) {
+		dir, m := newDir(t)
+		packPath := filepath.Join(dir, "articles.pack")
+		if err := os.Remove(packPath); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Symlink("articles.pack", packPath); err != nil { // ELOOP on open
+			t.Fatal(err)
+		}
+		if _, err := start(dir, m); err == nil || !strings.Contains(err.Error(), "articles.pack") {
+			t.Fatalf("NewServer with a self-referencing pack = %v, want an articles.pack error", err)
+		}
+	})
+
+	t.Run("pack that is not a regular file is fatal", func(t *testing.T) {
+		dir, m := newDir(t)
+		packPath := filepath.Join(dir, "articles.pack")
+		if err := os.Remove(packPath); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Mkdir(packPath, 0o750); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := start(dir, m); err == nil || !strings.Contains(err.Error(), "not a regular file") {
+			t.Fatalf("NewServer with a directory as pack = %v, want not-a-regular-file", err)
+		}
+	})
+
+	t.Run("truncated pack is fatal", func(t *testing.T) {
+		dir, m := newDir(t)
+		packPath := filepath.Join(dir, "articles.pack")
+		fi, err := os.Stat(packPath)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Truncate(packPath, fi.Size()-10); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := start(dir, m); err == nil || !strings.Contains(err.Error(), "manifest needs") {
+			t.Fatalf("NewServer with a truncated pack = %v, want manifest-needs error", err)
+		}
+	})
+
+	t.Run("release without files directory is fatal", func(t *testing.T) {
+		dir, m := newDir(t)
+		if err := os.RemoveAll(filepath.Join(dir, "files")); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := start(dir, m); err == nil || !strings.Contains(err.Error(), "no files/ directory") {
+			t.Fatalf("NewServer without files/ = %v, want no-files error", err)
+		}
+	})
+}
+
 func TestServer_StatDoesNotConsumeBodyFaultAndAcceptBackoff(t *testing.T) {
 	dir := t.TempDir()
 	manifest := createTestRelease(t, dir)
 
 	srv, err := NewServer(ServerConfig{
-		ReleaseDir: dir,
-		Manifest:   manifest,
+		Releases: []ReleaseSource{{Dir: dir, Manifest: manifest}},
 	})
 	if err != nil {
 		t.Fatalf("NewServer: %v", err)
@@ -1361,7 +1457,7 @@ func TestServer_StatDoesNotConsumeBodyFaultAndAcceptBackoff(t *testing.T) {
 	defer func() { _ = truncatedPack.Close() }()
 	srvTrunc := &Server{
 		limiter:  NewRateLimiter(0),
-		packFile: truncatedPack,
+		releases: []serverRelease{{packFile: truncatedPack}},
 	}
 	var outBuf bytes.Buffer
 	bw := bufio.NewWriter(&outBuf)

@@ -129,6 +129,47 @@ func NewControlHandler(srv *Server) http.Handler {
 		_ = json.NewEncoder(w).Encode(map[string]any{"rate_mbps": req.RateMBps}) //nolint:errcheck // response writer write failure is handled by net/http
 	})
 
+	mux.HandleFunc("POST /conn", func(w http.ResponseWriter, r *http.Request) {
+		// Fields omitted from the body keep their current value; kill_active is a one-shot action.
+		var req struct {
+			MaxConnections *int  `json:"max_connections"`
+			Refuse         *bool `json:"refuse"`
+			RejectGreeting *bool `json:"reject_greeting"`
+			AuthFail       *bool `json:"auth_fail"`
+			KillActive     bool  `json:"kill_active"`
+		}
+		dec := json.NewDecoder(r.Body)
+		dec.DisallowUnknownFields()
+		if err := dec.Decode(&req); err != nil {
+			http.Error(w, fmt.Sprintf("invalid json: %v", err), http.StatusBadRequest)
+			return
+		}
+		cur, err := srv.UpdateConnSettings(func(c *ConnSettings) {
+			if req.MaxConnections != nil {
+				c.MaxConnections = *req.MaxConnections
+			}
+			if req.Refuse != nil {
+				c.Refuse = *req.Refuse
+			}
+			if req.RejectGreeting != nil {
+				c.RejectGreeting = *req.RejectGreeting
+			}
+			if req.AuthFail != nil {
+				c.AuthFail = *req.AuthFail
+			}
+		})
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		killed := 0
+		if req.KillActive {
+			killed = srv.KillActive()
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{"conn": cur, "killed": killed}) //nolint:errcheck // response writer write failure is handled by net/http
+	})
+
 	mux.HandleFunc("POST /snapshot", func(w http.ResponseWriter, r *http.Request) {
 		var req struct {
 			Name        string   `json:"name"`
