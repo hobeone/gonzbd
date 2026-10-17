@@ -34,7 +34,7 @@ type ServerConfig struct {
 	Limiter *RateLimiter
 	// Users is an optional auth map of username to password. If empty, auth is not required.
 	Users map[string]string
-	// Conn is the initial connection-level fault state; adjustable at runtime via SetConnSettings.
+	// Conn is the initial connection-level fault state; adjustable at runtime via UpdateConnSettings.
 	Conn ConnSettings
 }
 
@@ -53,7 +53,8 @@ type ConnSettings struct {
 	Refuse bool `json:"refuse"`
 	// RejectGreeting sends "400 service temporarily unavailable" and closes.
 	RejectGreeting bool `json:"reject_greeting"`
-	// AuthFail makes AUTHINFO PASS answer 481 and makes article commands require authentication.
+	// AuthFail makes AUTHINFO PASS answer 481 and makes BODY, ARTICLE and STAT answer 480 on every
+	// connection, including ones that authenticated before it was set.
 	AuthFail bool `json:"auth_fail"`
 }
 
@@ -117,6 +118,10 @@ type Server struct {
 	faultsFiredTotal atomic.Int64
 	bytesSentTotal   atomic.Int64
 
+	// authFail mirrors connSettings.AuthFail for the per-command path. It is written in NewServer
+	// and UpdateConnSettings: `git grep -n 'authFail\.Store(' -- scripts/localnntp` returns 2 lines.
+	authFail atomic.Bool
+
 	connMu       sync.Mutex
 	connSettings ConnSettings
 	openConns    map[net.Conn]struct{}
@@ -139,6 +144,9 @@ type serverRelease struct {
 func NewServer(cfg ServerConfig) (*Server, error) {
 	if len(cfg.Releases) == 0 {
 		return nil, errors.New("at least one release is required")
+	}
+	if err := cfg.Conn.validate(); err != nil {
+		return nil, err
 	}
 	if cfg.Faults == nil {
 		cfg.Faults = NewFaultEngine(1, nil)
@@ -199,7 +207,7 @@ func NewServer(cfg ServerConfig) (*Server, error) {
 		releases = append(releases, rel)
 	}
 
-	return &Server{
+	s := &Server{
 		cfg:          cfg,
 		segments:     segments,
 		faults:       cfg.Faults,
@@ -211,7 +219,9 @@ func NewServer(cfg ServerConfig) (*Server, error) {
 		servedClean:  make(map[string]int),
 		requests:     make(map[string]int),
 		snapshots:    make(map[string]Snapshot),
-	}, nil
+	}
+	s.authFail.Store(cfg.Conn.AuthFail)
+	return s, nil
 }
 
 // Start binds the TCP listener and spawns the connection accept loop.
@@ -292,12 +302,28 @@ func (s *Server) Stats() ServerStats {
 	}
 }
 
-// SetConnSettings replaces the connection-level fault state; it applies to later connections
-// and, for AuthFail, to commands on connections already open.
-func (s *Server) SetConnSettings(c ConnSettings) {
+// validate rejects settings no server can honour.
+func (c ConnSettings) validate() error {
+	if c.MaxConnections < 0 {
+		return fmt.Errorf("max_connections cannot be negative: %d", c.MaxConnections)
+	}
+	return nil
+}
+
+// UpdateConnSettings applies mutate to the connection-level fault state as one atomic step and
+// returns the result. The settings apply to later connections; AuthFail also applies to commands
+// on connections already open. A result that fails validation is not stored.
+func (s *Server) UpdateConnSettings(mutate func(*ConnSettings)) (ConnSettings, error) {
 	s.connMu.Lock()
-	s.connSettings = c
-	s.connMu.Unlock()
+	defer s.connMu.Unlock()
+	next := s.connSettings
+	mutate(&next)
+	if err := next.validate(); err != nil {
+		return s.connSettings, err
+	}
+	s.connSettings = next
+	s.authFail.Store(next.AuthFail)
+	return next, nil
 }
 
 // ConnSettings returns the current connection-level fault state.
@@ -307,19 +333,24 @@ func (s *Server) ConnSettings() ConnSettings {
 	return s.connSettings
 }
 
-// KillActive abruptly closes every open client connection and returns how many it closed.
+// KillActive abruptly closes every open client connection, drops them from the open set at once
+// so the slots they held are free before it returns, and reports how many it closed.
 func (s *Server) KillActive() int {
 	s.connMu.Lock()
 	defer s.connMu.Unlock()
+	n := len(s.openConns)
 	for c := range s.openConns {
 		_ = c.Close() //nolint:errcheck // abrupt close is the point
+		delete(s.openConns, c)
 	}
-	return len(s.openConns)
+	return n
 }
 
 // admit applies the connection-level faults to a freshly accepted connection. It returns
 // the greeting line to send and whether the connection is admitted (tracked in openConns).
-// A non-admitted connection is closed by the caller after the greeting, if any.
+// A non-admitted connection is closed by the caller after the greeting, if any. acceptLoop
+// calls it before handing the connection to a goroutine, so an accepted connection is in
+// openConns, and therefore killable, before the next Accept.
 func (s *Server) admit(c net.Conn) (greeting string, ok bool) {
 	s.connMu.Lock()
 	defer s.connMu.Unlock()
@@ -346,9 +377,10 @@ func (s *Server) release(c net.Conn) {
 	s.connMu.Unlock()
 }
 
-// authRequired reports whether article commands must be preceded by authentication.
-func (s *Server) authRequired() bool {
-	return len(s.cfg.Users) > 0 || s.ConnSettings().AuthFail
+// authBlocks reports whether article commands on this connection get 480. AuthFail blocks every
+// connection, authenticated or not; otherwise only an unauthenticated one when users are configured.
+func (s *Server) authBlocks(cs *connState) bool {
+	return s.authFail.Load() || (len(s.cfg.Users) > 0 && !cs.authed)
 }
 
 // TakeSnapshot records an immutable snapshot of currently served articles along with recorded IDs.
@@ -437,8 +469,9 @@ func (s *Server) acceptLoop() {
 			continue
 		}
 		backoff = 0
+		greeting, admitted := s.admit(c)
 		s.wg.Go(func() {
-			s.serveConn(c)
+			s.serveConn(c, greeting, admitted)
 		})
 	}
 }
@@ -448,7 +481,7 @@ type connState struct {
 	pendingUser string
 }
 
-func (s *Server) serveConn(c net.Conn) {
+func (s *Server) serveConn(c net.Conn, greeting string, admitted bool) {
 	defer func() { _ = c.Close() }() //nolint:errcheck // best-effort close on connection termination
 
 	connCtx, cancel := context.WithCancel(context.Background())
@@ -468,7 +501,6 @@ func (s *Server) serveConn(c net.Conn) {
 	cs := &connState{}
 	var wireBuf []byte
 
-	greeting, admitted := s.admit(c)
 	if admitted {
 		defer s.release(c)
 	}
@@ -546,7 +578,7 @@ func (s *Server) serveConn(c net.Conn) {
 					return
 				}
 			case "PASS":
-				if s.ConnSettings().AuthFail {
+				if s.authFail.Load() {
 					if err := s.send(bw, "481 authentication failed"); err != nil {
 						return
 					}
@@ -617,7 +649,7 @@ func (s *Server) serveConn(c net.Conn) {
 }
 
 func (s *Server) handleStat(bw *bufio.Writer, cs *connState, rawID string) bool {
-	if s.authRequired() && !cs.authed {
+	if s.authBlocks(cs) {
 		return s.send(bw, "480 authentication required") == nil
 	}
 	cleanID := extractMessageID(rawID)
@@ -675,7 +707,7 @@ func (s *Server) writeRateLimited(ctx context.Context, bw *bufio.Writer, payload
 }
 
 func (s *Server) handleBodyOrArticle(ctx context.Context, bw *bufio.Writer, cs *connState, rawID string, isArticle bool, wireBuf *[]byte) bool {
-	if s.authRequired() && !cs.authed {
+	if s.authBlocks(cs) {
 		return s.send(bw, "480 authentication required") == nil
 	}
 	cleanID := extractMessageID(rawID)

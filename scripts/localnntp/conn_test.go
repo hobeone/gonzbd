@@ -5,12 +5,20 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
+	"io"
+	"maps"
 	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"reflect"
+	"slices"
+	"strconv"
 	"strings"
+	"sync"
+	"syscall"
 	"testing"
 	"time"
 
@@ -47,15 +55,53 @@ func dialRaw(t *testing.T, srv *Server) *rawClient {
 	return &rawClient{c: c, br: bufio.NewReader(c)}
 }
 
-// line reads one CRLF-terminated line; a read error (including EOF) is returned as "<err: ...>".
+// line reads one CRLF-terminated line; a read error is returned as "<err: ...>".
 func (r *rawClient) line(t *testing.T) string {
 	t.Helper()
-	_ = r.c.SetReadDeadline(time.Now().Add(2 * time.Second))
-	s, err := r.br.ReadString('\n')
+	s, err := r.readLine()
 	if err != nil {
 		return "<err: " + err.Error() + ">"
 	}
-	return strings.TrimRight(s, "\r\n")
+	return s
+}
+
+func (r *rawClient) readLine() (string, error) {
+	_ = r.c.SetReadDeadline(time.Now().Add(2 * time.Second))
+	s, err := r.br.ReadString('\n')
+	if err != nil {
+		return "", err
+	}
+	return strings.TrimRight(s, "\r\n"), nil
+}
+
+// isPeerClosed reports whether err shows the peer closed the connection: EOF or a reset.
+// A read deadline expiring is the connection still being open and silent, not closed.
+func isPeerClosed(err error) bool {
+	var ne net.Error
+	if err == nil || (errors.As(err, &ne) && ne.Timeout()) {
+		return false
+	}
+	return errors.Is(err, io.EOF) || errors.Is(err, syscall.ECONNRESET) || errors.Is(err, net.ErrClosed)
+}
+
+// wantClosed fails unless the next read shows the server closed the connection without sending
+// another line.
+func (r *rawClient) wantClosed(t *testing.T, what string) {
+	t.Helper()
+	got, err := r.readLine()
+	if err == nil {
+		t.Fatalf("%s: connection still open, read %q", what, got)
+	}
+	if !isPeerClosed(err) {
+		t.Fatalf("%s: read failed without the peer closing (a timeout is not a close): %v", what, err)
+	}
+}
+
+func setConn(t *testing.T, srv *Server, c ConnSettings) {
+	t.Helper()
+	if _, err := srv.UpdateConnSettings(func(p *ConnSettings) { *p = c }); err != nil {
+		t.Fatalf("UpdateConnSettings: %v", err)
+	}
 }
 
 func (r *rawClient) cmd(t *testing.T, c string) string {
@@ -79,9 +125,7 @@ func TestServer_MaxConnections(t *testing.T) {
 	if got := over.line(t); got != "502 too many connections" {
 		t.Fatalf("over-cap greeting = %q, want 502 too many connections", got)
 	}
-	if got := over.line(t); !strings.HasPrefix(got, "<err: ") {
-		t.Fatalf("over-cap connection not closed, read %q", got)
-	}
+	over.wantClosed(t, "over-cap connection")
 
 	st := srv.Stats()
 	if st.ActiveConns != 2 || st.PeakConns != 2 || st.ConnsRejected != 1 {
@@ -127,18 +171,13 @@ func TestServer_RefuseAndRejectGreeting(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			srv := startConnTestServer(t, ServerConfig{Conn: tt.conn})
 			c := dialRaw(t, srv)
-			got := c.line(t)
 			if tt.want == "" {
-				if !strings.HasPrefix(got, "<err: ") {
-					t.Fatalf("refused connection sent %q, want bare close", got)
-				}
+				c.wantClosed(t, "refused connection")
 			} else {
-				if got != tt.want {
+				if got := c.line(t); got != tt.want {
 					t.Fatalf("greeting = %q, want %q", got, tt.want)
 				}
-				if next := c.line(t); !strings.HasPrefix(next, "<err: ") {
-					t.Fatalf("connection not closed after greeting, read %q", next)
-				}
+				c.wantClosed(t, "connection after rejected greeting")
 			}
 			waitFor(t, func() bool { return srv.Stats().ConnsRejected == 1 })
 			if srv.Stats().ActiveConns != 0 {
@@ -172,7 +211,35 @@ func TestServer_AuthFail(t *testing.T) {
 	}
 
 	// Clearing the flag at runtime restores the no-auth default for new commands.
-	srv.SetConnSettings(ConnSettings{})
+	setConn(t, srv, ConnSettings{})
+	if got := c.cmd(t, "STAT <single-part-1@localnntp.test>"); !strings.HasPrefix(got, "223") {
+		t.Fatalf("STAT after auth_fail cleared = %q, want 223", got)
+	}
+}
+
+// auth_fail set after a connection authenticated must still block that connection's commands.
+func TestServer_AuthFail_AppliesToAuthenticatedConnections(t *testing.T) {
+	srv := startConnTestServer(t, ServerConfig{Users: map[string]string{"u": "p"}})
+	c := dialRaw(t, srv)
+	c.line(t)
+	if got := c.cmd(t, "AUTHINFO USER u"); !strings.HasPrefix(got, "381") {
+		t.Fatalf("AUTHINFO USER = %q", got)
+	}
+	if got := c.cmd(t, "AUTHINFO PASS p"); !strings.HasPrefix(got, "281") {
+		t.Fatalf("AUTHINFO PASS = %q", got)
+	}
+	if got := c.cmd(t, "STAT <single-part-1@localnntp.test>"); !strings.HasPrefix(got, "223") {
+		t.Fatalf("STAT while authenticated = %q, want 223", got)
+	}
+
+	setConn(t, srv, ConnSettings{AuthFail: true})
+	for _, verb := range []string{"STAT", "BODY", "ARTICLE"} {
+		if got := c.cmd(t, verb+" <single-part-1@localnntp.test>"); !strings.HasPrefix(got, "480") {
+			t.Fatalf("%s on an already-authenticated connection after auth_fail = %q, want 480", verb, got)
+		}
+	}
+
+	setConn(t, srv, ConnSettings{})
 	if got := c.cmd(t, "STAT <single-part-1@localnntp.test>"); !strings.HasPrefix(got, "223") {
 		t.Fatalf("STAT after auth_fail cleared = %q, want 223", got)
 	}
@@ -188,12 +255,11 @@ func TestServer_KillActive(t *testing.T) {
 	if n := srv.KillActive(); n != 2 {
 		t.Fatalf("KillActive = %d, want 2", n)
 	}
-	for i, c := range []*rawClient{a, b} {
-		if got := c.line(t); !strings.HasPrefix(got, "<err: ") {
-			t.Fatalf("conn %d still alive after kill, read %q", i, got)
-		}
+	a.wantClosed(t, "conn a after kill")
+	b.wantClosed(t, "conn b after kill")
+	if srv.Stats().ActiveConns != 0 {
+		t.Fatalf("active = %d right after KillActive, want 0", srv.Stats().ActiveConns)
 	}
-	waitFor(t, func() bool { return srv.Stats().ActiveConns == 0 })
 	if srv.Stats().PeakConns != 2 {
 		t.Fatalf("peak = %d, want 2", srv.Stats().PeakConns)
 	}
@@ -201,6 +267,119 @@ func TestServer_KillActive(t *testing.T) {
 	c := dialRaw(t, srv)
 	if got := c.line(t); !strings.HasPrefix(got, "200 ") {
 		t.Fatalf("greeting after kill = %q", got)
+	}
+}
+
+// A killed connection's slot must be free the moment KillActive returns, or a reconnect under
+// --max-connections draws a spurious 502.
+func TestServer_KillActive_FreesSlotsImmediately(t *testing.T) {
+	srv := startConnTestServer(t, ServerConfig{Conn: ConnSettings{MaxConnections: 1}})
+	for i := range 25 {
+		c := dialRaw(t, srv)
+		if got := c.line(t); !strings.HasPrefix(got, "200 ") {
+			t.Fatalf("round %d: greeting = %q, want 200", i, got)
+		}
+		if n := srv.KillActive(); n != 1 {
+			t.Fatalf("round %d: KillActive = %d, want 1", i, n)
+		}
+		if active := srv.Stats().ActiveConns; active != 0 {
+			t.Fatalf("round %d: active = %d immediately after KillActive, want 0", i, active)
+		}
+	}
+	if rejected := srv.Stats().ConnsRejected; rejected != 0 {
+		t.Fatalf("rejected = %d, want 0: a reconnect after kill hit the cap", rejected)
+	}
+}
+
+// hookListener runs before after each Accept hand-off, on the accept goroutine itself, so the
+// hook observes the server between one Accept returning and the next being issued.
+type hookListener struct {
+	net.Listener
+	before func()
+}
+
+func (l *hookListener) Accept() (net.Conn, error) {
+	l.before()
+	return l.Listener.Accept()
+}
+
+// A connection that Accept has returned must already be killable: KillActive issued before the
+// next Accept cannot miss it.
+func TestServer_KillActive_CoversJustAcceptedConnection(t *testing.T) {
+	dir := t.TempDir()
+	srv, err := NewServer(ServerConfig{Releases: []ReleaseSource{{Dir: dir, Manifest: createTestRelease(t, dir)}}})
+	if err != nil {
+		t.Fatalf("NewServer: %v", err)
+	}
+	real, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	killed := make(chan int, 64)
+	srv.ln = &hookListener{Listener: real, before: func() { killed <- srv.KillActive() }}
+	srv.addr = real.Addr().String()
+	srv.wg.Go(srv.acceptLoop)
+	t.Cleanup(func() { _ = srv.Close() })
+	<-killed // the first Accept call, before any client exists
+
+	const rounds = 40
+	clients := make([]*rawClient, 0, rounds)
+	for i := range rounds {
+		clients = append(clients, dialRaw(t, srv))
+		if n := <-killed; n != 1 {
+			t.Fatalf("round %d: KillActive on the accept goroutine closed %d connections, want 1 (the one just accepted)", i, n)
+		}
+	}
+	for i, c := range clients {
+		c.wantClosed(t, "just-accepted conn "+strconv.Itoa(i))
+	}
+}
+
+func TestServer_UpdateConnSettings_IsAtomic(t *testing.T) {
+	srv := startConnTestServer(t, ServerConfig{})
+	entered, release, secondRan := make(chan struct{}), make(chan struct{}), make(chan struct{})
+	firstDone := make(chan struct{})
+	go func() {
+		defer close(firstDone)
+		_, _ = srv.UpdateConnSettings(func(c *ConnSettings) {
+			close(entered)
+			<-release
+			c.MaxConnections = 7
+		})
+	}()
+	<-entered
+	go func() {
+		defer close(secondRan)
+		_, _ = srv.UpdateConnSettings(func(c *ConnSettings) { c.AuthFail = true })
+	}()
+	select {
+	case <-secondRan:
+		t.Fatal("a second UpdateConnSettings ran while the first was still mutating")
+	case <-time.After(50 * time.Millisecond):
+	}
+	close(release)
+	<-firstDone
+	<-secondRan
+	if got, want := srv.ConnSettings(), (ConnSettings{MaxConnections: 7, AuthFail: true}); got != want {
+		t.Fatalf("settings = %+v, want %+v (an update was lost)", got, want)
+	}
+}
+
+func TestServer_UpdateConnSettings_RejectsNegativeCap(t *testing.T) {
+	srv := startConnTestServer(t, ServerConfig{Conn: ConnSettings{MaxConnections: 2}})
+	if _, err := srv.UpdateConnSettings(func(c *ConnSettings) { c.MaxConnections = -1 }); err == nil {
+		t.Fatal("UpdateConnSettings accepted max_connections -1")
+	}
+	if got := srv.ConnSettings().MaxConnections; got != 2 {
+		t.Fatalf("max_connections = %d after a rejected update, want 2", got)
+	}
+	dir := t.TempDir()
+	_, err := NewServer(ServerConfig{
+		Releases: []ReleaseSource{{Dir: dir, Manifest: createTestRelease(t, dir)}},
+		Conn:     ConnSettings{MaxConnections: -1},
+	})
+	if err == nil {
+		t.Fatal("NewServer accepted max_connections -1")
 	}
 }
 
@@ -251,8 +430,11 @@ func TestControl_Conn(t *testing.T) {
 			t.Errorf("POST /conn %s status %d, want 400", bad, code)
 		}
 	}
+	if got := srv.ConnSettings(); got != want {
+		t.Fatalf("settings = %+v after rejected requests, want %+v", got, want)
+	}
 
-	srv.SetConnSettings(ConnSettings{})
+	setConn(t, srv, ConnSettings{})
 	c := dialRaw(t, srv)
 	c.line(t)
 	waitFor(t, func() bool { return srv.Stats().ActiveConns == 1 })
@@ -260,8 +442,97 @@ func TestControl_Conn(t *testing.T) {
 	if code != http.StatusOK || !strings.Contains(out, `"killed":1`) {
 		t.Fatalf("kill_active = %d %s, want killed:1", code, out)
 	}
-	if got := c.line(t); !strings.HasPrefix(got, "<err: ") {
-		t.Fatalf("conn alive after kill_active, read %q", got)
+	c.wantClosed(t, "conn after kill_active")
+}
+
+func postConn(t *testing.T, base, body string) map[string]any {
+	t.Helper()
+	resp, err := http.Post(base+"/conn", "application/json", strings.NewReader(body))
+	if err != nil {
+		t.Fatalf("POST /conn: %v", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("POST /conn %s status %d", body, resp.StatusCode)
+	}
+	var out map[string]any
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		t.Fatalf("decode /conn response: %v", err)
+	}
+	return out
+}
+
+func TestControl_Conn_JSONKeysAndFlagToggling(t *testing.T) {
+	srv := startConnTestServer(t, ServerConfig{})
+	ts := httptest.NewServer(NewControlHandler(srv))
+	defer ts.Close()
+
+	out := postConn(t, ts.URL, `{"max_connections":4,"refuse":true,"reject_greeting":true,"auth_fail":true}`)
+	wantConn := map[string]any{"max_connections": float64(4), "refuse": true, "reject_greeting": true, "auth_fail": true}
+	if !reflect.DeepEqual(out["conn"], wantConn) {
+		t.Fatalf("response conn = %v, want %v", out["conn"], wantConn)
+	}
+	if out["killed"] != float64(0) {
+		t.Fatalf("response killed = %v, want 0", out["killed"])
+	}
+
+	// refuse: accepted then closed with no greeting.
+	postConn(t, ts.URL, `{"max_connections":0,"reject_greeting":false,"auth_fail":false}`)
+	dialRaw(t, srv).wantClosed(t, "refused connection")
+
+	// An explicit false clears the flag; omitted fields keep their value.
+	out = postConn(t, ts.URL, `{"refuse":false}`)
+	if got := out["conn"].(map[string]any)["refuse"]; got != false {
+		t.Fatalf("refuse after explicit false = %v, want false", got)
+	}
+	if got := srv.ConnSettings(); got != (ConnSettings{}) {
+		t.Fatalf("settings = %+v, want all cleared", got)
+	}
+	if got := dialRaw(t, srv).line(t); !strings.HasPrefix(got, "200 ") {
+		t.Fatalf("greeting after refuse cleared = %q, want 200", got)
+	}
+
+	// The same keys appear under /stats.
+	resp, err := http.Get(ts.URL + "/stats")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	var stats map[string]any
+	if err := json.NewDecoder(resp.Body).Decode(&stats); err != nil {
+		t.Fatal(err)
+	}
+	for _, key := range []string{"conn", "active_connections", "peak_connections", "connections_rejected_total"} {
+		if _, ok := stats[key]; !ok {
+			t.Errorf("/stats missing key %q", key)
+		}
+	}
+	gotKeys := slices.Sorted(maps.Keys(stats["conn"].(map[string]any)))
+	if want := []string{"auth_fail", "max_connections", "refuse", "reject_greeting"}; !slices.Equal(gotKeys, want) {
+		t.Fatalf("/stats conn keys = %v, want %v", gotKeys, want)
+	}
+}
+
+// Concurrent POST /conn requests that touch different fields must both land.
+func TestControl_Conn_ConcurrentPartialUpdates(t *testing.T) {
+	srv := startConnTestServer(t, ServerConfig{})
+	h := NewControlHandler(srv)
+	post := func(body string) {
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/conn", strings.NewReader(body)))
+		if rec.Code != http.StatusOK {
+			t.Errorf("POST /conn %s = %d", body, rec.Code)
+		}
+	}
+	for round := range 200 {
+		setConn(t, srv, ConnSettings{})
+		var wg sync.WaitGroup
+		wg.Go(func() { post(`{"max_connections":5}`) })
+		wg.Go(func() { post(`{"auth_fail":true}`) })
+		wg.Wait()
+		if got, want := srv.ConnSettings(), (ConnSettings{MaxConnections: 5, AuthFail: true}); got != want {
+			t.Fatalf("round %d: settings = %+v, want %+v (a concurrent update was lost)", round, got, want)
+		}
 	}
 }
 

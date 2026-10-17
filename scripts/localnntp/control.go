@@ -144,24 +144,24 @@ func NewControlHandler(srv *Server) http.Handler {
 			http.Error(w, fmt.Sprintf("invalid json: %v", err), http.StatusBadRequest)
 			return
 		}
-		if req.MaxConnections != nil && *req.MaxConnections < 0 {
-			http.Error(w, "max_connections cannot be negative", http.StatusBadRequest)
+		cur, err := srv.UpdateConnSettings(func(c *ConnSettings) {
+			if req.MaxConnections != nil {
+				c.MaxConnections = *req.MaxConnections
+			}
+			if req.Refuse != nil {
+				c.Refuse = *req.Refuse
+			}
+			if req.RejectGreeting != nil {
+				c.RejectGreeting = *req.RejectGreeting
+			}
+			if req.AuthFail != nil {
+				c.AuthFail = *req.AuthFail
+			}
+		})
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
 			return
 		}
-		cur := srv.ConnSettings()
-		if req.MaxConnections != nil {
-			cur.MaxConnections = *req.MaxConnections
-		}
-		if req.Refuse != nil {
-			cur.Refuse = *req.Refuse
-		}
-		if req.RejectGreeting != nil {
-			cur.RejectGreeting = *req.RejectGreeting
-		}
-		if req.AuthFail != nil {
-			cur.AuthFail = *req.AuthFail
-		}
-		srv.SetConnSettings(cur)
 		killed := 0
 		if req.KillActive {
 			killed = srv.KillActive()
