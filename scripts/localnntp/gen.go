@@ -207,11 +207,16 @@ func WriteArticlesPack(packPath, filesDir string, files []ReleaseFile) error {
 	return nil
 }
 
+// releaseIDNamespace is the Message-ID namespace GenerateRelease gives every file of a release:
+// "<name>/<seed>". Releases that differ in name or seed get disjoint Message-IDs even when they
+// share file names such as sample.mkv, so one multi-release server can index them together.
+func releaseIDNamespace(name string, seed uint64) string {
+	return fmt.Sprintf("%s/%d", name, seed)
+}
+
 // SliceFileSegments slices a file on disk into segments of at most partSize bytes,
 // calculating SHA-256 for the file and CRC32 for each segment. Message-IDs are
-// derived from idNamespace, diskName and the part number, so releases generated
-// under different namespaces can share file names (sample.mkv) and still be
-// served together by one multi-release server.
+// derived from idNamespace, diskName and the part number.
 func SliceFileSegments(idNamespace, path string, fileIdx int, diskName, nzbFilename string, role FileRole, volNum, partSize int) (ReleaseFile, error) {
 	if partSize <= 0 {
 		return ReleaseFile{}, errors.New("part size must be positive")
@@ -468,7 +473,7 @@ func GenerateRelease(cfg GenConfig) (*ReleaseManifest, error) {
 			h := sha256.Sum256([]byte(fname))
 			nzbFilename = hex.EncodeToString(h[:])[:20] + ".bin"
 		}
-		rf, err := SliceFileSegments(fmt.Sprintf("%s/%d", cfg.Name, cfg.Seed), filePath, idx, fname, nzbFilename, role, volNum, cfg.PartSize)
+		rf, err := SliceFileSegments(releaseIDNamespace(cfg.Name, cfg.Seed), filePath, idx, fname, nzbFilename, role, volNum, cfg.PartSize)
 		if err != nil {
 			return nil, fmt.Errorf("slice file %s: %w", fname, err)
 		}

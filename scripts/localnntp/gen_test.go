@@ -327,6 +327,60 @@ func TestGenerateRelease_EndToEnd(t *testing.T) {
 	}
 }
 
+// Releases that differ in name or in seed must not share a Message-ID, or a multi-release
+// server refuses to index them together. sample.mkv is generated for every release, so a
+// namespace that ignored name or seed would collide on it.
+func TestGenerateRelease_MessageIDNamespace(t *testing.T) {
+	t.Parallel()
+	if _, err := exec.LookPath("rar"); err != nil {
+		t.Skip("rar not installed")
+	}
+
+	gen := func(name string, seed uint64) map[string]bool {
+		m, err := GenerateRelease(GenConfig{
+			OutDir:         filepath.Join(t.TempDir(), "rel"),
+			Name:           name,
+			PayloadSize:    64 << 10,
+			Volumes:        2,
+			PartSize:       16 << 10,
+			Seed:           seed,
+			IncludeSidecar: true,
+		})
+		if err != nil {
+			t.Fatalf("GenerateRelease(%s, %d): %v", name, seed, err)
+		}
+		ids := map[string]bool{}
+		for _, f := range m.Files {
+			for _, seg := range f.Segments {
+				ids[seg.MessageID] = true
+			}
+		}
+		if len(ids) == 0 {
+			t.Fatalf("GenerateRelease(%s, %d) produced no Message-IDs", name, seed)
+		}
+		return ids
+	}
+
+	base := gen("relA", 1)
+	for _, other := range []struct {
+		desc string
+		ids  map[string]bool
+	}{
+		{"different name, same seed", gen("relB", 1)},
+		{"same name, different seed", gen("relA", 2)},
+	} {
+		for id := range other.ids {
+			if base[id] {
+				t.Fatalf("%s: Message-ID %q appears in both releases", other.desc, id)
+			}
+		}
+	}
+
+	if got := releaseIDNamespace("relA", 1); got != "relA/1" {
+		t.Fatalf("releaseIDNamespace = %q, want relA/1", got)
+	}
+}
+
 func TestWriteDeterministicPayload_Errors(t *testing.T) {
 	t.Parallel()
 	if _, err := WriteDeterministicPayload(filepath.Join(t.TempDir(), "f.bin"), -1, 42); err == nil {
