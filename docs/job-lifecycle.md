@@ -1685,13 +1685,18 @@ file list, and neither changes shape again for the life of the job.
 `file_index` is therefore **stable for the job's entire life**: nothing after
 ingest removes a file, so nothing after ingest renumbers one.
 
-`DiscardDeferredPar2` is the only *verdict* that changes a job's download
-intent after ingest, and it does not touch the file set to do it. It is not
-the only thing that moves `fetch_policy` there: `Job.ReleaseRecovery` moves
-held volumes to `FetchAlways` when the verdict finds damage, and the first hydration
-after a restart re-applies whatever `job_files` holds through
-`Job.InstallFileVerification` (#329). None of the three touches the file set. A
-recovery
+Two Assessing verdicts change a job's download intent after ingest:
+`DiscardDeferredPar2` moves held volumes to `FetchNever` when the verdict is
+clean, and `Job.ReleaseRecovery` moves the held volumes a repair needs to
+`FetchAlways` when it finds damage. Two other paths move `fetch_policy` after
+ingest: the finalizer's retry of a failed par2 repair, which calls
+`Job.ReleaseRecovery` to release every held volume, and the first hydration
+after a restart, which re-applies whatever `job_files` holds through
+`Job.InstallFileVerification` (#329). Those are the callers, outside ingest, of
+the one policy writer: `git grep -n 'setFileFetchPolicy(' -- internal/job/
+':!*_test.go'` finds it under `SetFileFetchPolicy` (called only at ingest),
+`undeferRecovery` (under `ReleaseRecovery`), `DiscardDeferredPar2` and
+`InstallFileVerification`. None of these touches the file set. A recovery
 volume proven unnecessary keeps its `job_files` row exactly where it was; only
 its `fetch_policy` column moves, from `FetchIfNeeded` to `FetchNever`. That
 write is residency-independent: the recorder's dirty mark reads each file's
