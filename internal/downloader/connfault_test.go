@@ -345,3 +345,34 @@ func TestTracker_UnmarkTriedAfterFault(t *testing.T) {
 		t.Errorf("faults = %v after DropInstances, want none", tr.faults)
 	}
 }
+
+// Each server gets its own maxConnFaultsPerArticle: a fault on one does not
+// spend another's.
+func TestTracker_UnmarkTriedAfterFault_PerServer(t *testing.T) {
+	t.Parallel()
+	tr := newDispatchTracker()
+	key := keyFor(bareJob("jp"), 1)
+
+	if tr.UnmarkTriedAfterFault(key, 0) {
+		t.Fatal("first fault on server 0 left it marked")
+	}
+	for i := 1; i < maxConnFaultsPerArticle; i++ {
+		if tr.UnmarkTriedAfterFault(key, 1) {
+			t.Fatalf("fault %d on server 1 left it marked: server 0's fault counted toward server 1", i)
+		}
+	}
+	if !tr.UnmarkTriedAfterFault(key, 1) {
+		t.Errorf("fault %d on server 1 did not leave it marked", maxConnFaultsPerArticle)
+	}
+	for i := 2; i < maxConnFaultsPerArticle; i++ {
+		if tr.UnmarkTriedAfterFault(key, 0) {
+			t.Fatalf("fault %d on server 0 left it marked: server 1's run reset or spent server 0's", i)
+		}
+	}
+	if !tr.UnmarkTriedAfterFault(key, 0) {
+		t.Errorf("fault %d on server 0 did not leave it marked", maxConnFaultsPerArticle)
+	}
+	if len(tr.faults) != 0 {
+		t.Errorf("faults = %v after both servers reached the bound, want none", tr.faults)
+	}
+}

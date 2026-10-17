@@ -1,5 +1,5 @@
 pkg ./internal/downloader/
-run ^(TestDownloader_ArticleFaultingEveryTimeMovesToNextServer|TestTracker_UnmarkTriedAfterFault)$
+run ^(TestDownloader_ArticleFaultingEveryTimeMovesToNextServer|TestTracker_UnmarkTriedAfterFault|TestTracker_UnmarkTriedAfterFault_PerServer)$
 
 # An article that loses its connection maxConnFaultsPerArticle times leaves
 # that server marked tried, so it moves on rather than looping there (#986).
@@ -7,9 +7,21 @@ run ^(TestDownloader_ArticleFaultingEveryTimeMovesToNextServer|TestTracker_Unmar
 [the per-article bound never fires]
 file internal/downloader/tracker.go
 --- anchor
-	if m.faults[key] >= maxConnFaultsPerArticle {
+	if perServer[serverIdx] >= maxConnFaultsPerArticle {
 --- replace
-	if false && m.faults[key] >= maxConnFaultsPerArticle {
+	if false && perServer[serverIdx] >= maxConnFaultsPerArticle {
+--- end
+
+[one count shared by every server (CodeRabbit on #996)]
+file internal/downloader/tracker.go
+--- anchor
+	perServer[serverIdx]++
+	if perServer[serverIdx] >= maxConnFaultsPerArticle {
+		delete(perServer, serverIdx)
+--- replace
+	perServer[0]++
+	if perServer[0] >= maxConnFaultsPerArticle {
+		delete(perServer, 0)
 --- end
 
 [the fetch path ignores the bound]

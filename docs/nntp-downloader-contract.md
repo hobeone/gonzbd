@@ -40,7 +40,7 @@ The downloader pipeline operates across four isolated tiers of ownership:
 | Tier | Owned By | Responsibility | Lock / Synchronization |
 |---|---|---|---|
 | **Dispatcher** | Main loop (`run`) | Queue scanning, server selection, work fan-out via `workCh` sends | `Dispatcher.List()` / `Dispatcher.Job()` under dispatcher mutex; `optsMu` RLock for pass options. Never blocks on I/O. |
-| **Tracker** | `dispatchTracker` | In-flight deduplication, per-article try-bitmaps (`serverMask`), per-article connection-fault counts | Internal `tracker.Mutex`. Lock-held periods bounded to O(1) bitmap ops, except the reap's scans (`Instances`, `DropInstances`), which are O(entries). |
+| **Tracker** | `dispatchTracker` | In-flight deduplication, per-article try-bitmaps (`serverMask`), per-article, per-server connection-fault counts | Internal `tracker.Mutex`. Lock-held periods bounded to O(1) bitmap ops, except the reap's scans (`Instances`, `DropInstances`), which are O(entries). |
 | **Server state** | `Server` | Per-server penalty tracking, bad/good connection counters, optional-server auto-deactivation | `Server.mu` (RWMutex) for penalty/deactivation; atomic counters for bad/good. |
 | **Worker / Connection** | `connWorker` & `managedConn` | Pipelined NNTP network I/O (`nntp.Conn`), yEnc decoding, rate shaping, TLS | `managedConn.mu` for dial-coalescing only; `nntp.Conn` internal locks for pipelining. |
 
@@ -357,7 +357,7 @@ downstream action:
 | **Success (NNTP 222)** | Cleared (`clearTried`) | None | `Job.MarkArticleEmitted`, emits `ArticleResult` with data. |
 | **NNTP 430 / 423 (Not Found)** | Retained (`mask.set(idx)`) | None — server healthy, `RecordGoodConnection` | Emits retryable `ArticleResult` (`ErrNoArticle`), leaves un-emitted so next pass tries fallback server. Pipeline filters retryable error. |
 | **CRC Mismatch** | Retained (`mask.set(idx)`) | None — `RecordGoodConnection` | Increments `ErrClassCRCMismatch`, emits retryable `ArticleResult` (`ErrCRCMismatch`), leaves un-emitted so dispatcher tries alternate server. Pipeline filters retryable error. |
-| **Connection fault** (`isConnFault`: timeout, reset, EOF or broken pipe with a command outstanding) | Unmarked (`UnmarkTriedAfterFault`), except on the article's `maxConnFaultsPerArticle`-th (3) fault, which leaves the server marked | Only for a run — `PenaltyTimeout` once `RecordConnFault` reports one | Drops socket via `DropIfMatches`, returns article to pool; the same server may retry it, up to that bound. Only the first goroutine to observe the failure records it. |
+| **Connection fault** (`isConnFault`: timeout, reset, EOF or broken pipe with a command outstanding) | Unmarked (`UnmarkTriedAfterFault`), except on the article's `maxConnFaultsPerArticle`-th (3) fault on that server, which leaves the server marked | Only for a run — `PenaltyTimeout` once `RecordConnFault` reports one | Drops socket via `DropIfMatches`, returns article to pool; the same server may retry it, up to that bound. Only the first goroutine to observe the failure records it. |
 | **Other Connection-Level Error** (any other: an NNTP error response, a desync, a protocol error, `ErrClosed`) | Unmarked (`unmarkTried`) | Yes — `PenaltyFor(err)` | Drops socket via `DropIfMatches`, returns article to pool. Only the first goroutine to observe the failure records `RecordBadConnection` and applies penalty. |
 | **Penalized Server Dial** | Unmarked (`unmarkTried`) | Existing penalty retained | Silently returns article to dispatch pool. No result emitted, no telemetry counted. |
 | **Context Cancelled (pause/shutdown)** | Unmarked (`unmarkTried`) | None — not a server fault | `Job.ClearArticleEmitted`, article re-dispatched on resume. |
@@ -412,9 +412,9 @@ once.
 
 The server-wide count cannot catch one article that faults every time on a
 server whose other fetches succeed, because each success resets it. So the
-tracker also counts each article's connection faults:
+tracker also counts each article's connection faults, per server:
 `UnmarkTriedAfterFault` leaves the server marked in the article's try-list on
-its `maxConnFaultsPerArticle`-th (3) fault, and the article moves to the next
+the article's `maxConnFaultsPerArticle`-th (3) fault there, and the article moves to the next
 server, or to `ErrNoServersLeft` when none is left, without the server it left
 being penalized. SABnzbd's `max_art_tries` (default 3) bounds the same case.
 Every request on a connection that dies counts a fault, including pipelined

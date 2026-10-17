@@ -50,16 +50,16 @@ type dispatchTracker struct {
 	mu       sync.Mutex
 	tryList  map[articleKey]serverMask
 	inFlight map[articleKey]int
-	// faults counts an article's connection faults on the server it is
-	// being retried on; see UnmarkTriedAfterFault.
-	faults map[articleKey]int
+	// faults counts an article's connection faults per server index; see
+	// UnmarkTriedAfterFault.
+	faults map[articleKey]map[int]int
 }
 
 func newDispatchTracker() *dispatchTracker {
 	return &dispatchTracker{
 		tryList:  make(map[articleKey]serverMask),
 		inFlight: make(map[articleKey]int),
-		faults:   make(map[articleKey]int),
+		faults:   make(map[articleKey]map[int]int),
 	}
 }
 
@@ -129,17 +129,26 @@ func (m *dispatchTracker) UnmarkTried(key articleKey, serverIdx int) {
 const maxConnFaultsPerArticle = 3
 
 // UnmarkTriedAfterFault is UnmarkTried for a fetch that ended in a connection
-// fault, bounded per article: the article's maxConnFaultsPerArticle-th fault
-// since it last left a server marked this way leaves serverIdx marked instead, so an article that faults every time moves
-// on to the next server, or to ErrNoServersLeft, rather than being retried on
-// this one without end. It reports whether serverIdx was left marked.
-// Self-locking.
+// fault, bounded per article and server: the article's
+// maxConnFaultsPerArticle-th fault on serverIdx leaves serverIdx marked
+// instead, so an article that faults every time moves on to the next server,
+// or to ErrNoServersLeft, rather than being retried on this one without end.
+// Faults on one server do not count toward another's bound. It reports
+// whether serverIdx was left marked. Self-locking.
 func (m *dispatchTracker) UnmarkTriedAfterFault(key articleKey, serverIdx int) bool {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	m.faults[key]++
-	if m.faults[key] >= maxConnFaultsPerArticle {
-		delete(m.faults, key)
+	perServer := m.faults[key]
+	if perServer == nil {
+		perServer = make(map[int]int)
+		m.faults[key] = perServer
+	}
+	perServer[serverIdx]++
+	if perServer[serverIdx] >= maxConnFaultsPerArticle {
+		delete(perServer, serverIdx)
+		if len(perServer) == 0 {
+			delete(m.faults, key)
+		}
 		return true
 	}
 	mask, ok := m.tryList[key]
