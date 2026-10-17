@@ -750,17 +750,25 @@ func (d *Downloader) fetchArticle(ctx context.Context, srv *Server, serverIdx in
 		// Context cancellation means shutdown or pause — not a server fault.
 		// Don't record bad connections, apply penalties, or count this
 		// as a diagnostic error; it's expected noise during shutdown/pause.
-		if ctx.Err() == nil && fetchCtx.Err() == nil {
+		cancelled := ctx.Err() != nil || fetchCtx.Err() != nil
+		if !cancelled {
 			telemetry.PipelineErrors.Add(classifyConnError(err), 1)
 			if isFirstNotifier {
 				d.chargeFetchFailure(srv, err)
 			}
 		}
-		d.unmarkTried(req, serverIdx)
+		if !cancelled && isConnFault(err) {
+			if d.tracker.UnmarkTriedAfterFault(keyFor(req.job, req.artIdx), serverIdx) {
+				d.log.Warn("article keeps losing its connection, moving it off this server",
+					"server", name, "msgid", req.messageID, "faults", maxConnFaultsPerArticle)
+			}
+		} else {
+			d.unmarkTried(req, serverIdx)
+		}
 		// Don't emit a result for connection-level failures. The
-		// article is returned to the dispatch pool via unmarkTried;
-		// the deferred signalDispatch triggers a retry, on this server
-		// too unless it is now penalized. Emitting would risk the
+		// article is returned to the dispatch pool; the deferred
+		// signalDispatch triggers a retry, on this server too unless it
+		// is now penalized or UnmarkTriedAfterFault left it marked. Emitting would risk the
 		// pipeline misclassifying the error and inflating FailedBytes
 		// for what is a transient server issue.
 		return nil, false

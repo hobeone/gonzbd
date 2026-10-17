@@ -11,10 +11,12 @@ import (
 	"syscall"
 	"testing"
 	"time"
+	"weak"
 
 	"github.com/hobeone/gonzbd/internal/bpsmeter"
 	"github.com/hobeone/gonzbd/internal/config"
 	"github.com/hobeone/gonzbd/internal/constants"
+	"github.com/hobeone/gonzbd/internal/job"
 	"github.com/hobeone/gonzbd/internal/nntp"
 )
 
@@ -247,5 +249,99 @@ func TestIsConnFault(t *testing.T) {
 		if got := isConnFault(tc.err); got != tc.want {
 			t.Errorf("%s: isConnFault(%v) = %v, want %v", tc.name, tc.err, got, tc.want)
 		}
+	}
+}
+
+// An article that loses its connection every time on a server that otherwise
+// works moves to the next server after maxConnFaultsPerArticle faults, without
+// benching the server it left.
+func TestDownloader_ArticleFaultingEveryTimeMovesToNextServer(t *testing.T) {
+	ids := make([]string, 1, 9)
+	ids[0] = "poison@h"
+	for i := range 8 {
+		ids = append(ids, fmt.Sprintf("ok%d@h", i))
+	}
+
+	primary := newMockNNTP(t)
+	backup := newMockNNTP(t)
+	for _, id := range ids {
+		body := string(yencBody(id+".bin", []byte("body-"+id)))
+		primary.addArticle(id, body)
+		backup.addArticle(id, body)
+	}
+	primary.hangupOnFetch("poison@h")
+
+	disp := newTestDispatcher(t)
+	j, m := makeJobWithArticles(t, ids)
+	addTestJob(t, disp, j, m)
+
+	// Enough connections that a run of the poison article's faults alone
+	// cannot reach the server-wide threshold first.
+	srvPrimary := testServer(t, "primary", primary.addr, func(c *config.ServerConfig) { c.Connections = 8 })
+	srvBackup := testServer(t, "backup", backup.addr, func(c *config.ServerConfig) { c.Priority = 1 })
+	d := New(disp, []*Server{srvPrimary, srvBackup}, nil, Options{}, nil)
+	if err := d.Start(t.Context()); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	defer func() { _ = d.Stop() }()
+
+	results := collect(t, d.Completions(), len(ids), 10*time.Second)
+	for _, r := range results {
+		want := "primary"
+		if r.MessageID == "poison@h" {
+			want = "backup"
+		}
+		if r.Err != nil || r.ServerName != want {
+			t.Errorf("%s: server %q err %v, want success from %s", r.MessageID, r.ServerName, r.Err, want)
+		}
+	}
+	if pe := srvPrimary.PenaltyExpiry(); !pe.IsZero() {
+		t.Errorf("primary PenaltyExpiry = %v, want zero: one bad article benched its server", pe)
+	}
+}
+
+func TestTracker_UnmarkTriedAfterFault(t *testing.T) {
+	t.Parallel()
+	tr := newDispatchTracker()
+	key := keyFor(bareJob("jf"), 1)
+	tried := func() bool {
+		tr.Lock()
+		defer tr.Unlock()
+		mask, _ := tr.TryListLocked(key)
+		return mask.has(0)
+	}
+	mark := func() {
+		tr.Lock()
+		defer tr.Unlock()
+		var mask serverMask
+		mask.set(0)
+		tr.SetTriedLocked(key, mask)
+	}
+
+	for round := range 2 {
+		for i := 1; i <= maxConnFaultsPerArticle; i++ {
+			mark()
+			kept := tr.UnmarkTriedAfterFault(key, 0)
+			if want := i == maxConnFaultsPerArticle; kept != want || tried() != want {
+				t.Fatalf("round %d fault %d: kept=%v tried=%v, want both %v", round, i, kept, tried(), want)
+			}
+		}
+	}
+
+	mark()
+	tr.UnmarkTriedAfterFault(key, 0)
+	tr.ClearTried(key)
+	for i := 1; i < maxConnFaultsPerArticle; i++ {
+		mark()
+		if tr.UnmarkTriedAfterFault(key, 0) {
+			t.Fatalf("fault %d after ClearTried left the server marked: the count survived", i)
+		}
+	}
+	if refs := tr.Instances(); len(refs) != 1 {
+		t.Fatalf("Instances = %d, want the instance holding a fault count", len(refs))
+	}
+	tr.DropInstances(map[weak.Pointer[job.Job]]struct{}{key.inst: {}})
+	if len(tr.faults) != 0 {
+		t.Errorf("faults = %v after DropInstances, want none", tr.faults)
 	}
 }
