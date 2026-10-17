@@ -57,13 +57,18 @@ type FileDesc struct {
 
 // ParsedSet aggregates all information parsed from a PAR2 file's packets.
 type ParsedSet struct {
-	SetID          [16]byte
-	SliceSize      uint64
-	Files          []FileDesc             // all file descriptions
-	FilesByID      map[[16]byte]*FileDesc // keyed by FileID for IFSC lookup
-	By16k          map[[16]byte]*FileDesc // keyed by Hash16k (entries removed if HasDuplicate)
-	RecoveryBlocks int
-	Creator        string
+	SetID     [16]byte
+	SliceSize uint64
+	// RecoveryFileIDs is the recovery set the Main packet lists: the files
+	// the set protects, whether or not a File Description packet for each
+	// survived. Nil without a Main packet, or when its body is shorter than
+	// the count it declares.
+	RecoveryFileIDs [][16]byte
+	Files           []FileDesc             // all file descriptions
+	FilesByID       map[[16]byte]*FileDesc // keyed by FileID for IFSC lookup
+	By16k           map[[16]byte]*FileDesc // keyed by Hash16k (entries removed if HasDuplicate)
+	RecoveryBlocks  int
+	Creator         string
 }
 
 // ifscData holds raw IFSC slice data before CRC reconstruction.
@@ -380,6 +385,7 @@ func handlePacket(
 		if len(body) > 12 {
 			*expectedFiles = (len(body) - 12) / 16
 		}
+		set.RecoveryFileIDs = recoveryFileIDs(body)
 
 	case typeFileDesc:
 		fd := parseFileDescBody(body)
@@ -402,6 +408,25 @@ func handlePacket(
 	case typeCreator:
 		set.Creator = string(bytes.TrimRight(body, "\x00"))
 	}
+}
+
+// recoveryFileIDs returns the recovery set FileIDs of a Main packet body:
+// sliceSize(8), count(4), then count IDs, then the non-recovery set's IDs,
+// which par2 does not protect. It returns nil when the body cannot hold count
+// IDs.
+func recoveryFileIDs(body []byte) [][16]byte {
+	if len(body) < 12 {
+		return nil
+	}
+	n := binary.LittleEndian.Uint32(body[8:12])
+	if uint64(n) > uint64(len(body)-12)/16 {
+		return nil
+	}
+	ids := make([][16]byte, n)
+	for i := range ids {
+		copy(ids[i][:], body[12+16*i:])
+	}
+	return ids
 }
 
 // postProcessSet builds indices and reconstructs CRCs after parsing all packets.

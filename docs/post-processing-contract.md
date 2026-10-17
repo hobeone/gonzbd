@@ -790,8 +790,13 @@ block count of at most 65535 (the PAR2 per-volume limit; a larger count is
 treated as no count); it frees every held volume when those cannot reach the
 need, when the need exceeds `job.MaxPar2Slices`, or when the cover table would
 exceed `maxCoverCells`. Two copies of one par2 set under different names
-(same SetID) are collected once, so the second does not leave its entries
-unaccounted.
+(same SetID and slice size) are merged by FileID (`collectManifestsWithOptions`
+in `internal/par2/fsops.go`), so a copy does not leave the other's entries
+unaccounted, and a damaged copy that lost some File Description packets does
+not hide the files only the other copy describes. A file the set's Main packet
+lists in its recovery set that no copy describes is unaccounted, so the
+verdict is not `outcomeClean`: `outcomeRepair` with every held volume released
+when another file was identified, `outcomeUnknown` when none was.
 
 - **Unsized, every held volume released**: a CRC mismatch; an unverified
   entry (this includes a file with a lost tail article or a truncated,

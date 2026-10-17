@@ -32,9 +32,10 @@ func TestCollectManifests_SkipsASetIDAlreadyParsed(t *testing.T) {
 	}
 	log := slog.New(slog.DiscardHandler)
 
-	manifest, infos := collectManifestsWithOptions(sets, log, DefaultParseOptions())
-	if len(manifest) != 2 || len(infos) != 1 {
-		t.Errorf("collected %d entries and %d set infos, want 2 and 1", len(manifest), len(infos))
+	c := collectManifestsWithOptions(sets, log, DefaultParseOptions())
+	if len(c.entries) != 2 || len(c.sets) != 1 || len(c.undescribed) != 0 {
+		t.Errorf("collected %d entries, %d set infos and %d undescribed, want 2, 1 and 0",
+			len(c.entries), len(c.sets), len(c.undescribed))
 	}
 
 	id, err := IdentifyWithOptions(dir, sets, log, DefaultParseOptions())

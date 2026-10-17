@@ -57,14 +57,9 @@ func buildFileDescBody(fileID, fullHash, hash16k [16]byte, fileSize uint64, file
 	return body
 }
 
-// buildMainBody creates a Main packet body with sliceSize and recovery set file IDs.
+// buildMainBody creates a Main packet body whose recovery set is fileIDs.
 func buildMainBody(sliceSize uint64, fileIDs ...[16]byte) []byte {
-	body := make([]byte, 8+len(fileIDs)*16)
-	binary.LittleEndian.PutUint64(body[0:8], sliceSize)
-	for i, id := range fileIDs {
-		copy(body[8+i*16:8+(i+1)*16], id[:])
-	}
-	return body
+	return buildMainBodyWithCount(sliceSize, uint32(len(fileIDs)), fileIDs...) //nolint:gosec // G115: test fixtures list a handful of files
 }
 
 func TestParsePar2SetWithOptions(t *testing.T) {
@@ -108,11 +103,9 @@ func TestParsePar2SetWithOptions(t *testing.T) {
 	}
 }
 
-// buildMainBodyWithCount creates a spec-correct Main packet body:
-// sliceSize(8) + recoverySetCount(4) + N×16-byte FileID entries. Unlike
-// buildMainBody (which omits the recoverySetCount field for brevity), this
-// produces the exact body length the parser uses to derive expectedFiles —
-// needed by tests that exercise the §4.5 early-exit optimization.
+// buildMainBodyWithCount creates a Main packet body: sliceSize(8) +
+// recoverySetCount(4) + N×16-byte FileID entries, of which the first
+// recoverySetCount are the recovery set.
 func buildMainBodyWithCount(sliceSize uint64, recoverySetCount uint32, fileIDs ...[16]byte) []byte {
 	body := make([]byte, 12+len(fileIDs)*16)
 	binary.LittleEndian.PutUint64(body[0:8], sliceSize)

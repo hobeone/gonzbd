@@ -91,7 +91,9 @@ type Identification struct {
 	Files []Identified
 	// Unaccounted is every par2 entry that no delivered file matched. A set
 	// with none of these is fully accounted for: every file par2 protects is
-	// present, whatever it is currently called.
+	// present, whatever it is currently called. It includes each file a set's
+	// Main packet lists that no File Description packet describes, under a
+	// placeholder FileName.
 	Unaccounted []FileDesc
 	// Ignored is the delivered files that were not considered, because par2
 	// does not protect its own sidecars. See ignoredExtensions.
@@ -204,10 +206,12 @@ func IdentifyWithOptions(dir string, sets []Set, log *slog.Logger, opts ParseOpt
 		log = slog.Default()
 	}
 
-	manifest, infos := collectManifestsWithOptions(sets, log, opts)
+	c := collectManifestsWithOptions(sets, log, opts)
+	manifest, infos := c.entries, c.sets
 	if len(manifest) == 0 {
-		log.Info("identify: no file descriptions found in any par2 set")
-		return Identification{sets: infos}, nil
+		log.Info("identify: no file descriptions found in any par2 set",
+			"undescribed", len(c.undescribed))
+		return Identification{Unaccounted: c.undescribed, sets: infos}, nil
 	}
 
 	flatFiles, err := scanFlatFiles(dir, log)
@@ -489,6 +493,12 @@ func IdentifyWithOptions(dir string, sets []Set, log *slog.Logger, opts ParseOpt
 			log.Warn("identify: par2 entry matched no delivered file",
 				"par2path", fd.FileName, "size", fd.FileSize)
 		}
+	}
+	// A file without a description has no name, size or hash to match on.
+	for _, fd := range c.undescribed {
+		id.Unaccounted = append(id.Unaccounted, fd)
+		log.Warn("identify: par2 set lists a file it does not describe",
+			"set", fd.Set, "file_id", fmt.Sprintf("%x", fd.FileID))
 	}
 
 	log.Info("identify: complete",

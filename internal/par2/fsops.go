@@ -9,7 +9,6 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
-	"slices"
 )
 
 // Rename records a file relocation ApplyRenames performed.
@@ -19,24 +18,48 @@ type Rename struct {
 }
 
 func collectManifests(sets []Set, log *slog.Logger) []FileDesc {
-	manifest, _ := collectManifestsWithOptions(sets, log, DefaultParseOptions())
-	return manifest
+	return collectManifestsWithOptions(sets, log, DefaultParseOptions()).entries
 }
 
-// parsedSetInfo is what a parsed set says about itself beyond its entries.
+// parsedSetInfo is what a parsed set says about itself beyond its entries. Two
+// par2 files with equal parsedSetInfo are copies of one set.
 type parsedSetInfo struct {
 	id        [16]byte
 	sliceSize uint64
 }
 
-// collectManifestsWithOptions returns the entries of every set that parsed and
-// one parsedSetInfo per parsed set.
-func collectManifestsWithOptions(sets []Set, log *slog.Logger, opts ParseOptions) ([]FileDesc, []parsedSetInfo) {
+// collected is what collectManifestsWithOptions read from a job's par2 sets.
+type collected struct {
+	// entries is one File Description per file of each set.
+	entries []FileDesc
+	// undescribed is one entry per file a set's Main packet lists in its
+	// recovery set that no copy of the set describes. Only FileID and Set
+	// are read from the set; FileName is a placeholder naming the FileID.
+	undescribed []FileDesc
+	// sets is one parsedSetInfo per distinct set that parsed.
+	sets []parsedSetInfo
+}
+
+// fileKey is one file of one set.
+type fileKey struct {
+	set  parsedSetInfo
+	file [16]byte
+}
+
+// collectManifestsWithOptions reads every set that parses. Copies of one set
+// (equal parsedSetInfo, e.g. the set posted under two stems) are merged by
+// FileID: each copy can contribute a file the others lost, a description
+// carrying a CRC replaces one without, and every entry of the set carries the
+// Set name of the first copy read.
+func collectManifestsWithOptions(sets []Set, log *slog.Logger, opts ParseOptions) collected {
 	if log == nil {
 		log = slog.Default()
 	}
-	var manifest []FileDesc
-	var infos []parsedSetInfo
+	var c collected
+	owner := make(map[parsedSetInfo]string)
+	at := make(map[fileKey]int)
+	declared := make(map[fileKey]bool)
+	var declaredOrder []fileKey
 	for _, set := range sets {
 		parFile := set.ParseFile()
 		if parFile == "" {
@@ -52,26 +75,51 @@ func collectManifestsWithOptions(sets []Set, log *slog.Logger, opts ParseOptions
 				"file", filepath.Base(parFile), "err", err)
 			continue
 		}
-		// One SetID is one set of File Description packets; collecting it twice
-		// would leave the copies' entries Unaccounted in Identify. A SetID
-		// repeated with a different slice size is kept, so SliceSize refuses it.
-		if slices.ContainsFunc(infos, func(i parsedSetInfo) bool {
-			return i.id == parsed.SetID && i.sliceSize == parsed.SliceSize
-		}) {
-			log.Info("par2 set already parsed under another name; skipping",
-				"file", filepath.Base(parFile))
+		// A SetID repeated with a different slice size is a different key, so
+		// SliceSize refuses the pair.
+		info := parsedSetInfo{id: parsed.SetID, sliceSize: parsed.SliceSize}
+		name, seen := owner[info]
+		if seen {
+			log.Info("par2 set already parsed under another name; merging its entries",
+				"file", filepath.Base(parFile), "set", name)
+		} else {
+			name = set.Name
+			owner[info] = name
+			c.sets = append(c.sets, info)
+		}
+		log.Info("quickcheck: par2 manifest entries",
+			"file", filepath.Base(parFile), "entries", len(parsed.Files))
+		for _, fd := range parsed.Files {
+			fd.Set = name
+			k := fileKey{set: info, file: fd.FileID}
+			i, dup := at[k]
+			switch {
+			case !dup:
+				at[k] = len(c.entries)
+				c.entries = append(c.entries, fd)
+			case c.entries[i].FileCRC32 == 0 && fd.FileCRC32 != 0:
+				c.entries[i] = fd
+			}
+		}
+		for _, id := range parsed.RecoveryFileIDs {
+			k := fileKey{set: info, file: id}
+			if !declared[k] {
+				declared[k] = true
+				declaredOrder = append(declaredOrder, k)
+			}
+		}
+	}
+	for _, k := range declaredOrder {
+		if _, ok := at[k]; ok {
 			continue
 		}
-		descs := parsed.Files
-		infos = append(infos, parsedSetInfo{id: parsed.SetID, sliceSize: parsed.SliceSize})
-		log.Info("quickcheck: par2 manifest entries",
-			"file", filepath.Base(parFile), "entries", len(descs))
-		for i := range descs {
-			descs[i].Set = set.Name
-		}
-		manifest = append(manifest, descs...)
+		c.undescribed = append(c.undescribed, FileDesc{
+			FileID:   k.file,
+			FileName: fmt.Sprintf("<undescribed par2 file %x>", k.file),
+			Set:      owner[k.set],
+		})
 	}
-	return manifest, infos
+	return c
 }
 
 func scanFlatFiles(dir string, log *slog.Logger) (map[string]os.DirEntry, error) {
