@@ -1,9 +1,11 @@
 package downloader
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
+	"slices"
 	"testing"
 	"time"
 
@@ -206,6 +208,8 @@ func TestBuildDispatchPlan_StopsOnceNoUnvisitedArticleCanBeDispatched(t *testing
 		tried       []int32 // articles the primary has already tried
 		inFlight    []int32 // of those, the ones a fetch is still running for
 		ghost       bool    // an entry for an instance the pass never walks
+		primaryRoom int     // free primary slots; 0 means it starts full
+		backupCap   int     // backup slots; 0 means 4
 		wantScanned int
 		wantBackup  []int32
 	}{
@@ -213,16 +217,26 @@ func TestBuildDispatchPlan_StopsOnceNoUnvisitedArticleCanBeDispatched(t *testing
 		{name: "an entry outside the walk", ghost: true, wantScanned: 0},
 		{name: "an entry at article 7", tried: []int32{7}, wantScanned: 8, wantBackup: []int32{7}},
 		{name: "an in-flight entry at article 3", tried: []int32{3}, inFlight: []int32{3}, wantScanned: 4},
+		// Articles 0 and 1 go to the primary first; neither counts as a visited
+		// entry, and both of the job's entries are reached.
+		{name: "two entries after fresh dispatches", tried: []int32{5, 8}, primaryRoom: 2, wantScanned: 9, wantBackup: []int32{5, 8}},
+		// Article 2 fills the backup, and with every server full the pass ends
+		// there rather than walking on to the job's other entry.
+		{name: "every server fills mid-walk", tried: []int32{2, 5}, backupCap: 1, wantScanned: 3, wantBackup: []int32{2}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			primary := fakeSrv("primary", 0, true)
 			backup := fakeSrv("backup", 1, true)
 			d := newDispatchDownloader([]*Server{primary, backup})
-			d.workCh["backup"] = make(chan *articleRequest, 4)
+			d.workCh["backup"] = make(chan *articleRequest, cmp.Or(tc.backupCap, 4))
 			j, m := makeJobWithArticles(t, articleIDs(10))
 			addTestJob(t, d.dispatcher, j, m)
-			d.workCh["primary"] <- &articleRequest{messageID: "blocker"}
+			if tc.primaryRoom > 0 {
+				d.workCh["primary"] = make(chan *articleRequest, tc.primaryRoom)
+			} else {
+				d.workCh["primary"] <- &articleRequest{messageID: "blocker"}
+			}
 			var mask serverMask
 			mask.set(0)
 			d.tracker.Lock()
@@ -247,6 +261,7 @@ func TestBuildDispatchPlan_StopsOnceNoUnvisitedArticleCanBeDispatched(t *testing
 			for !drained(d.workCh["backup"]) {
 				got = append(got, (<-d.workCh["backup"]).artIdx)
 			}
+			slices.Sort(got) // drained requeues what it peeks, so order is lost
 			if fmt.Sprint(got) != fmt.Sprint(tc.wantBackup) {
 				t.Errorf("backup received %v, want %v", got, tc.wantBackup)
 			}

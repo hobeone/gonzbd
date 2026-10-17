@@ -66,6 +66,34 @@ file internal/downloader/dispatch.go
 		return false, nil, false
 --- end
 
+[a fresh dispatch is reported as a visited entry]
+file internal/downloader/dispatch.go
+--- anchor
+				d.tracker.Unlock()
+				return true, nil, hasTried
+--- replace
+				d.tracker.Unlock()
+				return true, nil, true
+--- end
+
+[a job's several entries are counted as one]
+file internal/downloader/tracker.go
+--- anchor
+		out[k.inst]++
+--- replace
+		out[k.inst] = 1
+--- end
+
+[the walk does not stop once every server is full]
+file internal/downloader/dispatch.go
+--- anchor
+			if triedLeft > 0 || !d.freshArticlesWait(opts) {
+				if d.allServersFull(opts.serverCfgs) {
+--- replace
+			if triedLeft > 0 || !d.freshArticlesWait(opts) {
+				if false {
+--- end
+
 [the count is not scoped to the walked job]
 file internal/downloader/dispatch.go
 --- anchor
