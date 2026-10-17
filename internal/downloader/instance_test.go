@@ -99,11 +99,11 @@ func TestDownloader_MarksOnlyTheInstanceAFetchWasDispatchedFor(t *testing.T) {
 	}{
 		{"a successful fetch", func(t *testing.T, d *Downloader, req *articleRequest) {
 			d.processFetchedArticle(t.Context(), checkedServer(config.ServerConfig{Name: "s1"}), req,
-				yencBody("test.bin", []byte("payload")))
+				yencBody("test.bin", []byte("payload")), nil)
 		}},
 		{"a terminal decode error", func(t *testing.T, d *Downloader, req *articleRequest) {
 			d.processFetchedArticle(t.Context(), checkedServer(config.ServerConfig{Name: "s1"}), req,
-				[]byte("neither yEnc nor UU\r\n"))
+				[]byte("neither yEnc nor UU\r\n"), nil)
 		}},
 		{"an exhausted try-list", func(t *testing.T, d *Downloader, req *articleRequest) {
 			d.applyDispatchPlan(t.Context(), dispatchPlan{exhausted: []*articleRequest{req}}, dispatchOpts{})
@@ -138,7 +138,7 @@ func TestEmitResult_ClearsOnlyTheInstanceADroppedResultWasFor(t *testing.T) {
 	d.completions <- &ArticleResult{}
 	ctx, cancel := context.WithCancel(t.Context())
 	cancel()
-	d.emitResult(ctx, req, "s1", nil, 0, 0, nil)
+	d.emitResult(ctx, req, "s1", nil, 0, 0, nil, nil)
 
 	if !articleInFlight(t, second, req.artIdx) {
 		t.Errorf("the second instance's article %d lost its emitted mark to a request dispatched for the first instance", req.artIdx)
@@ -235,7 +235,7 @@ func TestArticleRequestAndResult_DeriveTheirIDFromTheInstance(t *testing.T) {
 	}
 
 	d := New(newTestDispatcher(t), nil, nil, Options{CompletionsBuffer: 1}, slog.New(slog.DiscardHandler))
-	d.emitResult(t.Context(), req, "s1", nil, 0, 0, nil)
+	d.emitResult(t.Context(), req, "s1", nil, 0, 0, nil, nil)
 	res := <-d.Completions()
 	if res.Job != j {
 		t.Errorf("result carries instance %p, want the request's %p", res.Job, j)

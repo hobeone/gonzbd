@@ -12,7 +12,9 @@ import (
 	"weak"
 
 	"github.com/hobeone/gonzbd/internal/bpsmeter"
+	"github.com/hobeone/gonzbd/internal/decoder"
 	"github.com/hobeone/gonzbd/internal/dispatch"
+	"github.com/hobeone/gonzbd/internal/heldbytes"
 	"github.com/hobeone/gonzbd/internal/job"
 )
 
@@ -111,7 +113,34 @@ type ArticleResult struct {
 	// Err is the dispatch outcome. nil = success. errors.Is against
 	// sentinels in internal/nntp to classify failures.
 	Err error
+
+	// Held is Data's charge against the downloader's budget of decoded bytes
+	// not yet written; nil for a result without data. Release or ReleaseHeld
+	// gives it back.
+	Held *heldbytes.Hold
 }
+
+// Release ends the life of the result's data: Data's buffer goes back to the
+// decoder pool and its bytes back to the downloader's budget. A consumer that
+// does not hand Data on calls it once it is done with the result.
+func (r *ArticleResult) Release() {
+	if r.Data != nil {
+		decoder.PutBuffer(r.Data)
+		r.Data = nil
+	}
+	r.Held.Release()
+}
+
+// ReleaseHeld gives the result's bytes back to the budget and leaves Data
+// alone, for the owner Data was handed to: the assembler releases the buffer
+// itself and calls this once it has finished with it (assembler
+// WriteRequest.Release).
+func (r *ArticleResult) ReleaseHeld() { r.Held.Release() }
+
+// defaultHeldBytesLimit is the budget for articles between handleRequest's
+// charge, taken before the fetch, and the assembler's worker finishing with
+// the decoded bytes, when Options.HeldBytesLimit is zero.
+const defaultHeldBytesLimit = 256 << 20
 
 // JobID is the ID of the instance the fetch was dispatched for. It is derived
 // from Job rather than stored beside it, so the two cannot disagree.
@@ -149,6 +178,12 @@ type Options struct {
 	// slow; smaller values backpressure the dispatcher sooner. Zero
 	// picks a reasonable default (256).
 	CompletionsBuffer int
+
+	// HeldBytesLimit bounds the decode-buffer capacity reserved for articles
+	// from before their fetch until the assembler has finished with their
+	// decoded data; a fetch waits for room. Zero selects
+	// defaultHeldBytesLimit.
+	HeldBytesLimit int64
 
 	// PerServerQueue is the cap of each per-server work channel.
 	// Larger values reduce dispatch-pass frequency at the cost of
@@ -388,6 +423,10 @@ type Downloader struct {
 
 	tracker *dispatchTracker
 
+	// held is the budget of decoded bytes not yet written: handleRequest
+	// acquires each article's share before fetching it.
+	held *heldbytes.Budget
+
 	// connActivityMu guards connActivity and the inflight slice inside
 	// every entry. handleRequest goroutines add and remove their own
 	// article via setConnActivity/clearConnActivity — several of them
@@ -426,6 +465,9 @@ func New(disp *dispatch.Dispatcher, servers []*Server, meter *bpsmeter.Meter, op
 	if opts.CompletionsBuffer <= 0 {
 		opts.CompletionsBuffer = 256
 	}
+	if opts.HeldBytesLimit <= 0 {
+		opts.HeldBytesLimit = defaultHeldBytesLimit
+	}
 	if log == nil {
 		log = slog.Default()
 	}
@@ -441,6 +483,7 @@ func New(disp *dispatch.Dispatcher, servers []*Server, meter *bpsmeter.Meter, op
 		dispatchReady:    make(chan struct{}, 1),
 		limiter:          bpsmeter.NewLimiter(0),
 		tracker:          newDispatchTracker(),
+		held:             heldbytes.New(opts.HeldBytesLimit),
 		connActivity:     make(map[string]*ConnActivity),
 		maxArtTries:      opts.MaxArtTries,
 		maxArtOpt:        opts.MaxArtOpt,

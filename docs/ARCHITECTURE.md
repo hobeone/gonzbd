@@ -29,6 +29,7 @@ The project follows a standard Go project layout:
     - `durability/`: The SQL of the loose article record — `written_articles` and `job_files` — and the reclaim rule that removes a job's rows. The recorder that writes it and the verifier that reads it back on restart live in `internal/app`. See [`docs/durability-contract.md`](durability-contract.md).
     - `downloader/`: The NNTP engine, handling server pools, connection management, and article dispatch with O(1) pending-article tracking.
     - `fsutil/`: File system utilities: path sanitization, atomic writes (temp+fsync+rename), symlink-safe containment checks, and cross-device move.
+    - `heldbytes/`: `Budget`, a byte budget the downloader charges each article to before fetching it, so decoded-but-unwritten data is bounded in bytes.
     - `history/`: Persistence layer for completed jobs using SQLite and `goose` migrations.
     - `humanfmt/`: Human-readable formatting helpers (sizes, durations) shared across packages.
     - `keyedlatch/`: `Latch`, at most one claim per string key, with a context-bounded wait for its release. The dispatcher's launch claim, `internal/app`'s per-job transition lock and its in-flight hydrations are built on it.
@@ -119,6 +120,7 @@ To save bandwidth, PAR2 **recovery volumes** (`*.volNNN+MM.par2`) are downloaded
 - **Error Classification**: NNTP status codes are mapped to Go sentinel errors (`ErrNoArticle`, `ErrAuthRejected`, etc.), allowing for robust retry and penalty logic.
 - **Server Priority**: Servers form strict priority tiers. An article reaches a lower-priority server only after every higher-priority one has tried it or cannot take it (penalized, deactivated, disabled, or excluded by `top_only`/`max_art_opt`); a busy higher-priority server makes it wait rather than overflow to a backup — see `docs/nntp-downloader-contract.md`, invariant 8.
 - **Dispatch Optimization**: The dispatch loop uses cached server configs per pass and 2-case selects to minimize overhead at ~330 articles/second throughput.
+- **Bytes in flight are bounded**: each article is charged to the downloader's held-bytes budget (`internal/heldbytes`, 256 MiB by default) before it is fetched, and its decoded buffer gives the charge back once the assembler has finished with it. When the disk falls behind, connections stop fetching rather than queueing decoded articles, whose queues count articles rather than bytes. See `docs/nntp-downloader-contract.md` § "Held-bytes budget".
 
 ### Decoder & Assembler (`internal/decoder`, `internal/assembler`)
 
