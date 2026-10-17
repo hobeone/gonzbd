@@ -215,8 +215,10 @@ type Options struct {
 	SyncFile func(*os.File) error
 
 	// OnLowDisk, if non-nil, is called when free space on the target
-	// filesystem falls below MinFreeBytes. It is called on the worker goroutine
-	// and should not block for long.
+	// filesystem falls below MinFreeBytes, estimated from a cached statfs
+	// reading less the bytes written since (DiskProbe.NoteWritten). It is
+	// called on the worker goroutine and should not block for long, and again
+	// at every later check while free space stays below the floor.
 	OnLowDisk func(dir string, free int64)
 
 	// OnWriteFault, if non-nil, is called on the worker goroutine when a
@@ -1669,6 +1671,9 @@ func (a *Assembler) acceptArticle(f *openFile, id articleID, req WriteRequest) o
 func (a *Assembler) routeOutcome(f *openFile, req WriteRequest, o outcome) {
 	switch o.disposition {
 	case dispositionWritten:
+		// The cached statfs reading does not see these bytes until it is
+		// refreshed (#987).
+		a.diskProbe.NoteWritten(f.info.Dir, o.n)
 		if a.opts.OnArticleWritten != nil {
 			a.opts.OnArticleWritten(req.JobID, req.FileIdx, req.ArtIdx, req.Offset, o.n, req.CRC32)
 		}
