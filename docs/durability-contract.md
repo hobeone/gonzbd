@@ -1179,27 +1179,32 @@ written since, and at disk speed that is gigabytes (#987). `routeOutcome` calls
 launched, floored at zero. The application's own `DiskProbe` (auto-resume,
 `DownloadDirFreeBytes`) is never told of writes and reports the raw reading.
 
-Every counted write errs low; two kinds of write are not counted and err high
-until the next probe:
+The estimate is not exact. Until the next probe it can be too low or too high.
+
+Too low (can pause early, which the app's unadjusted auto-resume reading then
+lifts):
 
 - Every successful article write counts, so a file that `fallocate` already
   sized (`preallocate_linux.go`) is counted again as it fills, and an overwrite
-  of bytes already on disk is counted as new. Both make the estimate
-  pessimistic and can pause early, which the app's unadjusted auto-resume
-  reading then lifts.
+  of bytes already on disk is counted as new.
 - Bytes written while a `statfs` is in flight stay counted, though the reading
   may already include them.
+- The total is not split by directory: job directories share a filesystem, so
+  a write to one lowers every directory's estimate, and directories on
+  different filesystems lower each other's too.
+
+Too high:
+
 - A write that faults is not counted, although part of it may have landed, and
   neither are writes by other processes or by par2 and unpack.
-- A fresh probe replaces the estimate with its own reading.
-- The total is not split by directory: job directories share a filesystem, so
-  a write to one lowers every directory's estimate. Directories on different
-  filesystems lower each other's too, which errs low.
 - A filesystem whose `statfs` ignores data still in the client's write-back
   cache (NFS) reports more than is really free, and bytes noted before the
   probe was launched are not subtracted a second time.
 
-`NoteWritten` takes only the probe's own mutexes and performs no I/O.
+A fresh probe replaces the estimate with its own reading.
+
+`NoteWritten` is a single atomic add (`DiskProbe.wrote`): it takes no lock and
+performs no I/O.
 
 `DiskProbe` keeps **at most one outstanding `statfs` goroutine per directory**:
 repeated calls against a stuck mount return the cached result or the timeout

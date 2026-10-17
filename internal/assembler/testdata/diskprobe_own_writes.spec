@@ -33,6 +33,14 @@ file internal/assembler/diskprobe.go
 	return st.free - (p.wrote.Load() - st.wroteAtProbe)
 --- end
 
+[a caller waiting on an in-flight probe gets the raw reading]
+file internal/assembler/diskprobe.go
+--- anchor
+		free, err := p.estimate(pending.st), pending.st.err
+--- replace
+		free, err := pending.st.free, pending.st.err
+--- end
+
 [bytes written during the probe are forgotten]
 file internal/assembler/diskprobe.go
 --- anchor

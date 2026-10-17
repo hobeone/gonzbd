@@ -73,6 +73,40 @@ func TestDiskProbe_NoteWrittenReducesCachedReading(t *testing.T) {
 	}
 }
 
+// TestDiskProbe_NoteWrittenWaitedArm pins the estimate on the arm of FreeBytes
+// that waits for an in-flight probe. The caller is parked on the probe before
+// statfs is released, so the result cannot come from the cache-hit arm.
+func TestDiskProbe_NoteWrittenWaitedArm(t *testing.T) {
+	p := NewDiskProbe(time.Hour)
+	entered := make(chan struct{})
+	release := make(chan struct{})
+	p.statfs = func(_ string, buf *syscall.Statfs_t) error {
+		close(entered)
+		<-release
+		buf.Bavail = 1000
+		buf.Bsize = 1
+		return nil
+	}
+
+	got := make(chan int64, 1)
+	go func() {
+		ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
+		defer cancel()
+		free, err := p.FreeBytes(ctx, t.TempDir())
+		if err != nil {
+			t.Errorf("FreeBytes: %v", err)
+		}
+		got <- free
+	}()
+	<-entered
+	p.NoteWritten(400)
+	close(release)
+
+	if free := <-got; free != 600 {
+		t.Errorf("waited reading = %d, want 600 (1000 less the 400 written during the probe)", free)
+	}
+}
+
 // TestDiskProbe_NoteWrittenKeepsBytesWrittenDuringProbe pins that bytes
 // written while a statfs is in flight stay counted: the reading may predate
 // them, and counting them again only errs toward less free space.
