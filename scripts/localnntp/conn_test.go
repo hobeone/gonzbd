@@ -330,8 +330,23 @@ func TestServer_KillActive_CoversJustAcceptedConnection(t *testing.T) {
 			t.Fatalf("round %d: KillActive on the accept goroutine closed %d connections, want 1 (the one just accepted)", i, n)
 		}
 	}
+	// serveConn runs concurrently with the hook, so the greeting may already be on the wire
+	// when KillActive closes the socket; what must follow it is the close.
 	for i, c := range clients {
-		c.wantClosed(t, "just-accepted conn "+strconv.Itoa(i))
+		what := "just-accepted conn " + strconv.Itoa(i)
+		got, err := c.readLine()
+		if err == nil {
+			if !strings.HasPrefix(got, "200 ") {
+				t.Fatalf("%s: read %q, want the greeting or a close", what, got)
+			}
+			got, err = c.readLine()
+		}
+		if err == nil {
+			t.Fatalf("%s: connection still open after the greeting, read %q", what, got)
+		}
+		if !isPeerClosed(err) {
+			t.Fatalf("%s: read failed without the peer closing (a timeout is not a close): %v", what, err)
+		}
 	}
 }
 
