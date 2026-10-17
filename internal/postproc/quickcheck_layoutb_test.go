@@ -392,6 +392,34 @@ func TestDeferredSets_FullyAccountedSetIsNot(t *testing.T) {
 	}
 }
 
+// An undescribed entry (a file the Main packet lists and no File Description
+// packet describes) has no name, so it neither blocks nor earns a deferral:
+// beside feature.bin, which release.rar holds, the set is deferred; alone, it
+// is repaired.
+func TestDeferredSets_UndescribedEntryIsNotJudged(t *testing.T) {
+	t.Parallel()
+	feature := par2.FileDesc{FileName: "feature.bin", Set: "feature"}
+	lost := par2.FileDesc{FileName: "<undescribed par2 file 02>", Set: "feature", Undescribed: true}
+	for _, tc := range []struct {
+		name        string
+		unaccounted []par2.FileDesc
+		want        int
+	}{
+		{"beside a held entry", []par2.FileDesc{feature, lost}, 1},
+		{"alone", []par2.FileDesc{lost}, 0},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			qc, _, _ := layoutStages()
+			job, _ := layoutBJob(t, "release.rar")
+			a := par2.Assessment{ID: par2.Identification{Unaccounted: tc.unaccounted}}
+			if got := qc.deferredSets(t.Context(), slog.New(slog.DiscardHandler), job, a); len(got) != tc.want {
+				t.Errorf("deferredSets = %v, want %d set(s)", got, tc.want)
+			}
+		})
+	}
+}
+
 // A directory the archive scan cannot read shows no archive holding anything.
 func TestHeldArchiveMembers_ScanErrorIsNotHeld(t *testing.T) {
 	t.Parallel()

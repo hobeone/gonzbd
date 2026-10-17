@@ -12,7 +12,7 @@ file internal/job/content.go
 [arm C1 neutered with the fixture intact, so the job falls through to the bare heldVols arm — this is what pins the assertions rather than the fixture guard]
 file internal/postproc/filelist.go
 --- anchor
-	case heldVols > 0 && !p.Par2Recovered() && p.HasPar2Verdict():
+	case heldVols > 0 && p.HasPar2Verdict():
 --- replace
 	case false:
 --- end

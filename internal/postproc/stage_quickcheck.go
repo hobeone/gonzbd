@@ -267,7 +267,8 @@ func (q *QuickCheckStage) recordVerdict(ctx context.Context, log *slog.Logger, j
 //  1. Unpack will run for this job. Deferring hands the set to
 //     extracted_repair, which runs only after unpack, so a job unpack will
 //     skip — PP below PPUnpack, or the stage disabled — defers nothing.
-//  2. The set has an entry no delivered file was identified as. A set with
+//  2. The set has an entry no delivered file was identified as, other than
+//     an undescribed one (par2.FileDesc.Undescribed). A set with
 //     every entry accounted for has everything it protects on disk now.
 //     Entries it did identify — a sidecar .nfo it also protects — are
 //     verified with the rest after unpack.
@@ -281,9 +282,14 @@ func (q *QuickCheckStage) recordVerdict(ctx context.Context, log *slog.Logger, j
 //     archive the entries do not name says nothing about them, and one whose
 //     type is disabled (enable_unrar, enable_7zip) will not produce them.
 func (q *QuickCheckStage) deferredSets(ctx context.Context, log *slog.Logger, job *Job, a par2.Assessment) []string {
+	// An undescribed entry has no name to judge against conditions 3 and 4,
+	// so it is left out of them; a set whose only undelivered entries are
+	// undescribed has nothing showing it is Layout B and is repaired.
 	unaccounted := make(map[string][]par2.FileDesc)
 	for _, fd := range a.Undelivered() {
-		unaccounted[fd.Set] = append(unaccounted[fd.Set], fd)
+		if !fd.Undescribed {
+			unaccounted[fd.Set] = append(unaccounted[fd.Set], fd)
+		}
 	}
 	if len(unaccounted) == 0 {
 		return nil

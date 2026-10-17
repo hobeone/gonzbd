@@ -6,9 +6,9 @@ run TestIdentify_RecordsEachEntrysSet|TestAssessment_CRCExcluding
 [entries are not tagged with their set]
 file internal/par2/fsops.go
 --- anchor
-			descs[i].Set = set.Name
+			fd.Set = name
 --- replace
-			descs[i].Set = ""
+			fd.Set = ""
 --- end
 
 [CRCExcluding keeps an excluded set's identified files]

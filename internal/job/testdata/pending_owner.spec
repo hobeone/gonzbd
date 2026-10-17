@@ -37,27 +37,15 @@ file internal/job/progress.go
 --- end
 
 [the release gates on the manifest again]
-file internal/job/content.go
+file internal/job/release.go
 --- anchor
 	if j.progress == nil {
-		return fmt.Errorf("job %s: %w", j.id, ErrNotResident)
+		return 0, fmt.Errorf("job %s: %w", j.id, ErrNotResident)
 	}
-	for _, fi := range fileIdxs {
 --- replace
 	if j.manifest == nil || j.progress == nil {
-		return fmt.Errorf("job %s: %w", j.id, ErrNotResident)
+		return 0, fmt.Errorf("job %s: %w", j.id, ErrNotResident)
 	}
-	for _, fi := range fileIdxs {
---- end
-
-[the release range check reads past the last file]
-file internal/job/content.go
---- anchor
-		if fi < 0 || fi >= len(j.progress.files) {
-			return fmt.Errorf("job %s: fileIdx %d out of range", j.id, fi)
---- replace
-		if fi < 0 || fi > len(j.progress.files) {
-			return fmt.Errorf("job %s: fileIdx %d out of range", j.id, fi)
 --- end
 
 [the shape check ignores the per-file ranges]

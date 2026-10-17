@@ -4,9 +4,9 @@ run TestIsRecoveryVolume
 [a zero block count is accepted again]
 file internal/job/par2name.go
 --- anchor
-\+0*[1-9]\d*
+\+(0*[1-9]\d*)
 --- replace
-\+\d+
+\+(\d+)
 --- end
 
 [the minus form excludes zero too]

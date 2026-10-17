@@ -134,17 +134,21 @@ func (f *jobFinalizer) finalize(ppJob *postproc.Job) {
 
 // heldVolumesMightRepair reports whether a finished run failed par2 while its
 // job still held recovery volumes back (Job.HasDeferredPar2), which the
-// finalizer then retries the job to fetch (#651). The Assessing verdict holds
-// them when nothing delivered matched the par2 index (outcomeUnknown): a
-// Layout B post, whose extracted_repair then has nothing to repair a damaged
-// extraction with, or an obfuscated file damaged inside its first 16 KB, which
-// repair then has nothing for either.
+// finalizer then retries the job to fetch (#651). A job reaches
+// post-processing with volumes held when the Assessing verdict held them
+// (outcomeUnknown: nothing delivered matched the par2 index, a Layout B post
+// whose extracted_repair has nothing to repair a damaged extraction with, or
+// an obfuscated file damaged inside its first 16 KB), when it released none
+// (a zero deficit, or a PP=0 job), or when it released only some
+// (recoveryDeficit undercounted, or a second Assessing found no deficit left).
 //
 // ParError also covers failures the volumes cannot fix, such as a containment
 // violation. Those cost one retry. The retry does not trigger another: it
-// releases every volume its rebuilt job holds before seeding job_files, which
-// hydration restores the policy from, and nothing else sets a volume to
-// FetchIfNeeded. The policy field is written in one place
+// releases every volume its rebuilt job holds (job.Unsized(); the job cannot
+// read as beyond repair there, since retryHistoryJob's ResetForRetry has
+// cleared every failed article before the prepare runs) before seeding
+// job_files, which hydration restores the policy from, and nothing else sets a
+// volume to FetchIfNeeded. The policy field is written in one place
 // (`git grep -nE '\.Fetch\s*=[^=]' -- '*.go' ':!*_test.go'` returns 1 line),
 // JobProgress.setFileFetchPolicy; construction leaves every file at the
 // FetchAlways zero. Its callers
@@ -152,10 +156,9 @@ func (f *jobFinalizer) finalize(ppJob *postproc.Job) {
 // 7 lines: the two declarations, Job.SetFileFetchPolicy's call, and four
 // calls) are ingest, with FetchIfNeeded, through Job.SetFileFetchPolicy; the
 // release, with FetchAlways; the discard, with FetchNever; and hydration,
-// with the recorded policy. And the writer sets no hold on a job whose
-// volumes were released. So its failure is filed as final. A user's
-// retry of that entry is rebuilt by ingest again, and so gets one automatic
-// retry of its own.
+// with the recorded policy, which is FetchAlways for a volume the retry
+// released. So its failure is filed as final. A user's retry of that entry is
+// rebuilt by ingest again, and so gets one automatic retry of its own.
 func heldVolumesMightRepair(ppJob *postproc.Job) bool {
 	return ppJob.ParError && ppJob.Job.HasDeferredPar2()
 }
@@ -169,7 +172,7 @@ func heldVolumesMightRepair(ppJob *postproc.Job) bool {
 // What the note tells the user to do heals the job. A retry rebuilds it
 // through BuildIngestJob, which holds the recovery volumes back again
 // (`git grep -n 'SetFileFetchPolicy[(]fi, job\.FetchIfNeeded)' -- '*.go' ':!*_test.go'`
-// returns 1 line, internal/app/ingest.go:139, while downloads.on_demand_par2
+// returns 1 line, in internal/app/ingest.go, while downloads.on_demand_par2
 // is on). Its post-processing then fails par2 with those volumes held, and
 // this finalizer retries it with them released. With on_demand_par2 off the
 // rebuilt job fetches every volume at once.
@@ -184,7 +187,7 @@ func (f *jobFinalizer) retryWithHeldVolumes(jobID string) bool {
 	app := f.app
 	err := app.retryHistoryJob(app.ctx, jobID, false, func(j *job.Job) error {
 		_, err := app.releaseRecoveryVolumes(j,
-			"post-processing failed par2 repair while the recovery volumes were held back")
+			"post-processing failed par2 repair while the recovery volumes were held back", job.Unsized())
 		return err
 	})
 	if err != nil {

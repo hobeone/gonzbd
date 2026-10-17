@@ -115,7 +115,6 @@ type JobProgress struct {
 	serverStats       map[string]int64
 	downloadStarted   time.Time
 	downloadFinished  time.Time
-	par2Recovered     bool
 	par2ReleaseReason string
 }
 
@@ -145,10 +144,10 @@ const (
 // This enum is read through two predicates that mean different things —
 // `!= FetchAlways` for dispatch, completion and byte accounting, and
 // `== FetchIfNeeded` for HasDeferredPar2 and DeferredRecoveryIndices, which
-// gate CRC re-verification and whether a late failure may re-arm a volume. A
+// gate CRC re-verification and which volumes a release may free. A
 // fourth value would need a decision at each of those sites, and the failure
 // mode of missing one is silence: a policy matching neither predicate is
-// excluded from every aggregate and invisible to the un-defer path, so its
+// excluded from every aggregate and invisible to the release path, so its
 // file is never fetched and never blocks completion.
 //
 // It is hand-written, which on its own would make it a second copy of the
@@ -799,14 +798,6 @@ func (p *JobProgress) restoreDownloadStamps(started, finished time.Time) {
 	p.downloadFinished = jobStampOrZero(finished)
 }
 
-// Par2Recovered reports whether on-demand par2 has un-deferred this job's recovery volumes.
-func (p *JobProgress) Par2Recovered() bool {
-	if p == nil {
-		return false
-	}
-	return p.par2Recovered
-}
-
 // Par2ReleaseReason explains why deferred recovery volumes were released for download.
 func (p *JobProgress) Par2ReleaseReason() string {
 	if p == nil {
@@ -827,21 +818,70 @@ func (p *JobProgress) restorePar2ReleaseReason(reason string) {
 	p.par2ReleaseReason = reason
 }
 
-func (p *JobProgress) restorePar2Recovered(recovered bool) {
-	p.par2Recovered = recovered
+// RecoveryClassifier says which of a job's files are par2 recovery volumes.
+// *Manifest satisfies it.
+type RecoveryClassifier interface {
+	FileIsPar2Recovery(fi int) bool
+}
+
+// RecoveryReleased counts the job's recovery volumes, as m classifies them:
+// those fetched for repair, those not fetched (held or discarded), and all of
+// them. fetched is 0 unless the release reason is set: with on-demand par2 on,
+// ingest holds every recovery volume, so a FetchAlways one means a release
+// only once the verdict or the retry recorded why; with it off, every volume
+// is FetchAlways from ingest and no reason is recorded.
+func (p *JobProgress) RecoveryReleased(m RecoveryClassifier) (fetched, held, total int) {
+	if p == nil {
+		return 0, 0, 0
+	}
+	for fi := range p.files {
+		if !m.FileIsPar2Recovery(fi) {
+			continue
+		}
+		total++
+		if p.files[fi].Fetch != FetchAlways {
+			held++
+		}
+	}
+	if p.par2ReleaseReason != "" {
+		fetched = total - held
+	}
+	return fetched, held, total
+}
+
+// FetchedRecoveryBlocks sums the recovery blocks, as m's names declare them, of
+// the volumes that are released, fully assembled and free of failed articles.
+// A volume that is held, incomplete or has a failed article counts nothing: how
+// many of its blocks are usable is not known.
+func (p *JobProgress) FetchedRecoveryBlocks(m *Manifest) int {
+	if p == nil {
+		return 0
+	}
+	var n int
+	for fi := range p.files {
+		f := &p.files[fi]
+		if !m.FileIsPar2Recovery(fi) || f.Fetch != FetchAlways || !f.Complete || f.FailedBytes != 0 {
+			continue
+		}
+		if b, ok := RecoveryVolumeBlocks(m.FileSubject(fi)); ok {
+			n += b
+		}
+	}
+	return n
 }
 
 // HasPar2Verdict reports whether the on-demand par2 verdict has already been
 // reached for this job, using the reason string as the marker.
 //
-// One writer sets it without a verdict: content.go's permanent-article-failure
-// path. That is safe rather than an exception, and the branch is why — the
-// assignment sits inside `if job.undeferRecovery(...)`, and undeferRecovery
-// sets par2Recovered whenever it reports a change (`git grep -n 'func (j \*Job) undeferRecovery' internal/job/`). So
-// every caller that must exclude that case already tests Par2Recovered().
+// Job.SetPar2ReleaseReason is its writer, and every call records the
+// Assessing verdict or the finalizer's retry —
+// `git grep -n 'SetPar2ReleaseReason(' -- '*.go' ':!*_test.go' ':!internal/job/'`
+// returns 4 lines, all in internal/app/app.go.
 //
-// ResetForRetry is the only clearer (`git grep -n 'func (j \*Job) ResetForRetry' internal/job/`), which is what makes a
-// retry re-derive the verdict rather than inherit it.
+// ResetForRetry is the only clearer —
+// `git grep -n 'clearPar2ReleaseReaso[n]()' -- 'internal/job/*.go' ':!*_test.go'`
+// returns 2 lines, its call and the declaration — which is what makes a retry
+// re-derive the verdict rather than inherit it.
 func (p *JobProgress) HasPar2Verdict() bool {
 	if p == nil {
 		return false
@@ -890,9 +930,8 @@ func (p *JobProgress) UsesOnDemandPar2() bool {
 // held pending the verdict.
 //
 // FetchIfNeeded only, and that exclusion is load-bearing rather than tidy.
-// undeferRecovery walks this list on any first-time permanent article
-// failure while the job is not yet par2-recovered. If a discarded volume
-// appeared here, one late failure would re-activate exactly the volumes the
+// ReleaseRecovery chooses the volumes it frees from this list. If a discarded
+// volume appeared here, a release would re-activate exactly the volumes the
 // CRC oracle proved unnecessary — undoing on-demand par2 entirely.
 func (p *JobProgress) DeferredRecoveryIndices() []int {
 	var idxs []int
@@ -1128,19 +1167,17 @@ const WholeArticle int64 = -1
 // markFailed flips Done+Failed on article i, charging its full size, and
 // updates counters. Returns false (no-op) if the article was already Done.
 func (p *JobProgress) markFailed(m *Manifest, i int) bool {
-	_, ok := p.markFailedUncovered(m, i, WholeArticle)
-	return ok
+	return p.markFailedUncovered(m, i, WholeArticle)
 }
 
 // markFailedUncovered is markFailed for an article of which only uncovered
-// bytes are missing from the file, or WholeArticle. It returns what the
-// failure charged (chargeOf) and false (no-op) if the article was already
-// Done. A failure charged nothing is resolved but not counted in
-// articlesFailed.
-func (p *JobProgress) markFailedUncovered(m *Manifest, i int, uncovered int64) (int64, bool) {
+// bytes are missing from the file, or WholeArticle. It returns false (no-op)
+// if the article was already Done. A failure charged nothing is resolved but
+// not counted in articlesFailed.
+func (p *JobProgress) markFailedUncovered(m *Manifest, i int, uncovered int64) bool {
 	wasEmitted := p.emitted.Get(i)
 	if !p.setFailedBits(i) {
-		return 0, false
+		return false
 	}
 	p.limitCharge(i, uncovered)
 	fi := m.fileIndexForArticle(i)
@@ -1155,7 +1192,7 @@ func (p *JobProgress) markFailedUncovered(m *Manifest, i int, uncovered int64) (
 	if charge > 0 {
 		p.articlesFailed++
 	}
-	return charge, true
+	return true
 }
 
 // limitCharge records that failed article i is charged at most uncovered

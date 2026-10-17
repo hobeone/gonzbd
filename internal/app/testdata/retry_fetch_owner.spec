@@ -47,7 +47,7 @@ file internal/app/app.go
 # A verdict that moves the policy no longer marks the job itself: the policy's
 # one writer records the change and the recorder's flush takes it (#858).
 # fetch_policy_record.spec neuters each half against
-# TestPermanentArticleFailure_ReleasedVolumeReachesTheRecord, and
+# TestPermanentArticleFailure_LeavesTheVolumeHeldUntilReleased, and
 # TestMaybeReleaseRecoveryVolumes_MarksThePolicyForCheckpointing, run here,
 # pins that both verdicts' changes are taken.
 

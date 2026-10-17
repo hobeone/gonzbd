@@ -1237,11 +1237,11 @@ from inflating a file's apparent size with a crafted yEnc `=ypart begin=` header
 
 It is an ARTICLE fault, not a storage fault, so it resolves against the article
 (A1): `OnArticleRejected` carries it to `Job.MarkArticleFailed`, which
-charges its bytes to the job's failed-byte count, releases on-demand par2, and
-clears its `Emitted` bit so nothing waits on a re-dispatch that will never come.
-A rejection can land after the dispatcher evicted the job; it is still
-recorded, as bits alone, and the byte charge follows at the next hydration
-while the par2 release does not — see `docs/job-lifecycle.md` § "Residency: the three tiers".
+charges its bytes to the job's failed-byte count and clears its `Emitted` bit
+so nothing waits on a re-dispatch that will never come. It changes no fetch
+policy: the Assessing verdict decides the par2 release. A rejection can land
+after the dispatcher evicted the job; it is still recorded, as bits alone, and
+the byte charge follows at the next hydration — see `docs/job-lifecycle.md` § "Residency: the three tiers".
 
 The rejected article still **counts toward its file's part total**: it will
 never arrive again, so a file that declines to count it can never reach

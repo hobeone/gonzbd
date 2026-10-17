@@ -4,7 +4,7 @@ run TestStore_
 [Save drops the unwanted state]
 file internal/dispatch/store/store.go
 --- anchor
-		p.RecoveryBytes, p.Par2Recovered, p.Header.Unwanted,
+		p.RecoveryBytes, p.Header.Unwanted,
 --- replace
-		p.RecoveryBytes, p.Par2Recovered, 0,
+		p.RecoveryBytes, 0,
 --- end

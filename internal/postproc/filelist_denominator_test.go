@@ -17,13 +17,10 @@ import (
 // the two disagreed, and the stage log's figure was the smaller one because
 // its denominator included bytes the job never intended to fetch.
 //
-// Reaching that state needs care. On an on-demand-par2 job a permanent
-// article failure normally *releases* the deferred volumes — repair is now
-// known to be needed — which would leave nothing held back. The state where
-// held volumes and failures coexist is the one this test builds: the CRC
-// oracle rules the volumes unnecessary (FetchNever), and only afterwards does
-// an article fail permanently. Job.undeferRecovery skips anything that is
-// not FetchIfNeeded, so the volumes stay held and the denominators diverge.
+// This test builds the state where held-back volumes and failures coexist:
+// the CRC oracle rules the volumes unnecessary (FetchNever), and only
+// afterwards does an article fail permanently. A failure changes no fetch
+// policy, so the volumes stay held back and the denominators diverge.
 func TestBuildDownloadFileList_FailurePercentSharesHistoryDenominator(t *testing.T) {
 	dir := t.TempDir()
 

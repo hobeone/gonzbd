@@ -1,0 +1,572 @@
+package app
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"log/slog"
+	"math"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"slices"
+	"strings"
+	"testing"
+
+	"github.com/hobeone/gonzbd/internal/config"
+	"github.com/hobeone/gonzbd/internal/dispatch"
+	"github.com/hobeone/gonzbd/internal/durability"
+	"github.com/hobeone/gonzbd/internal/job"
+	"github.com/hobeone/gonzbd/internal/nzb"
+	"github.com/hobeone/gonzbd/internal/par2"
+	"github.com/hobeone/gonzbd/internal/types"
+)
+
+// The par2 fixture (test/fixtures/par2/data.par2) protects data.bin, 4065
+// bytes in 4-byte slices. The jobs below split data.bin into three articles
+// around one 40-byte interior article, so losing that article damages exactly
+// ten slices (2000/4 .. 2039/4) and a release must cover ten blocks.
+const (
+	fixtureSliceDamage = 10
+	artHead            = 2000
+	artMid             = 40
+	artTail            = 4065 - artHead - artMid
+)
+
+// Three recovery volumes with real "+MM" names. The cheapest cover of ten
+// blocks is the first two (12 blocks, 3000 bytes); the third alone (16 blocks)
+// costs 4000.
+var sizedVols = []sizedVol{
+	{"data.vol000+04.par2", 1000},
+	{"data.vol004+08.par2", 2000},
+	{"data.vol012+16.par2", 4000},
+}
+
+type sizedVol struct {
+	name  string
+	bytes int64
+}
+
+// newSizedJob builds a not-yet-added job with on-demand par2 on: data.bin in
+// articles of the given sizes, and one single-article file per volume.
+func newSizedJob(t *testing.T, id, name string, pp int, arts []int, vols []sizedVol) (*job.Job, dispatch.Header) {
+	t.Helper()
+	return newSizedJobAfter(t, id, name, pp, nil, arts, vols)
+}
+
+// newSizedJobAfter is newSizedJob with the files of lead placed before
+// data.bin in the manifest.
+func newSizedJobAfter(t *testing.T, id, name string, pp int, lead []nzb.File, arts []int, vols []sizedVol) (*job.Job, dispatch.Header) {
+	t.Helper()
+	data := nzb.File{Subject: "data.bin"}
+	for i, b := range arts {
+		data.Articles = append(data.Articles, nzb.Article{ID: fmt.Sprintf("d%d@t", i), Bytes: b, Number: i + 1})
+		data.Bytes += int64(b)
+	}
+	parsed := &nzb.NZB{Files: append(slices.Clone(lead), data)}
+	for i, v := range vols {
+		parsed.Files = append(parsed.Files, nzb.File{
+			Subject: v.name, Bytes: v.bytes,
+			Articles: []nzb.Article{{ID: fmt.Sprintf("v%d@t", i), Bytes: int(v.bytes), Number: 1}},
+		})
+	}
+	cfg, err := config.Default()
+	if err != nil {
+		t.Fatalf("config.Default: %v", err)
+	}
+	cfg.Downloads.OnDemandPar2 = true
+	j, hdr, err := BuildIngestJob(cfg, parsed, "t.nzb", types.FetchOptions{JobID: id, NzbName: name, PP: pp}, nil)
+	if err != nil {
+		t.Fatalf("BuildIngestJob: %v", err)
+	}
+	return j, hdr
+}
+
+// fileIdxBySubject returns the manifest index of the file with that subject.
+func fileIdxBySubject(t *testing.T, j *job.Job, subject string) int {
+	t.Helper()
+	m := mustManifest(t, j)
+	for fi := range m.NumFiles() {
+		if m.FileSubject(fi) == subject {
+			return fi
+		}
+	}
+	t.Fatalf("no file with subject %q", subject)
+	return -1
+}
+
+// rowsExcept returns the written rows of data file dataIdx, each article
+// tiling the file end to end, less the articles whose file-local index is in
+// missing.
+func rowsExcept(t *testing.T, j *job.Job, dataIdx int, missing ...int) []durability.WrittenRow {
+	t.Helper()
+	m := mustManifest(t, j)
+	lo, hi := m.FileRange(dataIdx)
+	var rows []durability.WrittenRow
+	var off int64
+	for a := lo; a < hi; a++ {
+		n := int64(m.ArticleBytes(a))
+		if !slices.Contains(missing, a-lo) {
+			rows = append(rows, durability.WrittenRow{FileIdx: dataIdx, ArtIdx: int32(a), Offset: off, Length: n}) //nolint:gosec // G115: article counts are far below int32
+		}
+		off += n
+	}
+	return rows
+}
+
+// assessDir assesses dir against j the way maybeReleaseRecoveryVolumes does.
+func assessDir(t *testing.T, dir string, j *job.Job) par2.Assessment {
+	t.Helper()
+	opts := par2.DefaultParseOptions()
+	sets, err := par2.FindPar2Files(dir, opts)
+	if err != nil || len(sets) == 0 {
+		t.Fatalf("FindPar2Files: %v (%d sets)", err, len(sets))
+	}
+	a, err := par2.AssessWithOptions(dir, sets, assembledFiles(mustManifest(t, j), j.Progress()),
+		slog.New(slog.DiscardHandler), opts)
+	if err != nil {
+		t.Fatalf("AssessWithOptions: %v", err)
+	}
+	return a
+}
+
+// rowSource is a loadRows func that counts its calls.
+type rowSource struct {
+	rows  []durability.WrittenRow
+	err   error
+	calls int
+}
+
+func (s *rowSource) load() ([]durability.WrittenRow, error) {
+	s.calls++
+	return s.rows, s.err
+}
+
+func TestRecoveryDeficit(t *testing.T) {
+	t.Parallel()
+
+	// build returns a fresh job and a directory holding the fixture's index and
+	// data.bin, and the data file's index. The data.bin job is complete but for
+	// the interior article.
+	build := func(t *testing.T) (*job.Job, string, int) {
+		t.Helper()
+		j, _ := newSizedJob(t, "deficit", "deficit", types.PPRepair, []int{artHead, artMid, artTail}, sizedVols)
+		dir := t.TempDir()
+		copyFixturePar2(t, dir)
+		copyFixturePayload(t, dir, "data.bin")
+		return j, dir, fileIdxBySubject(t, j, "data.bin")
+	}
+	release := func(t *testing.T, j *job.Job, subject string) int {
+		t.Helper()
+		fi := fileIdxBySubject(t, j, subject)
+		if err := j.SetFileFetchPolicy(fi, job.FetchAlways); err != nil {
+			t.Fatalf("SetFileFetchPolicy: %v", err)
+		}
+		if err := j.MarkFileComplete(fi); err != nil {
+			t.Fatalf("MarkFileComplete: %v", err)
+		}
+		return fi
+	}
+
+	tests := []struct {
+		name      string
+		prep      func(t *testing.T, j *job.Job, dir string) // before the assessment
+		tweak     func(a *par2.Assessment)                   // after the assessment
+		src       func(t *testing.T, j *job.Job, dataIdx int) *rowSource
+		want      job.RecoverySizing
+		wantWhy   string // substring; empty means no reason
+		wantCalls int
+	}{
+		{
+			name: "one interior article missing is sized by the damaged slices",
+			want: job.NeedBlocks(fixtureSliceDamage), wantCalls: 1,
+		},
+		{
+			name: "a fully written file needs nothing",
+			src: func(t *testing.T, j *job.Job, dataIdx int) *rowSource {
+				return &rowSource{rows: rowsExcept(t, j, dataIdx)}
+			},
+			want: job.NeedBlocks(0), wantCalls: 1,
+		},
+		{
+			name: "a fetched intact volume is subtracted",
+			prep: func(t *testing.T, j *job.Job, _ string) { release(t, j, "data.vol000+04.par2") },
+			want: job.NeedBlocks(fixtureSliceDamage - 4), wantCalls: 1,
+		},
+		{
+			name: "a fetched volume with a failed article contributes nothing",
+			prep: func(t *testing.T, j *job.Job, _ string) {
+				fi := release(t, j, "data.vol000+04.par2")
+				lo, _ := mustManifest(t, j).FileRange(fi)
+				if err := j.MarkArticleFailed(lo, job.WholeArticle); err != nil {
+					t.Fatalf("MarkArticleFailed: %v", err)
+				}
+			},
+			want: job.NeedBlocks(fixtureSliceDamage), wantCalls: 1,
+		},
+		{
+			name: "an unreadable written record is unsized",
+			src: func(*testing.T, *job.Job, int) *rowSource {
+				return &rowSource{err: errors.New("disk on fire")}
+			},
+			want: job.Unsized(), wantWhy: "disk on fire", wantCalls: 1,
+		},
+		{
+			name: "more slices than a par2 set can hold is unsized without reading rows",
+			tweak: func(a *par2.Assessment) {
+				a.ID.Files = slices.Clone(a.ID.Files)
+				a.ID.Files[0].Desc.FileSize = 4 * (job.MaxPar2Slices + 1)
+			},
+			want: job.Unsized(), wantWhy: "more than", wantCalls: 0,
+		},
+		{
+			name: "exactly the slice limit is sized",
+			tweak: func(a *par2.Assessment) {
+				a.ID.Files = slices.Clone(a.ID.Files)
+				a.ID.Files[0].Desc.FileSize = 4 * job.MaxPar2Slices
+			},
+			// The rows cover 4065 of the 131072 bytes, so every slice from
+			// the one holding byte 4065 (slice 1016) to the last is damaged
+			// as well as the ten around the lost article.
+			want: job.NeedBlocks(fixtureSliceDamage + job.MaxPar2Slices - 1016), wantCalls: 1,
+		},
+		{
+			name: "a file size beyond int64 is unsized",
+			tweak: func(a *par2.Assessment) {
+				a.ID.Files = slices.Clone(a.ID.Files)
+				a.ID.Files[0].Desc.FileSize = math.MaxInt64 + 1
+			},
+			want: job.Unsized(), wantWhy: "out of range", wantCalls: 0,
+		},
+		{
+			name: "an entry with no delivered file is unsized",
+			tweak: func(a *par2.Assessment) {
+				a.ID.Files = slices.Clone(a.ID.Files)
+				a.ID.Files[0].OnDisk = "not-delivered.bin"
+			},
+			want: job.Unsized(), wantWhy: "no delivered file", wantCalls: 0,
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			j, dir, dataIdx := build(t)
+			if tc.prep != nil {
+				tc.prep(t, j, dir)
+			}
+			a := assessDir(t, dir, j)
+			if tc.tweak != nil {
+				tc.tweak(&a)
+			}
+			src := &rowSource{rows: rowsExcept(t, j, dataIdx, 1)}
+			if tc.src != nil {
+				src = tc.src(t, j, dataIdx)
+			}
+			got, why := recoveryDeficit(mustManifest(t, j), j.Progress(), a, src.load)
+			if got != tc.want {
+				t.Errorf("sizing = %+v, want %+v (why %q)", got, tc.want, why)
+			}
+			if (tc.wantWhy == "") != (why == "") || !strings.Contains(why, tc.wantWhy) {
+				t.Errorf("why = %q, want it to contain %q", why, tc.wantWhy)
+			}
+			if src.calls != tc.wantCalls {
+				t.Errorf("loadRows called %d times, want %d", src.calls, tc.wantCalls)
+			}
+		})
+	}
+
+	t.Run("a CRC mismatch is unsized", func(t *testing.T) {
+		t.Parallel()
+		j, _ := newSizedJob(t, "mismatch", "mismatch", types.PPRepair, []int{4065}, sizedVols)
+		dir := t.TempDir()
+		copyFixturePar2(t, dir)
+		copyFixturePayload(t, dir, "data.bin")
+		dataIdx := fileIdxBySubject(t, j, "data.bin")
+		seedFileCRC(t, j, dataIdx, 0xDEADBEEF)
+		a := assessDir(t, dir, j)
+		if a.CRC.Mismatched == 0 {
+			t.Fatalf("fixture guard: the assessment found no mismatch: %+v", a.CRC)
+		}
+		src := &rowSource{rows: rowsExcept(t, j, dataIdx)}
+		got, why := recoveryDeficit(mustManifest(t, j), j.Progress(), a, src.load)
+		if got != job.Unsized() || !strings.Contains(why, "checksum") {
+			t.Errorf("sizing = %+v, %q; want Unsized because a file fails its checksum", got, why)
+		}
+		if src.calls != 0 {
+			t.Errorf("loadRows called %d times, want 0", src.calls)
+		}
+	})
+
+	t.Run("an unverified entry is unsized", func(t *testing.T) {
+		t.Parallel()
+		j, dir, dataIdx := build(t)
+		if err := os.Remove(filepath.Join(dir, "data.bin")); err != nil {
+			t.Fatal(err)
+		}
+		a := assessDir(t, dir, j)
+		if a.CRC.Unverified == 0 || a.CRC.Mismatched != 0 {
+			t.Fatalf("fixture guard: want an unverified entry and no mismatch: %+v", a.CRC)
+		}
+		src := &rowSource{rows: rowsExcept(t, j, dataIdx, 1)}
+		got, why := recoveryDeficit(mustManifest(t, j), j.Progress(), a, src.load)
+		if got != job.Unsized() || !strings.Contains(why, "could not be checked") {
+			t.Errorf("sizing = %+v, %q; want Unsized because an entry could not be checked", got, why)
+		}
+		if src.calls != 0 {
+			t.Errorf("loadRows called %d times, want 0", src.calls)
+		}
+	})
+
+	// The par2 index protects data.bin only, so its identification index is 0
+	// while pad.bin, which par2 does not protect, holds manifest index 0. The
+	// written rows are keyed by manifest index.
+	t.Run("an identified file's rows are read by its manifest index", func(t *testing.T) {
+		t.Parallel()
+		pad := nzb.File{Subject: "pad.bin", Bytes: 1000, Articles: []nzb.Article{{ID: "p0@t", Bytes: 1000, Number: 1}}}
+		j, _ := newSizedJobAfter(t, "order", "order", types.PPRepair, []nzb.File{pad}, []int{artHead, artMid, artTail}, sizedVols)
+		dir := t.TempDir()
+		copyFixturePar2(t, dir)
+		copyFixturePayload(t, dir, "data.bin")
+		padIdx, dataIdx := fileIdxBySubject(t, j, "pad.bin"), fileIdxBySubject(t, j, "data.bin")
+		a := assessDir(t, dir, j)
+		if padIdx != 0 || dataIdx != 1 || len(a.ID.Files) != 1 || a.ID.Files[0].OnDisk != "data.bin" {
+			t.Fatalf("fixture guard: pad.bin at %d, data.bin at %d, identified %+v; want 0, 1 and data.bin alone",
+				padIdx, dataIdx, a.ID.Files)
+		}
+		src := &rowSource{rows: append(rowsExcept(t, j, padIdx), rowsExcept(t, j, dataIdx, 1)...)}
+		got, why := recoveryDeficit(mustManifest(t, j), j.Progress(), a, src.load)
+		if want := job.NeedBlocks(fixtureSliceDamage); got != want || why != "" {
+			t.Errorf("sizing = %+v, %q; want %+v with no reason", got, why, want)
+		}
+	})
+
+	t.Run("a minus-form volume fetched whole contributes nothing", func(t *testing.T) {
+		t.Parallel()
+		vols := []sizedVol{{"data.vol000-07.par2", 1000}, {"data.vol004+08.par2", 2000}}
+		j, _ := newSizedJob(t, "minus", "minus", types.PPRepair, []int{artHead, artMid, artTail}, vols)
+		dir := t.TempDir()
+		copyFixturePar2(t, dir)
+		copyFixturePayload(t, dir, "data.bin")
+		release(t, j, "data.vol000-07.par2")
+		dataIdx := fileIdxBySubject(t, j, "data.bin")
+		src := &rowSource{rows: rowsExcept(t, j, dataIdx, 1)}
+		got, why := recoveryDeficit(mustManifest(t, j), j.Progress(), assessDir(t, dir, j), src.load)
+		if want := job.NeedBlocks(fixtureSliceDamage); got != want || why != "" {
+			t.Errorf("sizing = %+v, %q; want %+v with no reason: a -NN name declares a volume number, not a block count", got, why, want)
+		}
+	})
+
+	t.Run("two par2 sets give no single slice size", func(t *testing.T) {
+		t.Parallel()
+		bin, err := exec.LookPath("par2")
+		if err != nil {
+			t.Skipf("par2 unavailable to build a second set: %v", err)
+		}
+		// A second, fully accounted set: other.bin and its own index, with a
+		// different slice size from the fixture's.
+		j, _ := newSizedJob(t, "twosets", "twosets", types.PPRepair, []int{artHead, artMid, artTail},
+			append(slices.Clone(sizedVols), sizedVol{"other.bin", 100}))
+		dir := t.TempDir()
+		copyFixturePar2(t, dir)
+		copyFixturePayload(t, dir, "data.bin")
+		if err := os.WriteFile(filepath.Join(dir, "other.bin"), make([]byte, 100), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		cmd := exec.CommandContext(t.Context(), bin, "c", "-q", "-s8", "-r1", "-n1", "other.par2", "other.bin")
+		cmd.Dir = dir
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("par2 create: %v\n%s", err, out)
+		}
+		dataIdx := fileIdxBySubject(t, j, "data.bin")
+		a := assessDir(t, dir, j)
+		if _, ok := a.ID.SliceSize(); ok {
+			t.Fatalf("fixture guard: the two indexes did not parse as two sets")
+		}
+		if a.CRC.Mismatched != 0 || a.CRC.Unverified != 0 {
+			t.Fatalf("fixture guard: a finding would be reported before the slice size is read: %+v", a.CRC)
+		}
+		src := &rowSource{rows: rowsExcept(t, j, dataIdx, 1)}
+		got, why := recoveryDeficit(mustManifest(t, j), j.Progress(), a, src.load)
+		if got != job.Unsized() || !strings.Contains(why, "slice size") {
+			t.Errorf("sizing = %+v, %q; want Unsized because no single set gives a slice size", got, why)
+		}
+		if src.calls != 0 {
+			t.Errorf("loadRows called %d times, want 0", src.calls)
+		}
+	})
+}
+
+// deficitRowsStore serves a fixed set of written rows over the app's store.
+type deficitRowsStore struct {
+	durabilityStore
+	rows []durability.WrittenRow
+}
+
+func (s *deficitRowsStore) WrittenRows(context.Context, string) ([]durability.WrittenRow, error) {
+	return s.rows, nil
+}
+
+// releaseApp returns an application with on-demand par2 on and a download
+// directory, plus the job's directory prepared with the fixture index and
+// payload.
+func releaseApp(t *testing.T, jobName string) (*Application, string) {
+	t.Helper()
+	dir := t.TempDir()
+	application := newTestApplication(t)
+	application.config.With(func(c *config.Config) {
+		c.General.DownloadDir = dir
+		c.Downloads.OnDemandPar2 = true
+	})
+	application.log = slog.New(slog.DiscardHandler)
+	jobDir := filepath.Join(dir, jobName)
+	if err := os.MkdirAll(jobDir, 0o750); err != nil {
+		t.Fatal(err)
+	}
+	copyFixturePar2(t, jobDir)
+	copyFixturePayload(t, jobDir, "data.bin")
+	return application, jobDir
+}
+
+// policies returns each recovery volume's fetch policy by subject.
+func policies(t *testing.T, j *job.Job) map[string]job.FetchPolicy {
+	t.Helper()
+	m, p := mustManifest(t, j), j.Progress()
+	out := make(map[string]job.FetchPolicy)
+	for fi := range m.NumFiles() {
+		if m.FileIsPar2Recovery(fi) {
+			out[m.FileSubject(fi)] = p.FileFetchPolicy(fi)
+		}
+	}
+	return out
+}
+
+func TestMaybeReleaseRecoveryVolumes_SizedRelease(t *testing.T) {
+	t.Parallel()
+	arts := []int{artHead, artMid, artTail}
+
+	// add queues a job with its interior article lost.
+	add := func(t *testing.T, application *Application, id string, pp int) (*job.Job, int) {
+		t.Helper()
+		j, hdr := newSizedJob(t, id, id+"-name", pp, arts, sizedVols)
+		if err := application.Dispatcher().Add(context.Background(), j, hdr); err != nil {
+			t.Fatalf("Add: %v", err)
+		}
+		dataIdx := fileIdxBySubject(t, j, "data.bin")
+		lo, _ := mustManifest(t, j).FileRange(dataIdx)
+		if err := j.MarkArticleFailed(lo+1, job.WholeArticle); err != nil {
+			t.Fatalf("MarkArticleFailed: %v", err)
+		}
+		return j, dataIdx
+	}
+
+	t.Run("fetches the cheapest cover and nothing once the deficit is covered", func(t *testing.T) {
+		t.Parallel()
+		application, _ := releaseApp(t, "sized-name")
+		j, dataIdx := add(t, application, "sized", types.PPRepair)
+		application.durable = &deficitRowsStore{durabilityStore: application.durable, rows: rowsExcept(t, j, dataIdx, 1)}
+
+		if !application.maybeReleaseRecoveryVolumes(t.Context(), j) {
+			t.Fatal("maybeReleaseRecoveryVolumes = false, want true: ten damaged slices need recovery blocks")
+		}
+		want := map[string]job.FetchPolicy{
+			"data.vol000+04.par2": job.FetchAlways,
+			"data.vol004+08.par2": job.FetchAlways,
+			"data.vol012+16.par2": job.FetchIfNeeded,
+		}
+		if got := policies(t, j); !mapsEqual(got, want) {
+			t.Errorf("policies = %v, want %v: only the byte-minimal cover of 10 blocks is released", got, want)
+		}
+		reason := j.Par2ReleaseReason()
+		if reason == "" {
+			t.Error("Par2ReleaseReason is empty after a release")
+		}
+		if strings.Contains(reason, "releasing every recovery volume") {
+			t.Errorf("reason = %q: a sized release must not say it released everything", reason)
+		}
+
+		// The released volumes arrive intact (complete, nothing marks them
+		// failed), so their 12 blocks cover the 10 damaged slices.
+		for subject, p := range want {
+			if p == job.FetchAlways {
+				if err := j.MarkFileComplete(fileIdxBySubject(t, j, subject)); err != nil {
+					t.Fatalf("MarkFileComplete(%s): %v", subject, err)
+				}
+			}
+		}
+		if application.maybeReleaseRecoveryVolumes(t.Context(), j) {
+			t.Error("a second call = true, want false: the deficit is covered")
+		}
+		if got := policies(t, j); !mapsEqual(got, want) {
+			t.Errorf("policies after the second call = %v, want %v: nothing more may be released", got, want)
+		}
+	})
+
+	t.Run("a CRC mismatch releases every volume", func(t *testing.T) {
+		t.Parallel()
+		application, _ := releaseApp(t, "mismatch-name")
+		j, hdr := newSizedJob(t, "mismatch", "mismatch-name", types.PPRepair, []int{4065}, sizedVols)
+		seedFileCRC(t, j, fileIdxBySubject(t, j, "data.bin"), 0xDEADBEEF)
+		if err := application.Dispatcher().Add(context.Background(), j, hdr); err != nil {
+			t.Fatalf("Add: %v", err)
+		}
+		if !application.maybeReleaseRecoveryVolumes(t.Context(), j) {
+			t.Fatal("maybeReleaseRecoveryVolumes = false, want true")
+		}
+		for name, p := range policies(t, j) {
+			if p != job.FetchAlways {
+				t.Errorf("%s policy = %v, want FetchAlways: an unsized release frees every volume", name, p)
+			}
+		}
+		if reason := j.Par2ReleaseReason(); !strings.Contains(reason, "releasing every recovery volume") {
+			t.Errorf("reason = %q, want it to say every volume was released", reason)
+		}
+	})
+
+	t.Run("no durability store releases every volume", func(t *testing.T) {
+		t.Parallel()
+		application, _ := releaseApp(t, "nodur-name")
+		j, _ := add(t, application, "nodur", types.PPRepair)
+		application.durable = nil
+		if !application.maybeReleaseRecoveryVolumes(t.Context(), j) {
+			t.Fatal("maybeReleaseRecoveryVolumes = false, want true")
+		}
+		for name, p := range policies(t, j) {
+			if p != job.FetchAlways {
+				t.Errorf("%s policy = %v, want FetchAlways", name, p)
+			}
+		}
+		if reason := j.Par2ReleaseReason(); !strings.Contains(reason, "no durability store") {
+			t.Errorf("reason = %q, want it to name the missing store", reason)
+		}
+	})
+
+	t.Run("a job that may not repair releases nothing but records why", func(t *testing.T) {
+		t.Parallel()
+		application, _ := releaseApp(t, "norepair-name")
+		j, dataIdx := add(t, application, "norepair", types.PPNone)
+		application.durable = &deficitRowsStore{durabilityStore: application.durable, rows: rowsExcept(t, j, dataIdx, 1)}
+		if application.maybeReleaseRecoveryVolumes(t.Context(), j) {
+			t.Error("maybeReleaseRecoveryVolumes = true for a PP=0 job")
+		}
+		for name, p := range policies(t, j) {
+			if p != job.FetchIfNeeded {
+				t.Errorf("%s policy = %v, want FetchIfNeeded", name, p)
+			}
+		}
+		if j.Par2ReleaseReason() == "" {
+			t.Error("Par2ReleaseReason is empty, want the verdict recorded")
+		}
+	})
+}
+
+func mapsEqual[K comparable, V comparable](a, b map[K]V) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for k, v := range a {
+		if w, ok := b[k]; !ok || w != v {
+			return false
+		}
+	}
+	return true
+}

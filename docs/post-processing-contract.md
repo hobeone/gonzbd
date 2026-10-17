@@ -597,7 +597,7 @@ Both par2 engines are handed one candidate list, which `RepairStage.repairSets` 
    provided the file was identified against the par2 index, which this
    scenario's earlier hole in the run record does not prevent —
    `app.par2Verdict` returns `outcomeRepair`, so on-demand par2 fetches the
-   recovery volumes. That costs bandwidth and a par2 pass on a file with a
+   recovery volumes that cover the hole. That costs bandwidth and a par2 pass on a file with a
    hole; it never ships an unrepaired one. A file `Identify` cannot match
    against anything reads `outcomeUnknown` instead, not `outcomeRepair`: the
    volumes are held rather than fetched, which is the conservative branch for
@@ -700,15 +700,15 @@ source for this paragraph):
 - **`== FetchIfNeeded`** — "is this file still awaiting the verdict" — is the
   one `HasDeferredPar2` and `DeferredRecoveryIndices` use, and the exclusion of
   `FetchNever` is deliberate: `DeferredRecoveryIndices` feeds
-  `undeferRecovery`, which any first-time permanent article failure calls
-  (`internal/job/content.go`). Including a discarded volume there would let one
-  late failure re-fetch exactly the volumes the CRC oracle already proved
-  unnecessary, undoing the feature. Likewise `HasDeferredPar2` reporting a
+  `Job.ReleaseRecovery` (`internal/job/release.go`). Including a discarded
+  volume there would let a release re-fetch exactly the volumes the CRC oracle
+  already proved unnecessary, undoing the feature. Likewise `HasDeferredPar2` reporting a
   discarded volume as "held" would re-run full CRC verification on every
   subsequent completion event.
 
-`DiscardDeferredPar2` (`internal/job/content.go`) is the sole path from
-`FetchIfNeeded` to `FetchNever`: a walk over the file table setting the policy,
+`DiscardDeferredPar2` (`internal/job/content.go`) is the only verdict that
+moves `FetchIfNeeded` to `FetchNever` (the restart restore below re-applies a
+recorded `FetchNever`): a walk over the file table setting the policy,
 with no file-set mutation, deletion, or renumbering involved. A retry does not
 carry the previous attempt's policy forward at all.
 
@@ -721,11 +721,9 @@ the policy reaches the record: the field has one writer,
 recorder's flush takes those changes (`Job.TakeFetchPolicyChanges`) for every
 job the dispatcher holds; ingest also derives the policy before the row exists.
 A change that reached no flush would be undone by the next restart, with no
-error anywhere — which is what made this a real defect before #329, and again
-for the early release on a permanent article failure before #858. The writer
-also refuses to restore a hold over a release: once `Par2Recovered` is set
-nothing releases a volume again, so a restored `FetchIfNeeded` becomes
-`FetchAlways`.
+error anywhere — which is what made this a real defect before #329 and #858.
+The writer applies a restored policy as recorded: a restored `FetchIfNeeded`
+stays held, and the Assessing verdict releases it again if it is still needed.
 
 A retry is not that path back. It rebuilds the job from scratch through
 `BuildIngestJob` (`internal/app/app.go`'s `rebuildJobFromNZB`), whose own
@@ -760,23 +758,65 @@ three outcomes:
 | Outcome | Meaning | Action |
 |---|---|---|
 | `outcomeClean` | Every par2-tracked file was identified and its assembled CRC matched. | Recovery volumes discarded (`DiscardDeferredPar2`); job finalizes without them. |
-| `outcomeRepair` | At least one par2-tracked file is corrupt, has no CRC to check, could not be verified, or a par2 entry matched no delivered file while others in the same set did. | If the job's `Policy.Repair` is true: all deferred volumes un-deferred (`UndeferRecoveryVolumes`) and fetched; job re-enters download. If `Policy.Repair` is false (PP=0): the volumes are held, like `outcomeUnknown`, and the release reason is still recorded. |
+| `outcomeRepair` | At least one par2-tracked file is corrupt, has no CRC to check, could not be verified, or a par2 entry matched no delivered file while others in the same set did. | If the job's `Policy.Repair` is true: the release is sized (see the "release is sized to the damage" paragraph below) and `Job.ReleaseRecovery` frees the held volumes that cover it (`FetchIfNeeded` to `FetchAlways`); job re-enters download if it freed at least one, and goes on to `Repairing` if it freed none. If `Policy.Repair` is false (PP=0): the volumes are held, like `outcomeUnknown`, and the release reason is still recorded. |
 | `outcomeUnknown` | Nothing delivered matched any par2 entry, by name or by content. | Volumes are held, neither fetched nor discarded; job goes on to post-processing without them. If that fails par2, the finalizer retries the job with them released. |
 
 **The verdict and the fetch decision are separate questions (#653).**
 `par2Verdict` answers only "is repair possible" from the assessment; it does
-not read `Policy`. Two sites decide whether to act on that by releasing
-volumes, and both check `Policy.Repair` first: `maybeReleaseRecoveryVolumes`,
-before calling `releaseRecoveryVolumes` on an `outcomeRepair` verdict at
-download completion, and `Job.MarkArticleFailed`, before releasing on a charged
-permanent article failure during an active download — the same waste can
-happen well before the job ever reaches Assessing. A PP=0 job's `repair`
+not read `Policy`. `maybeReleaseRecoveryVolumes` decides whether to act on it
+by releasing volumes, and checks `Policy.Repair` first, before calling
+`releaseRecoveryVolumes` on an `outcomeRepair` verdict at download completion.
+The other caller of `releaseRecoveryVolumes` is the finalizer's retry of a
+failed par2 repair, which is triggered by a `ParError`
+(`git grep -n 'releaseRecoveryVolumes(' -- '*.go' ':!*_test.go'` finds 3
+lines: the declaration and those two calls). A PP=0 job's `repair`
 stage self-gates and does no work regardless (`shouldSkipForPP` skips it
 below PP=1), so fetching the volumes for one would spend bandwidth on bytes
 nothing will use. This is a fetch-decision gate only — the Assessing→Repairing
 edge itself stays legal at every policy, per `job.Policy`'s "every state runs
 at every policy" (see `docs/job-lifecycle.md` § "Policy, not a PP level"); a
 PP=0 job that reaches `Repairing` anyway just has nothing for the stage to do.
+
+**The release is sized to the damage.** A permanent article failure during
+download releases nothing: the volumes are fetched after the content is down,
+in one extra Fetching and Assessing round. On `outcomeRepair`,
+`recoveryDeficit` (`internal/app/par2_release.go`) counts the par2 slices the
+identified files are missing — the gaps in each file's written rows
+(`job.DamagedSlices`), at the post's par2 slice size — and subtracts the
+`+MM` blocks of recovery volumes that are complete, `FetchAlways` and have no
+failed article (`JobProgress.FetchedRecoveryBlocks`). `Job.ReleaseRecovery`
+then frees the held volumes that cover that need at the fewest bytes (a 0/1
+knapsack, `internal/job/cover.go`), choosing among volumes whose names carry a
+block count of at most 65535 (the PAR2 per-volume limit; a larger count is
+treated as no count); it frees every held volume when those cannot reach the
+need, when the need exceeds `job.MaxPar2Slices`, or when the cover table would
+exceed `maxCoverCells`. Two copies of one par2 set under different names
+(same SetID and slice size) are merged by FileID (`collectManifestsWithOptions`
+in `internal/par2/fsops.go`), so a copy does not leave the other's entries
+unaccounted, and a damaged copy that lost some File Description packets does
+not hide the files only the other copy describes. A file the set's Main packet
+lists in its recovery set that no copy describes is unaccounted, so the
+verdict is not `outcomeClean`: `outcomeRepair` with every held volume released
+when another file was identified, `outcomeUnknown` when none was.
+
+- **Unsized, every held volume released**: a CRC mismatch; an unverified
+  entry (this includes a file with a lost tail article or a truncated,
+  undelivered or length-mismatched file, and a file the set's Main packet
+  lists but no copy describes); no single par2 set or slice size;
+  unreadable written rows or no durability store; more than `job.MaxPar2Slices`
+  (32768) slices; a
+  file size above `MaxInt64`. The reason string says which.
+- **Nothing released**: a job beyond repair (`RepairStateFrom` reports
+  `Hopeless`), which fails at Assessing; and a zero deficit, which goes on as
+  `runAssess`'s `RepairState` decides — `Repairing` when content failed (the
+  volumes already fetched cover it), `Extracting` when none did. If repair then
+  falls short, par2 fails with volumes held and
+  `heldVolumesMightRepair` retries the job with everything released, so an
+  undercount costs a full retry rather than a failed job.
+- **Loop bound**: a second Assessing after a partial release re-runs the
+  verdict, and releases more only while a deficit remains. Each Assessing
+  releases at least one volume or proceeds, so the number of Assessing rounds
+  is bounded by the number of held volumes.
 
 `outcomeUnknown` covers two indistinguishable cases: a Layout B post (par2
 protects the files an archive will extract to, which do not exist yet, so
@@ -790,16 +830,17 @@ instead.
 Post-processing reads the same signature and narrows the ambiguity with facts
 the download path does not look at, per par2 set: whether unpack will run,
 whether the set's unmatched entries are named as archives, and whether each
-of them is a member of a delivered RAR or 7z archive that unpack extracts. A
+of them is a member of a delivered RAR or 7z archive that unpack extracts. An
+entry the set lists but does not describe has no name, so it is left out of
+these checks, and a set with no other unmatched entry is not deferred. A
 set where all hold is deferred: `repair` skips it, `unpack` extracts, and
 `extracted_repair` runs par2 against the extracted files with whatever
 volumes are on disk; any
 other set is repaired before `unpack` as before (see Core Pipeline Invariant
 3). Neither path fetches the held volumes within the run. A healthy
 extraction verifies without them; a damaged one fails the run, and the job
-is retried to fetch them, as the next section describes. A job an article
-failure un-deferred them for during download fetched them then, and has
-them on disk.
+is retried to fetch them, as the next section describes. A job whose
+Assessing verdict released some of them has those on disk.
 
 ### Held volumes after a failed repair (#651)
 
@@ -842,8 +883,8 @@ instance (`postProcAdmissions`) both hold.
   through `BuildIngestJob`, which holds the volumes back again while
   `downloads.on_demand_par2` is on (`internal/app/ingest.go:146`), so its
   par2 failure is retried automatically with them released.
-- **Loop bound**: the retry releases every volume it holds before job_files,
-  which hydration restores the policy from, is seeded; and only ingest sets
+- **Retry bound**: the retry releases every volume it holds (`job.Unsized()`)
+  before job_files, which hydration restores the policy from, is seeded; and only ingest sets
   a volume to `FetchIfNeeded`. The policy field has one writer
   (`git grep -nE '\.Fetch\s*=[^=]' -- '*.go' ':!*_test.go'` returns 1
   line), `JobProgress.setFileFetchPolicy`. Construction writes
@@ -852,11 +893,9 @@ instance (`postProcAdmissions`) both hold.
   returns 7 lines: the two declarations, `Job.SetFileFetchPolicy`'s call,
   and four calls) are ingest, passing `FetchIfNeeded` through
   `Job.SetFileFetchPolicy`; the release, passing `FetchAlways`; the discard,
-  passing `FetchNever`; and hydration, passing the recorded policy, which
-  the writer does not let restore a hold once the volumes were released. So the
-  retried instance does not
-  satisfy
-  `HasDeferredPar2` and its own failure is final
+  passing `FetchNever`; and hydration, passing the recorded policy, which is
+  `FetchAlways` for a volume the retry released. So the retried instance does
+  not satisfy `HasDeferredPar2` and its own failure is final
   (`TestFinalize_RetriedJobIsNotRetriedAgain`). A retry the user starts is
   rebuilt by ingest and holds the volumes again, so it gets one automatic
   retry of its own.
@@ -983,26 +1022,17 @@ recorded entirely through the fetch-policy discard, not through this field.
 - `QuickCheckOutcome` (`NotRun`/`Clean`/`Damaged`/`Inconclusive`/`Unidentified`) bypass logic; a DirectUnpack success never bypasses `repair` (#953).
 - Per-set deferral of Layout B par2 sets (`deferredPar2Sets`) and their par2 verify+repair after unpack (`extracted_repair`).
 - A par2 failure with recovery volumes held back retries the job once with them released (`jobFinalizer.retryWithHeldVolumes`, #651).
+- An `outcomeRepair` verdict releases the byte-minimal covering recovery volumes for the damage it measures (`recoveryDeficit`, `Job.ReleaseRecovery`).
 - Per-job `DownloadDir` isolation across cleanup stages (`Dispatcher.admitNameLocked`, `ReserveName`).
 - Python-compatible 8-arg positional and `SAB_*` environment contract for user scripts with 512 KiB log caps, `RedactSecrets`, and `ScriptCanFail` runtime toggleability (a non-zero script exit when `ScriptCanFail == true` sets `job.FailMsg`, pinned by `TestScriptStage_CanFailTrue_SetsFailMsg`).
 - Native Go engine dispatch (`go_par2`, `go_rar`, `go_7z`, `go_tar`, `filejoin`) with external CLI fallbacks.
 - Synthetic `download`, `direct unpack`, and `summary` StageLog cards for history UI rendering.
 
 ### Open Gaps (Target Invariants Not Yet Built)
-- **Block-Exact Recovery-Volume Promotion (`internal/app`)**: when `repair`
-  or `extracted_repair` fails with recovery volumes still held, the job is
-  retried with every held volume released (see "Held volumes after a failed
-  repair (#651)"), and when none is held it finishes with `ParError = true`.
-  What is not built is releasing only the volumes the shortfall needs. The
-  seam for this already exists and is live: `Job.UndeferRecoveryVolumes`'s
-  `fileIdxs` argument (`internal/job/content.go`) takes arbitrary file
-  indices, so it already accepts a block-covering subset as readily as the
-  full deferred set its one production caller passes
-  (`git grep -n 'UndeferRecoveryVolumes' -- '*.go' | grep -v _test.go` finds 7
-  lines: one call site in `internal/app/app.go`, in `releaseRecoveryVolumes`,
-  the declaration and its godoc in `internal/job/content.go`, and four comment
-  mentions in `internal/postproc/filelist.go`). Nothing in the signature or
-  its godoc needs to change for Phase 2 — the missing piece is the caller
-  that computes the subset. Target: compute the block-covering subset from
-  the repair stage's reported shortfall and release that rather than every
-  held volume.
+- **Sized release from the repair shortfall (`internal/app`)**: the Assessing
+  verdict sizes its release from the written rows ("The release is sized to
+  the damage"), but the finalizer's retry of a failed `repair` or
+  `extracted_repair` releases every held volume (`job.Unsized()`), whatever
+  block shortfall par2 reported. Target: pass the shortfall to
+  `Job.ReleaseRecovery` as `job.NeedBlocks` so the retry fetches only the
+  volumes it needs.

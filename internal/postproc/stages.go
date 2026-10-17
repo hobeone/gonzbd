@@ -594,7 +594,8 @@ type Progress interface {
 	FailedBytes() int64
 	DownloadStarted() time.Time
 	DownloadFinished() time.Time
-	Par2Recovered() bool
+	ContentFailedBytes() int64
+	RecoveryReleased(m job.RecoveryClassifier) (fetched, held, total int)
 	HasPar2Verdict() bool
 	Par2ReleaseReason() string
 	ServerStats() map[string]int64

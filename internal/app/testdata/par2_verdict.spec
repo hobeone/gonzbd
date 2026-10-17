@@ -94,11 +94,9 @@ file internal/par2/assess.go
 file internal/app/app.go
 --- anchor
 			outcome, reason = par2Verdict(a, app.log)
-		}
 --- replace
 			outcome, reason = par2Verdict(a, app.log)
 			par2.ApplyRenames(dir, a, app.log)
-		}
 --- end
 
 # (A mutation for "an assessment failure records no detail" belonged here and

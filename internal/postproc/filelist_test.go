@@ -268,8 +268,8 @@ func TestBuildDownloadFileList_Par2Summary(t *testing.T) {
 			{subject: "release.rar", articles: []artSpec{{bytes: 500, done: true}}},
 			{subject: "x.vol000+01.par2", bytes: 500},
 		})
-		if err := qjob.UndeferRecoveryVolumes([]int{1}); err != nil {
-			t.Fatalf("UndeferRecoveryVolumes: %v", err)
+		if err := qjob.SetFileFetchPolicy(1, job.FetchAlways); err != nil {
+			t.Fatalf("SetFileFetchPolicy: %v", err)
 		}
 		qjob.SetPar2ReleaseReason("repair needed")
 		job := &Job{DownloadDir: dir, Job: qjob}
@@ -300,29 +300,27 @@ func TestBuildDownloadFileList_Par2Summary(t *testing.T) {
 	})
 
 	t.Run("recovered: an already-undeferred volume must not read as could-not-verify", func(t *testing.T) {
-		// Two recovery volumes, only one undeferred: Par2Recovered() reads
-		// true (undeferRecovery sets it on any change) while the other
-		// volume is still held, so heldVols > 0 too.
-		//
-		// That combination verifies that:
-		// 1. The first case's `!p.Par2Recovered()` conjunct excludes this job
-		//    from reporting "could not verify".
-		// 2. The second case `recoveryVols > 0 && p.Par2Recovered():` intercepts
-		//    this job ahead of the bare `case heldVols > 0:` fallback, so
-		//    a partially un-deferred job reports fetched volumes rather than
-		//    mislabelling as "verified clean" (#505).
+		// Two recovery volumes, only one released, with a release reason
+		// recorded: fetchedVols is 1 and heldVols is 1 too. The fetched arm
+		// precedes both held arms, so a partially released job reports its
+		// fetched volumes rather than "could not verify" or "verified clean"
+		// (#505).
 		dir := t.TempDir()
 		qjob := buildTestJob(t, true, []fileSpec{
 			{subject: "release.rar", articles: []artSpec{{bytes: 500, done: true}}},
 			{subject: "x.vol000+01.par2", bytes: 500},
 			{subject: "x.vol001+01.par2", bytes: 500},
 		})
-		if err := qjob.UndeferRecoveryVolumes([]int{1}); err != nil {
-			t.Fatalf("UndeferRecoveryVolumes: %v", err)
+		if err := qjob.SetFileFetchPolicy(1, job.FetchAlways); err != nil {
+			t.Fatalf("SetFileFetchPolicy: %v", err)
 		}
 		qjob.SetPar2ReleaseReason("repair needed")
-		if !qjob.Progress().Par2Recovered() {
-			t.Fatal("fixture guard: Par2Recovered() must be true")
+		m, mErr := qjob.Manifest()
+		if mErr != nil {
+			t.Fatalf("Manifest: %v", mErr)
+		}
+		if f, h, n := qjob.Progress().RecoveryReleased(m); f != 1 || h != 1 || n != 2 {
+			t.Fatalf("fixture guard: RecoveryReleased = (%d, %d, %d), want (1, 1, 2)", f, h, n)
 		}
 		job := &Job{DownloadDir: dir, Job: qjob}
 		got := strings.Join(buildDownloadFileList(job), "\n")
@@ -332,8 +330,58 @@ func TestBuildDownloadFileList_Par2Summary(t *testing.T) {
 		if strings.Contains(got, "verified clean") {
 			t.Errorf("a job whose recovery volumes were un-deferred must not report verified clean (#505); got:\n%s", got)
 		}
-		if !strings.Contains(got, "⚠ Par2: fetched 1 recovery volume(s) for repair (reason: repair needed)") {
+		if !strings.Contains(got, "⚠ Par2: fetched 1 of 2 recovery volume(s) for repair (reason: repair needed)") {
 			t.Errorf("expected fetched 1 recovery volume line; got:\n%s", got)
+		}
+	})
+
+	t.Run("staged release: counts fetched of all recovery volumes", func(t *testing.T) {
+		qjob := buildTestJob(t, true, []fileSpec{
+			{subject: "release.rar", articles: []artSpec{{bytes: 500, done: true}}},
+			{subject: "x.vol000+01.par2", bytes: 500},
+			{subject: "x.vol001+02.par2", bytes: 500},
+			{subject: "x.vol003+04.par2", bytes: 500},
+		})
+		if err := qjob.SetFileFetchPolicy(1, job.FetchAlways); err != nil {
+			t.Fatalf("SetFileFetchPolicy: %v", err)
+		}
+		qjob.SetPar2ReleaseReason("repair needed")
+		got := strings.Join(buildDownloadFileList(&Job{DownloadDir: t.TempDir(), Job: qjob}), "\n")
+		if !strings.Contains(got, "⚠ Par2: fetched 1 of 3 recovery volume(s) for repair (reason: repair needed)") {
+			t.Errorf("expected the staged release line; got:\n%s", got)
+		}
+	})
+
+	t.Run("lost content with no verdict does not read as verified clean", func(t *testing.T) {
+		qjob := buildTestJob(t, true, []fileSpec{
+			{subject: "release.rar", articles: []artSpec{{bytes: 500, done: true}, {bytes: 500, failed: true}}},
+			{subject: "x.vol000+01.par2", bytes: 500},
+		})
+		if qjob.Progress().ContentFailedBytes() == 0 {
+			t.Fatal("fixture guard: the job must have lost content")
+		}
+		if qjob.Progress().HasPar2Verdict() {
+			t.Fatal("fixture guard: the job must have no verdict")
+		}
+		got := strings.Join(buildDownloadFileList(&Job{DownloadDir: t.TempDir(), Job: qjob}), "\n")
+		if strings.Contains(got, "verified clean") {
+			t.Errorf("a job that lost content and reached no verdict must not read as verified clean; got:\n%s", got)
+		}
+	})
+
+	t.Run("zero-deficit release: reason set, all held, reads could not verify", func(t *testing.T) {
+		qjob := buildTestJob(t, true, []fileSpec{
+			{subject: "release.rar", articles: []artSpec{{bytes: 500, done: true}}},
+			{subject: "x.vol000+01.par2", bytes: 500},
+			{subject: "x.vol001+02.par2", bytes: 500},
+		})
+		qjob.SetPar2ReleaseReason("repair needed")
+		got := strings.Join(buildDownloadFileList(&Job{DownloadDir: t.TempDir(), Job: qjob}), "\n")
+		if strings.Contains(got, "fetched") {
+			t.Errorf("nothing was released, so nothing was fetched; got:\n%s", got)
+		}
+		if !strings.Contains(got, "⚠ Par2: could not verify — 2 recovery volume(s) held (reason: repair needed)") {
+			t.Errorf("expected the could-not-verify line; got:\n%s", got)
 		}
 	})
 

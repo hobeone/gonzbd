@@ -1,6 +1,9 @@
 package job
 
-import "regexp"
+import (
+	"regexp"
+	"strconv"
+)
 
 // recoveryVolumePattern matches the .volNNN+MM.par2 / .volNNN-MM.par2
 // component of a par2 recovery-volume filename anywhere in the string.
@@ -12,12 +15,41 @@ import "regexp"
 // always fetched and never counted as capacity. In the "-" form the second
 // number is a volume number, so "-00" carries no such implication.
 //
+// The one capture group is the "+" form's block count; RecoveryVolumeBlocks
+// reads it, so volume detection and block counting cannot disagree about
+// which names are volumes.
+//
 // Decoupled from internal/par2 to simplify imports.
-var recoveryVolumePattern = regexp.MustCompile(`(?i)\.vol\d+(?:-\d+|\+0*[1-9]\d*)\.par2(?:[^a-zA-Z0-9.]|$)`)
+var recoveryVolumePattern = regexp.MustCompile(`(?i)\.vol\d+(?:-\d+|\+(0*[1-9]\d*))\.par2(?:[^a-zA-Z0-9.]|$)`)
 
 // IsRecoveryVolume reports whether filename names a par2 recovery volume.
 func IsRecoveryVolume(filename string) bool {
 	return recoveryVolumePattern.MatchString(filename)
+}
+
+// MaxVolumeBlocks is the PAR2 limit on the recovery blocks of one volume:
+// recovery exponents are 16-bit. A name declaring more is untrusted input, not
+// a count.
+const MaxVolumeBlocks = 65535
+
+// RecoveryVolumeBlocks returns the recovery block count a volume's name
+// declares, the MM of ".volNN+MM.par2". ok is false for a name that is not a
+// recovery volume, for the "-NN" form, whose second number is a volume number
+// rather than a count, and for a count above MaxVolumeBlocks. The name is the
+// only source of a held volume's count, since a held volume has not been
+// downloaded.
+func RecoveryVolumeBlocks(filename string) (blocks int, ok bool) {
+	m := recoveryVolumePattern.FindStringSubmatch(filename)
+	if m == nil {
+		return 0, false
+	}
+	// The "-" form leaves the group empty, which Atoi rejects, as it does a
+	// count too large for an int.
+	n, err := strconv.Atoi(m[1])
+	if err != nil || n > MaxVolumeBlocks {
+		return 0, false
+	}
+	return n, true
 }
 
 // IsPar2File reports whether subject names a par2 file (index or recovery volume).

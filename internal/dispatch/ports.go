@@ -77,7 +77,6 @@ type Persisted struct {
 	DownloadFinished  int64
 	Par2ReleaseReason string
 	RecoveryBytes     int64
-	Par2Recovered     bool
 }
 
 // Runner starts the work for one job at one state. It must return promptly —

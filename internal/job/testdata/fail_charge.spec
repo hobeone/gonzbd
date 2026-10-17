@@ -87,25 +87,17 @@ file internal/job/content.go
 			_ = charge
 --- end
 
-[a failure charging nothing releases recovery volumes]
-file internal/job/content.go
---- anchor
-	if charged, ok := j.progress.markFailedUncovered(j.manifest, artIdx, charge); ok && charged > 0 {
---- replace
-	if charged, ok := j.progress.markFailedUncovered(j.manifest, artIdx, charge); ok || charged > 0 {
---- end
-
 [a live charge is recorded before the failed bit is known to be new]
 file internal/job/progress.go
 --- anchor
 	if !p.setFailedBits(i) {
-		return 0, false
+		return false
 	}
 	p.limitCharge(i, uncovered)
 --- replace
 	p.limitCharge(i, uncovered)
 	if !p.setFailedBits(i) {
-		return 0, false
+		return false
 	}
 --- end
 

@@ -91,11 +91,39 @@ type Identification struct {
 	Files []Identified
 	// Unaccounted is every par2 entry that no delivered file matched. A set
 	// with none of these is fully accounted for: every file par2 protects is
-	// present, whatever it is currently called.
+	// present, whatever it is currently called. It includes each file a set's
+	// Main packet lists that no File Description packet describes
+	// (FileDesc.Undescribed).
 	Unaccounted []FileDesc
 	// Ignored is the delivered files that were not considered, because par2
 	// does not protect its own sidecars. See ignoredExtensions.
 	Ignored []string
+
+	// sets is one entry per par2 set that parsed, set by IdentifyWithOptions
+	// and copied unchanged by Assessment.CRCExcluding (`git grep -n 'sets: [ai]'
+	// -- internal/par2/ ':!*_test.go' ':!*/testdata/*'` returns those 3 lines).
+	// SliceSize reads it.
+	sets []parsedSetInfo
+}
+
+// SliceSize is the slice size of the par2 set these files were identified
+// against. ok is false when no set parsed, when more than one distinct SetID
+// parsed (their sizes need not agree, and a caller sizing recovery for one set
+// cannot use another's), or when the size is zero.
+func (id Identification) SliceSize() (size uint64, ok bool) {
+	if len(id.sets) == 0 {
+		return 0, false
+	}
+	first := id.sets[0]
+	for _, s := range id.sets[1:] {
+		if s.id != first.id || s.sliceSize != first.sliceSize {
+			return 0, false
+		}
+	}
+	if first.sliceSize == 0 {
+		return 0, false
+	}
+	return first.sliceSize, true
 }
 
 // Accounted reports whether every par2 entry was matched to a delivered file.
@@ -113,7 +141,9 @@ func (id Identification) Accounted() bool { return len(id.Unaccounted) == 0 }
 // archive extracts to rather than the archive itself. It is equally an
 // obfuscated file damaged inside its first 16 KB, which defeats every
 // identification pass at once; this value cannot tell the two apart, and each
-// caller has to decide what that ambiguity costs it.
+// caller has to decide what that ambiguity costs it. It is also a set whose
+// Main packet survived and whose File Description packets did not, since
+// every file it lists is then Unaccounted.
 func (id Identification) NothingIdentified() bool {
 	return len(id.Files) == 0 && len(id.Unaccounted) > 0
 }
@@ -179,10 +209,12 @@ func IdentifyWithOptions(dir string, sets []Set, log *slog.Logger, opts ParseOpt
 		log = slog.Default()
 	}
 
-	manifest := collectManifestsWithOptions(sets, log, opts)
+	c := collectManifestsWithOptions(sets, log, opts)
+	manifest, infos := c.entries, c.sets
 	if len(manifest) == 0 {
-		log.Info("identify: no file descriptions found in any par2 set")
-		return Identification{}, nil
+		log.Info("identify: no file descriptions found in any par2 set",
+			"undescribed", len(c.undescribed))
+		return Identification{Unaccounted: c.undescribed, sets: infos}, nil
 	}
 
 	flatFiles, err := scanFlatFiles(dir, log)
@@ -207,7 +239,7 @@ func IdentifyWithOptions(dir string, sets []Set, log *slog.Logger, opts ParseOpt
 
 	claimedFile := make(map[string]bool, len(candidates))
 	claimedEntry := make(map[int]bool, len(manifest))
-	id := Identification{Ignored: ignored}
+	id := Identification{Ignored: ignored, sets: infos}
 
 	// Pass 0 — an entry whose par2 path already names a file on disk is that
 	// file, and nothing below can see it.
@@ -464,6 +496,12 @@ func IdentifyWithOptions(dir string, sets []Set, log *slog.Logger, opts ParseOpt
 			log.Warn("identify: par2 entry matched no delivered file",
 				"par2path", fd.FileName, "size", fd.FileSize)
 		}
+	}
+	// A file without a description has no name, size or hash to match on.
+	id.Unaccounted = append(id.Unaccounted, c.undescribed...)
+	if len(c.undescribed) > 0 {
+		log.Warn("identify: par2 sets list files they do not describe",
+			"count", len(c.undescribed))
 	}
 
 	log.Info("identify: complete",

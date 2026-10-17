@@ -434,3 +434,47 @@ func fileCRCFromRows(rows []durability.WrittenRow, failed bool, lo, hi int) (uin
 	}
 	return crc, true
 }
+
+// DamagedSlices counts the slices of [0, fileSize) that rows, given in offset
+// order, do not wholly cover. Slice k is [k*sliceSize, min((k+1)*sliceSize,
+// fileSize)). It returns 0 when sliceSize or fileSize is 0. fileSize must not
+// exceed math.MaxInt64; a sliceSize above fileSize is one slice of fileSize.
+//
+// It walks the uncovered runs rather than the slices, so its cost follows
+// len(rows). A slice straddling two runs is counted once.
+func DamagedSlices(rows []durability.WrittenRow, fileSize, sliceSize uint64) int {
+	if sliceSize == 0 || fileSize == 0 {
+		return 0
+	}
+	sliceSize = min(sliceSize, fileSize)
+	f, s := int64(fileSize), int64(sliceSize) //nolint:gosec // fileSize <= MaxInt64 is the caller's precondition, and sliceSize <= fileSize
+	var damaged int
+	lastCounted := int64(-1)
+	run := func(a, b int64) {
+		lo, hi := a/s, (b-1)/s
+		if lo <= lastCounted {
+			lo = lastCounted + 1
+		}
+		if hi >= lo {
+			damaged += int(hi - lo + 1)
+		}
+		lastCounted = max(lastCounted, hi)
+	}
+	var frontier int64
+	for _, r := range rows {
+		if frontier >= f {
+			break
+		}
+		if r.Length <= 0 {
+			continue
+		}
+		if r.Offset > frontier {
+			run(frontier, min(r.Offset, f))
+		}
+		frontier = max(frontier, min(r.Offset+r.Length, f))
+	}
+	if frontier < f {
+		run(frontier, f)
+	}
+	return damaged
+}

@@ -140,12 +140,11 @@ func (app *Application) handleWriteFault(jobID string, _ int, f *storagefault.Fa
 // Permanently, and not returned to Outstanding, because the reason is a
 // property of what the server sent: the offset comes from the article's own
 // yEnc header, so a re-fetch of the same article yields the same rejection.
-// Ack is what charges its bytes against the job's par2 recovery budget and
-// releases on-demand recovery volumes, and Job.MarkArticleFailed clears the
-// Emitted bit as part of resolving the article — without it the job waits
-// forever on something nothing will re-dispatch. A job evicted after Stall
-// paused it still records the failure, but the byte charge waits for the next
-// hydration and the release is not made: see Job.MarkArticleFailed.
+// Job.MarkArticleFailed charges its bytes against the job's par2 recovery
+// budget and clears the Emitted bit as part of resolving the article —
+// without it the job waits forever on something nothing will re-dispatch. A
+// job evicted after Stall paused it still records the failure, but the byte
+// charge waits for the next hydration: see Job.MarkArticleFailed.
 //
 // uncovered is the assembler's count of the article's bytes no written article
 // covers, or assembler.WholeArticle, which maps to job.WholeArticle. A count

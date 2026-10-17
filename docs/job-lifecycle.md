@@ -506,13 +506,16 @@ sophisticated alternative, and it is rejected: it requires classifying files
 into archive sets *before* extraction, which is a new inference with its own
 failure modes, in service of a case that is uncommon on binary Usenet.
 
-**Block-exact recovery-volume promotion is a gap, not a property.** The
-`Assessing → Fetching` edge is built and legal, but nothing computes an exact
-block shortfall to drive it; `UndeferRecoveryVolumes` accepts a
-block-covering subset of file indices and no producer of one exists. Do not
-price in "repair never fails for insufficiency" — insufficient blocks set
-`ParError`, which suppresses unpack, and the count goes in the repair stage's
-log line. See `docs/post-processing-contract.md` § *Open Gaps*.
+**Block-exact recovery-volume promotion is sized by the Assessing verdict, not
+by the repair stage's shortfall.** The `Assessing → Fetching` edge is driven by
+`Job.ReleaseRecovery`, which frees the byte-minimal covering subset of held
+volumes for the deficit the verdict measured from the written rows (see the "release is sized to the damage" paragraph of
+`docs/post-processing-contract.md`). A
+deficit it undercounts is not corrected by the shortfall repair reports: the
+retry of a failed par2 repair releases every held volume (see
+`docs/post-processing-contract.md` § *Open Gaps*). Do not price in "repair never fails for insufficiency" — insufficient
+blocks set `ParError`, which suppresses unpack, and the count goes in the
+repair stage's log line.
 
 ---
 
@@ -1205,9 +1208,8 @@ With the manifest evicted, `ClearArticleEmitted` writes the bit alone and
 `MarkArticleFailed` writes the bits and the failure's charge, so a reduced
 charge (#432) survives; both leave the counters to
 the `recompute` in `RestoreContent` at the next hydration. Until then
-`FailedBytes`, `PendingArticles` and `ArticlesFailed` lag the bits, and the
-early par2 release a resident failure triggers is not made: held volumes wait
-for a later resident failure or, if damage is then found, for the
+`FailedBytes`, `PendingArticles` and `ArticlesFailed` lag the bits. A failure
+changes no fetch policy at any residency; held volumes wait for the
 Assessing-time verdict in `maybeReleaseRecoveryVolumes`.
 
 A downloader reload's sweep, `Job.ClearEmittedForReload`, follows the same
@@ -1286,7 +1288,7 @@ intent rather than the code.
 
 That window is why `Job` carries a small set of `restored*` fields for
 progress-tier state recovered from the queue-state row before the record exists
-— the download stamps, the par2 release reason, and the par2-recovered flag.
+— the download stamps and the par2 release reason.
 The Job-level accessors read them while `progress` is nil; `AttachContent`
 seeds the fresh record from them **through the ordinary restore doors** and
 zeroes them, so the two are never both authoritative and the stamp filter is
@@ -1562,13 +1564,14 @@ Getting this wrong is visible rather than silent — a freshly added
 on-demand-par2 job reported non-zero progress, and history over-reported
 downloaded bytes for a job finalized before its volumes were discarded.
 
-Deferring, un-deferring or discarding a volume needs **no fixup**; the next read
+Deferring, releasing or discarding a volume needs **no fixup**; the next read
 reflects it. The cost is an O(files) walk on reporting reads in place of an O(1)
 field read. Files number in the hundreds; articles, untouched by this, number in
 the tens of thousands.
 
 A job's advertised expectation therefore **moves** as par2 decisions are made:
-it excludes recovery until damage forces an un-defer, and includes it after.
+it excludes recovery until the verdict finds damage and releases volumes, and
+includes the released ones after.
 That was decided deliberately.
 
 ### Units, and the two per-file caches
@@ -1682,13 +1685,18 @@ file list, and neither changes shape again for the life of the job.
 `file_index` is therefore **stable for the job's entire life**: nothing after
 ingest removes a file, so nothing after ingest renumbers one.
 
-`DiscardDeferredPar2` is the only *verdict* that changes a job's download
-intent after ingest, and it does not touch the file set to do it. It is not
-the only thing that moves `fetch_policy` there: `Job.undeferRecovery` reverses
-a hold back to `FetchAlways` when damage appears, and the first hydration
-after a restart re-applies whatever `job_files` holds through
-`Job.InstallFileVerification` (#329). None of the three touches the file set. A
-recovery
+Two Assessing verdicts change a job's download intent after ingest:
+`DiscardDeferredPar2` moves held volumes to `FetchNever` when the verdict is
+clean, and `Job.ReleaseRecovery` moves the held volumes a repair needs to
+`FetchAlways` when it finds damage. Two other paths move `fetch_policy` after
+ingest: the finalizer's retry of a failed par2 repair, which calls
+`Job.ReleaseRecovery` to release every held volume, and the first hydration
+after a restart, which re-applies whatever `job_files` holds through
+`Job.InstallFileVerification` (#329). Those are the callers, outside ingest, of
+the one policy writer: `git grep -n 'setFileFetchPolicy(' -- internal/job/
+':!*_test.go'` finds it under `SetFileFetchPolicy` (called only at ingest),
+`undeferRecovery` (under `ReleaseRecovery`), `DiscardDeferredPar2` and
+`InstallFileVerification`. None of these touches the file set. A recovery
 volume proven unnecessary keeps its `job_files` row exactly where it was; only
 its `fetch_policy` column moves, from `FetchIfNeeded` to `FetchNever`. That
 write is residency-independent: the recorder's dirty mark reads each file's
@@ -1702,7 +1710,7 @@ that mean different things — `!= FetchAlways` for dispatch, completion and byt
 accounting, and `== FetchIfNeeded` for the deferred-par2 queries — and the
 failure mode of adding a fourth value and missing one site is silence: a policy
 matching neither predicate is excluded from every aggregate and invisible to
-the un-defer path, so its file is never fetched and never blocks completion.
+the release path, so its file is never fetched and never blocks completion.
 `TestAllFetchPolicies_Exhaustive` parses the const block itself rather than
 trusting the hand-written list.
 

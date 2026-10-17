@@ -48,22 +48,33 @@ type FileDesc struct {
 	FileSize     uint64
 	FileCRC32    uint32 // reconstructed from IFSC slices (0 if no IFSC data)
 	HasDuplicate bool   // true if another FileDesc shares this Hash16k
-	// Set is the Name of the par2 Set this entry was read from, so an
-	// Identification over several sets can be judged set by set. It is set
-	// by collectManifestsWithOptions, which is how Identify reads entries;
+	// Set is the Name of the first par2 Set that parsed as a copy of this
+	// entry's set (copies of one set share it), so an Identification over
+	// several sets can be judged set by set. It is set by
+	// collectManifestsWithOptions, which is how Identify reads entries;
 	// ParseFileDescriptions leaves it empty.
 	Set string
+	// Undescribed marks an entry for a file the set's Main packet lists and
+	// no File Description packet describes. Only FileID and Set are read from
+	// the set; FileName is a placeholder naming the FileID, not a name par2
+	// records, so nothing may be matched against it.
+	Undescribed bool
 }
 
 // ParsedSet aggregates all information parsed from a PAR2 file's packets.
 type ParsedSet struct {
-	SetID          [16]byte
-	SliceSize      uint64
-	Files          []FileDesc             // all file descriptions
-	FilesByID      map[[16]byte]*FileDesc // keyed by FileID for IFSC lookup
-	By16k          map[[16]byte]*FileDesc // keyed by Hash16k (entries removed if HasDuplicate)
-	RecoveryBlocks int
-	Creator        string
+	SetID     [16]byte
+	SliceSize uint64
+	// RecoveryFileIDs is the recovery set the Main packet lists: the files
+	// the set protects, whether or not a File Description packet for each
+	// survived. Nil without a Main packet, or when its body is shorter than
+	// the count it declares.
+	RecoveryFileIDs [][16]byte
+	Files           []FileDesc             // all file descriptions
+	FilesByID       map[[16]byte]*FileDesc // keyed by FileID for IFSC lookup
+	By16k           map[[16]byte]*FileDesc // keyed by Hash16k (entries removed if HasDuplicate)
+	RecoveryBlocks  int
+	Creator         string
 }
 
 // ifscData holds raw IFSC slice data before CRC reconstruction.
@@ -380,6 +391,7 @@ func handlePacket(
 		if len(body) > 12 {
 			*expectedFiles = (len(body) - 12) / 16
 		}
+		set.RecoveryFileIDs = recoveryFileIDs(body)
 
 	case typeFileDesc:
 		fd := parseFileDescBody(body)
@@ -402,6 +414,39 @@ func handlePacket(
 	case typeCreator:
 		set.Creator = string(bytes.TrimRight(body, "\x00"))
 	}
+}
+
+// maxRecoverySetFiles bounds a Main packet's recovery set count, which the
+// post supplies. PAR2 allows at most 32768 input slices and each file in the
+// recovery set has at least one, so a larger count is not a PAR2 set.
+const maxRecoverySetFiles = 32768
+
+// recoveryFileIDs returns the recovery set FileIDs of a Main packet body:
+// sliceSize(8), count(4), then count IDs, then the non-recovery set's IDs,
+// which par2 does not protect. It returns nil, and logs, when the body cannot
+// hold count IDs or count exceeds maxRecoverySetFiles; the set's files are
+// then only those it describes.
+func recoveryFileIDs(body []byte) [][16]byte {
+	if len(body) < 12 {
+		slog.Warn("par2: Main packet has no recovery set count", "body_len", len(body))
+		return nil
+	}
+	n := binary.LittleEndian.Uint32(body[8:12])
+	if int64(n) > int64(len(body)-12)/16 {
+		slog.Warn("par2: Main packet declares more recovery files than it lists",
+			"declared", n, "listed", (len(body)-12)/16)
+		return nil
+	}
+	if n > maxRecoverySetFiles {
+		slog.Warn("par2: Main packet declares more recovery files than PAR2 allows",
+			"declared", n, "limit", maxRecoverySetFiles)
+		return nil
+	}
+	ids := make([][16]byte, n)
+	for i := range ids {
+		copy(ids[i][:], body[12+16*i:])
+	}
+	return ids
 }
 
 // postProcessSet builds indices and reconstructs CRCs after parsing all packets.
