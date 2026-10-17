@@ -48,10 +48,12 @@ file internal/app/app.go
 --- anchor
 func (app *Application) resumeLocked() {
 	app.pauseReason = pauseReasonNone
+	app.lowDiskWarned = false
 	app.stopLowDiskWatchLocked()
 --- replace
 func (app *Application) resumeLocked() {
 	app.pauseReason = pauseReasonNone
+	app.lowDiskWarned = false
 --- end
 
 [resumeLocked does not resume the dispatcher]
@@ -59,11 +61,13 @@ file internal/app/app.go
 --- anchor
 func (app *Application) resumeLocked() {
 	app.pauseReason = pauseReasonNone
+	app.lowDiskWarned = false
 	app.stopLowDiskWatchLocked()
 	app.dispatcher.Resume()
 --- replace
 func (app *Application) resumeLocked() {
 	app.pauseReason = pauseReasonNone
+	app.lowDiskWarned = false
 	app.stopLowDiskWatchLocked()
 	_ = app.dispatcher
 --- end

@@ -4,9 +4,17 @@ run TestHandleLowDisk_WarnsOncePerTransition$
 [every low-disk callback is a transition]
 file internal/app/app.go
 --- anchor
-	transition := app.pauseReason == pauseReasonNone
+	transition := !app.lowDiskWarned
 --- replace
 	transition := true
+--- end
+
+[resume does not re-arm the warning]
+file internal/app/app.go
+--- anchor
+	app.lowDiskWarned = false
+--- replace
+	_ = app.lowDiskWarned
 --- end
 
 [the warning level ignores the transition]

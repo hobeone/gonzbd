@@ -12,7 +12,9 @@ import (
 // TestHandleLowDisk_WarnsOncePerTransition pins that the "downloads paused"
 // warning marks the transition into the low-disk pause. The assembler calls
 // OnLowDisk every diskCheckInterval writes for as long as free space stays
-// below the floor, so a warning per call logged ~170 lines in 65 ms.
+// below the floor, so a warning per call floods the log. A user pause already
+// in force still gets the one warning: the low-disk condition is not otherwise
+// reported.
 func TestHandleLowDisk_WarnsOncePerTransition(t *testing.T) {
 	t.Parallel()
 
@@ -51,5 +53,14 @@ func TestHandleLowDisk_WarnsOncePerTransition(t *testing.T) {
 	}
 	if got := strings.Count(logs.String(), warning); got != 2 {
 		t.Fatalf("warnings after a resume and 5 more calls = %d, want 2 (one per transition)", got)
+	}
+
+	application.ResumeDownloads()
+	application.PauseDownloads()
+	for range 5 {
+		application.handleLowDisk(dlDir, 300)
+	}
+	if got := strings.Count(logs.String(), warning); got != 3 {
+		t.Fatalf("warnings after a user pause and 5 calls = %d, want 3 (a user pause must not hide the condition)", got)
 	}
 }

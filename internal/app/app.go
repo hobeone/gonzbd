@@ -121,6 +121,9 @@ type Application struct {
 	pauseReason    pauseReason
 	lowDiskCancel  context.CancelFunc
 	lowDiskWg      sync.WaitGroup
+	// lowDiskWarned is set by handleLowDisk's first warning of a pause and
+	// cleared by resumeLocked; guarded by mu.
+	lowDiskWarned bool
 	// reloadMu serializes ReloadDownloader calls end-to-end. It is separate
 	// from mu (which ReloadDownloader holds only for its opening snapshot and
 	// the closing start and downloader/downloaderStats swap) so concurrent reloads queue up instead of interleaving their
@@ -3190,6 +3193,7 @@ func (app *Application) ResumeDownloads() {
 // safe under app.mu. The caller holds app.mu.
 func (app *Application) resumeLocked() {
 	app.pauseReason = pauseReasonNone
+	app.lowDiskWarned = false
 	app.stopLowDiskWatchLocked()
 	app.dispatcher.Resume()
 	app.downloader.Resume()
@@ -3228,9 +3232,10 @@ func (app *Application) UnblockServer(name string) bool {
 func (app *Application) handleLowDisk(dir string, freeBytes int64) {
 	app.mu.Lock()
 	// The assembler calls this every diskCheckInterval writes for as long as
-	// free space stays below the floor; only the call that finds no pause in
-	// force is the transition worth a warning.
-	transition := app.pauseReason == pauseReasonNone
+	// free space stays below the floor; only the first call after a resume
+	// warns, whether or not a user pause is already in force.
+	transition := !app.lowDiskWarned
+	app.lowDiskWarned = true
 	if app.pauseReason != pauseReasonUser {
 		app.pauseReason = pauseReasonLowDisk
 	}
