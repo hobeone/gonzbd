@@ -331,9 +331,11 @@ Each `nntp.Conn` supports pipelined NNTP commands, bounded by a semaphore
   `pc.done`, the `pendingCmd` is marked `orphaned`. The reader goroutine still
   reads and discards the response to keep the connection in protocol sync. The
   semaphore slot is released either way.
-- **Connection death**: `finishReader` sets `closed=true`, closes the socket,
+- **Connection death**: `finishReader` marks the Conn closed, closes the socket,
   cancels the Conn's internal context, and wakes all pending callers with the
-  fatal error via `wakeOrphans`. When `runReader` terminates before popping any
+  fatal error. The closed mark and the fatal error are one atomic value
+  (`Conn.closed`), so any goroutine can read the error at any time without a
+  lock. When `runReader` terminates before popping any
   command for the response and the pending FIFO is empty, the cause is classified
   as an idle disconnect (`ErrIdleClosed`), enabling callers to discard the socket
   without applying server penalties.

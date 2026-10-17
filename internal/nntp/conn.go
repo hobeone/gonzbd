@@ -75,8 +75,11 @@ type Conn struct {
 	// PipeliningRequests, which ServerConfig.Checked requires to be > 0.
 	sem chan struct{}
 
-	closed     atomic.Bool
-	closeErr   error
+	// closed is nil while the Conn is open. Close and
+	// finishReaderWithMode store it inside closeOnce.Do, so it is set at
+	// most once, and that one store records both that the Conn closed
+	// and why. Read the reason through closeCause.
+	closed     atomic.Pointer[closeState]
 	closeOnce  sync.Once
 	readerDone chan struct{}
 
@@ -112,7 +115,7 @@ func (c *Conn) State() State {
 // Closed reports whether the connection has been closed by the caller or by
 // runReader exiting.
 func (c *Conn) Closed() bool {
-	return c.closed.Load()
+	return c.closed.Load() != nil
 }
 
 // SSLInfo returns "TLSv1.x / CIPHER_NAME" for a TLS-wrapped connection,
@@ -677,7 +680,7 @@ func (c *Conn) Stat(ctx context.Context, messageID string) error {
 // from any goroutine.
 func (c *Conn) Close() error {
 	c.closeOnce.Do(func() {
-		c.closed.Store(true)
+		c.closed.Store(&closeState{})
 		if c.cancel != nil {
 			c.cancel()
 		}
@@ -691,13 +694,13 @@ func (c *Conn) Close() error {
 				c.sendLock.Unlock()
 			}
 		}
-		_ = c.nc.Close()            //nolint:errcheck // caller gets closeErr via return below
+		_ = c.nc.Close()            //nolint:errcheck // caller gets closeCause via return below
 		_ = c.setState(StateClosed) //nolint:errcheck // terminal transition; ignore invalid-state error if already closed
 
 		c.wakeOrphans(ErrClosed)
 	})
 	<-c.readerDone
-	return c.closeErr
+	return c.closeCause()
 }
 
 // idleTimeoutReader wraps a net.Conn to bound active reads without timing out
