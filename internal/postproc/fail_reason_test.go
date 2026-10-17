@@ -49,4 +49,17 @@ func TestJob_FailReason(t *testing.T) {
 			t.Errorf("FailReason = %q, want %q", got, boom.Error())
 		}
 	})
+	t.Run("unpack cause kept for the newly set flag only", func(t *testing.T) {
+		t.Parallel()
+		j := &Job{UnpackError: true}
+		j.recordStageFailure(false, true, boom) // a later stage errors; UnpackError was already set
+		if got, want := j.FailReason(), "unpack failed"; got != want {
+			t.Errorf("FailReason = %q, want %q", got, want)
+		}
+		j = &Job{UnpackError: true}
+		j.recordStageFailure(false, false, boom)
+		if got := j.FailReason(); got != boom.Error() {
+			t.Errorf("FailReason = %q, want %q", got, boom.Error())
+		}
+	})
 }
