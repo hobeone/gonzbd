@@ -3227,6 +3227,10 @@ func (app *Application) UnblockServer(name string) bool {
 // at or above the threshold.
 func (app *Application) handleLowDisk(dir string, freeBytes int64) {
 	app.mu.Lock()
+	// The assembler calls this every diskCheckInterval writes for as long as
+	// free space stays below the floor; only the call that finds no pause in
+	// force is the transition worth a warning.
+	transition := app.pauseReason == pauseReasonNone
 	if app.pauseReason != pauseReasonUser {
 		app.pauseReason = pauseReasonLowDisk
 	}
@@ -3241,7 +3245,11 @@ func (app *Application) handleLowDisk(dir string, freeBytes int64) {
 		})
 	}
 	app.mu.Unlock()
-	app.log.Warn("low disk space, downloads paused",
+	level := slog.LevelDebug
+	if transition {
+		level = slog.LevelWarn
+	}
+	app.log.Log(context.Background(), level, "low disk space, downloads paused",
 		"dir", dir,
 		"freeMB", freeBytes/(1024*1024))
 	app.emit(Event{Type: "queue_updated"})
