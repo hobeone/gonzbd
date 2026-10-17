@@ -1,9 +1,9 @@
 pkg ./internal/par2/
-run ^(TestCollectManifests_SkipsASetIDAlreadyParsed|TestCollectManifests_PartialDuplicateKeepsTheOtherCopysEntries|TestCollectManifests_PrefersTheCopyWithChecksums|TestIdentification_SliceSize)$
+run ^(TestCollectManifests_MergesCopiesOfOneSet|TestCollectManifests_PartialDuplicateKeepsTheOtherCopysEntries|TestCollectManifests_PrefersTheCopyWithChecksums|TestIdentification_SliceSize)$
 
 # Copies of one par2 set (equal SetID and slice size) are merged by FileID.
 
-[a set parsed twice under two names is collected twice]
+[a file seen in an earlier copy is appended again]
 file internal/par2/fsops.go
 --- anchor
 			case !dup:
@@ -38,7 +38,7 @@ file internal/par2/fsops.go
 			case true:
 --- end
 
-[an entry carries the name of the copy it was read from]
+[an entry carries the name of the copy it was read from, not the first copy's]
 file internal/par2/fsops.go
 --- anchor
 			fd.Set = name

@@ -706,8 +706,9 @@ source for this paragraph):
   discarded volume as "held" would re-run full CRC verification on every
   subsequent completion event.
 
-`DiscardDeferredPar2` (`internal/job/content.go`) is the sole path from
-`FetchIfNeeded` to `FetchNever`: a walk over the file table setting the policy,
+`DiscardDeferredPar2` (`internal/job/content.go`) is the only verdict that
+moves `FetchIfNeeded` to `FetchNever` (the restart restore below re-applies a
+recorded `FetchNever`): a walk over the file table setting the policy,
 with no file-set mutation, deletion, or renumbering involved. A retry does not
 carry the previous attempt's policy forward at all.
 
@@ -800,7 +801,8 @@ when another file was identified, `outcomeUnknown` when none was.
 
 - **Unsized, every held volume released**: a CRC mismatch; an unverified
   entry (this includes a file with a lost tail article or a truncated,
-  undelivered or length-mismatched file); no single par2 set or slice size;
+  undelivered or length-mismatched file, and a file the set's Main packet
+  lists but no copy describes); no single par2 set or slice size;
   unreadable written rows or no durability store; more than `job.MaxPar2Slices`
   (32768) slices; a
   file size above `MaxInt64`. The reason string says which.
@@ -828,7 +830,9 @@ instead.
 Post-processing reads the same signature and narrows the ambiguity with facts
 the download path does not look at, per par2 set: whether unpack will run,
 whether the set's unmatched entries are named as archives, and whether each
-of them is a member of a delivered RAR or 7z archive that unpack extracts. A
+of them is a member of a delivered RAR or 7z archive that unpack extracts. An
+entry the set lists but does not describe has no name, so it is left out of
+these checks, and a set with no other unmatched entry is not deferred. A
 set where all hold is deferred: `repair` skips it, `unpack` extracts, and
 `extracted_repair` runs par2 against the extracted files with whatever
 volumes are on disk; any

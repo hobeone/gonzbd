@@ -32,9 +32,8 @@ type parsedSetInfo struct {
 type collected struct {
 	// entries is one File Description per file of each set.
 	entries []FileDesc
-	// undescribed is one entry per file a set's Main packet lists in its
-	// recovery set that no copy of the set describes. Only FileID and Set
-	// are read from the set; FileName is a placeholder naming the FileID.
+	// undescribed is one FileDesc.Undescribed entry per file a set's Main
+	// packet lists in its recovery set that no copy of the set describes.
 	undescribed []FileDesc
 	// sets is one parsedSetInfo per distinct set that parsed.
 	sets []parsedSetInfo
@@ -50,7 +49,7 @@ type fileKey struct {
 // (equal parsedSetInfo, e.g. the set posted under two stems) are merged by
 // FileID: each copy can contribute a file the others lost, a description
 // carrying a CRC replaces one without, and every entry of the set carries the
-// Set name of the first copy read.
+// Set name of the first copy that parsed.
 func collectManifestsWithOptions(sets []Set, log *slog.Logger, opts ParseOptions) collected {
 	if log == nil {
 		log = slog.Default()
@@ -114,9 +113,10 @@ func collectManifestsWithOptions(sets []Set, log *slog.Logger, opts ParseOptions
 			continue
 		}
 		c.undescribed = append(c.undescribed, FileDesc{
-			FileID:   k.file,
-			FileName: fmt.Sprintf("<undescribed par2 file %x>", k.file),
-			Set:      owner[k.set],
+			FileID:      k.file,
+			FileName:    fmt.Sprintf("<undescribed par2 file %x>", k.file),
+			Set:         owner[k.set],
+			Undescribed: true,
 		})
 	}
 	return c

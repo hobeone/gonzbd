@@ -7,9 +7,10 @@ import (
 	"testing"
 )
 
-// A par2 set posted twice under different stems parses to one SetID. Collecting
-// both would give every entry twice, and the copy of each would be Unaccounted.
-func TestCollectManifests_SkipsASetIDAlreadyParsed(t *testing.T) {
+// A par2 set posted twice under different stems parses to one SetID and slice
+// size. The copies are merged by FileID, so each entry appears once and none
+// is left Unaccounted as the other copy's duplicate.
+func TestCollectManifests_MergesCopiesOfOneSet(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
 	a, b := payload(1, 20*1024), payload(2, 20*1024)

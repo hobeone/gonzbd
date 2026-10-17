@@ -15,9 +15,33 @@ file internal/par2/parser.go
 [a count the body cannot hold is read anyway]
 file internal/par2/parser.go
 --- anchor
-	if uint64(n) > uint64(len(body)-12)/16 {
+	if int64(n) > int64(len(body)-12)/16 {
 --- replace
 	if false {
+--- end
+
+[a recovery set count beyond the PAR2 limit is read]
+file internal/par2/parser.go
+--- anchor
+	if n > maxRecoverySetFiles {
+--- replace
+	if false {
+--- end
+
+[the cap excludes the limit itself]
+file internal/par2/parser.go
+--- anchor
+	if n > maxRecoverySetFiles {
+--- replace
+	if n >= maxRecoverySetFiles {
+--- end
+
+[an undescribed entry is not marked]
+file internal/par2/fsops.go
+--- anchor
+			Undescribed: true,
+--- replace
+			Undescribed: false,
 --- end
 
 [the non-recovery IDs are read as the recovery set]
@@ -47,9 +71,9 @@ file internal/par2/fsops.go
 [an undescribed file is dropped when another file is described]
 file internal/par2/identify.go
 --- anchor
-	for _, fd := range c.undescribed {
+	id.Unaccounted = append(id.Unaccounted, c.undescribed...)
 --- replace
-	for _, fd := range c.undescribed[:0] {
+	id.Unaccounted = append(id.Unaccounted, c.undescribed[:0]...)
 --- end
 
 [an undescribed file is dropped when nothing is described]

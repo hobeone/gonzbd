@@ -141,8 +141,8 @@ func TestIdentify_DeclaredButUndescribedIsUnaccounted(t *testing.T) {
 		if len(id.Files) != 1 || len(id.Unaccounted) != 1 {
 			t.Fatalf("identified %d, unaccounted %v; want a.rar identified and one entry unaccounted", len(id.Files), id.Unaccounted)
 		}
-		if u := id.Unaccounted[0]; u.FileID != ([16]byte{2}) || u.Set != "set" || u.FileName == "" {
-			t.Errorf("unaccounted entry = %+v, want FileID 2 from set %q with a placeholder name", u, "set")
+		if u := id.Unaccounted[0]; u.FileID != ([16]byte{2}) || u.Set != "set" || u.FileName == "" || !u.Undescribed {
+			t.Errorf("unaccounted entry = %+v, want undescribed FileID 2 from set %q with a placeholder name", u, "set")
 		}
 	})
 
@@ -188,6 +188,12 @@ func TestIdentify_DeclaredButUndescribedIsUnaccounted(t *testing.T) {
 // the count, then that many IDs. Non-recovery IDs after them are not
 // protected, and a count the body is too short for yields none.
 func TestRecoveryFileIDs(t *testing.T) {
+	// mainBodyOfN lists n recovery files, the first of them id1.
+	mainBodyOfN := func(n int) []byte {
+		ids := make([][16]byte, n)
+		ids[0] = [16]byte{1}
+		return buildMainBody(testSliceSize, ids...)
+	}
 	t.Parallel()
 	id1, id2 := [16]byte{1}, [16]byte{2}
 	tests := []struct {
@@ -199,6 +205,8 @@ func TestRecoveryFileIDs(t *testing.T) {
 		{"a non-recovery id follows", buildMainBodyWithCount(testSliceSize, 1, id1, id2), 1},
 		{"count beyond the body", buildMainBodyWithCount(testSliceSize, 3, id1, id2), 0},
 		{"no count", buildMainBodyWithCount(testSliceSize, 0)[:8], 0},
+		{"the PAR2 limit", mainBodyOfN(maxRecoverySetFiles), maxRecoverySetFiles},
+		{"beyond the PAR2 limit", mainBodyOfN(maxRecoverySetFiles + 1), 0},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {

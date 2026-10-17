@@ -92,8 +92,8 @@ type Identification struct {
 	// Unaccounted is every par2 entry that no delivered file matched. A set
 	// with none of these is fully accounted for: every file par2 protects is
 	// present, whatever it is currently called. It includes each file a set's
-	// Main packet lists that no File Description packet describes, under a
-	// placeholder FileName.
+	// Main packet lists that no File Description packet describes
+	// (FileDesc.Undescribed).
 	Unaccounted []FileDesc
 	// Ignored is the delivered files that were not considered, because par2
 	// does not protect its own sidecars. See ignoredExtensions.
@@ -101,7 +101,8 @@ type Identification struct {
 
 	// sets is one entry per par2 set that parsed, set by IdentifyWithOptions
 	// and copied unchanged by Assessment.CRCExcluding (`git grep -n 'sets: [ai]'
-	// -- internal/par2/ ':!*_test.go'` returns those 3 lines). SliceSize reads it.
+	// -- internal/par2/ ':!*_test.go' ':!*/testdata/*'` returns those 3 lines).
+	// SliceSize reads it.
 	sets []parsedSetInfo
 }
 
@@ -140,7 +141,9 @@ func (id Identification) Accounted() bool { return len(id.Unaccounted) == 0 }
 // archive extracts to rather than the archive itself. It is equally an
 // obfuscated file damaged inside its first 16 KB, which defeats every
 // identification pass at once; this value cannot tell the two apart, and each
-// caller has to decide what that ambiguity costs it.
+// caller has to decide what that ambiguity costs it. It is also a set whose
+// Main packet survived and whose File Description packets did not, since
+// every file it lists is then Unaccounted.
 func (id Identification) NothingIdentified() bool {
 	return len(id.Files) == 0 && len(id.Unaccounted) > 0
 }
@@ -495,10 +498,10 @@ func IdentifyWithOptions(dir string, sets []Set, log *slog.Logger, opts ParseOpt
 		}
 	}
 	// A file without a description has no name, size or hash to match on.
-	for _, fd := range c.undescribed {
-		id.Unaccounted = append(id.Unaccounted, fd)
-		log.Warn("identify: par2 set lists a file it does not describe",
-			"set", fd.Set, "file_id", fmt.Sprintf("%x", fd.FileID))
+	id.Unaccounted = append(id.Unaccounted, c.undescribed...)
+	if len(c.undescribed) > 0 {
+		log.Warn("identify: par2 sets list files they do not describe",
+			"count", len(c.undescribed))
 	}
 
 	log.Info("identify: complete",
