@@ -144,7 +144,7 @@ func buildHistoryEntry(ppJob *postproc.Job) history.Entry {
 	}
 	if ppJob.Failed() {
 		entry.Status = "Failed"
-		entry.FailMessage = ppJob.FailMsg
+		entry.FailMessage = ppJob.FailReason()
 		entry.Storage = ppJob.DownloadDir
 		entry.Path = ppJob.DownloadDir
 	}

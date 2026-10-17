@@ -112,7 +112,7 @@ func retryInFlight(t *testing.T) (*Downloader, *dispatch.Dispatcher, *articleReq
 	d.tracker.Unlock()
 
 	a := UnfinishedArticle{Job: second, ArtIdx: req.artIdx, MessageID: "a@h", Bytes: 100, PartNumber: 1}
-	if handled, exReq := d.tryDispatch(t.Context(), a, defaultOpts(d.servers)); !handled || exReq != nil {
+	if handled, exReq, _ := d.tryDispatch(t.Context(), a, defaultOpts(d.servers)); !handled || exReq != nil {
 		t.Fatalf("fixture: the retry's article was not dispatched (handled=%v exReq=%v)", handled, exReq)
 	}
 	<-d.workCh["s1"] // the retry's fetch is now "on a connection"; free the slot for a second dispatch
@@ -194,7 +194,7 @@ func TestTracker_ARemovedInstancesLateCompletionLeavesTheRetrysEntries(t *testin
 			// Two fetches of it both carry the retry's instance, so the
 			// pipeline would accept both results.
 			a := UnfinishedArticle{Job: second, ArtIdx: req.artIdx, MessageID: "a@h", Bytes: 100, PartNumber: 1}
-			if handled, _ := d.tryDispatch(context.Background(), a, defaultOpts(d.servers)); handled {
+			if handled, _, _ := d.tryDispatch(context.Background(), a, defaultOpts(d.servers)); handled {
 				t.Error("the retry's article was dispatched a second time while its own fetch is in flight")
 			}
 		})

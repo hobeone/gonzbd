@@ -413,8 +413,9 @@ type Downloader struct {
 
 // New constructs a Downloader bound to q and the given servers. The
 // returned Downloader is inert until Start; no goroutines run, no
-// sockets open. Servers are iterated in slice order as the fallback
-// preference — callers should sort by priority before passing.
+// sockets open. Dispatch prefers servers by their Priority, whatever
+// their order in the slice; servers sharing a priority are tried in
+// slice order.
 //
 // An empty server slice is allowed — the downloader will start but
 // dispatch nothing until servers are added via ReloadDownloader.
