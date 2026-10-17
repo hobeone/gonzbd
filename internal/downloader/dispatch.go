@@ -439,9 +439,10 @@ func (d *Downloader) selectServerForArticle(mask serverMask, hasTried bool, opts
 
 // clampPenalty enforces d.opts.NoPenalties and d.opts.MaxPenalty: when
 // MaxPenalty is set or NoPenalties is true, no server penalty may exceed the
-// configured bound, regardless of the error class PenaltyFor would otherwise
-// map to. Kept as a helper so both call sites (dial failure, fetch failure)
-// apply the same rule (OPT-3).
+// configured bound, regardless of the duration the caller would otherwise
+// charge (PenaltyFor's, or PenaltyTimeout for a run of connection faults).
+// Kept as a helper so both call sites (dial failure, fetch failure) apply
+// the same rule (OPT-3).
 func (d *Downloader) clampPenalty(pen time.Duration) time.Duration {
 	maxPen := d.opts.MaxPenalty
 	if d.opts.NoPenalties && (maxPen == 0 || maxPen > constants.PenaltyShort) {
@@ -752,26 +753,43 @@ func (d *Downloader) fetchArticle(ctx context.Context, srv *Server, serverIdx in
 		if ctx.Err() == nil && fetchCtx.Err() == nil {
 			telemetry.PipelineErrors.Add(classifyConnError(err), 1)
 			if isFirstNotifier {
-				srv.RecordBadConnection()
-				if pen := d.clampPenalty(PenaltyFor(err)); pen > 0 {
-					d.log.Info("penalty applied", "server", name, "duration", pen)
-					srv.ApplyPenalty(pen)
-				}
+				d.chargeFetchFailure(srv, err)
 			}
 		}
 		d.unmarkTried(req, serverIdx)
 		// Don't emit a result for connection-level failures. The
 		// article is returned to the dispatch pool via unmarkTried;
-		// the deferred signalDispatch triggers retry on another
-		// server or this one after penalty expiry. Emitting would
-		// risk the pipeline misclassifying the error and inflating
-		// FailedBytes for what is a transient server issue.
+		// the deferred signalDispatch triggers a retry, on this server
+		// too unless it is now penalized. Emitting would risk the
+		// pipeline misclassifying the error and inflating FailedBytes
+		// for what is a transient server issue.
 		return nil, false
 	}
 
 	srv.RecordGoodConnection()
 	d.log.Debug("fetched", "server", name, "msgid", req.messageID, "bytes", len(body))
 	return body, true
+}
+
+// chargeFetchFailure charges srv for a fetch that failed on one of its
+// connections. A connection fault (isConnFault) costs srv nothing until
+// Server.RecordConnFault reports a run of them, which costs PenaltyTimeout;
+// any other error is the server's and costs PenaltyFor(err) at once.
+func (d *Downloader) chargeFetchFailure(srv *Server, err error) {
+	var pen time.Duration
+	if isConnFault(err) {
+		if !srv.RecordConnFault() {
+			return
+		}
+		pen = constants.PenaltyTimeout
+	} else {
+		srv.RecordBadConnection()
+		pen = PenaltyFor(err)
+	}
+	if pen = d.clampPenalty(pen); pen > 0 {
+		d.log.Info("penalty applied", "server", srv.Cfg().Name, "duration", pen, "error", err)
+		srv.ApplyPenalty(pen)
+	}
 }
 
 // processFetchedArticle decodes an article payload, verifies CRC, and emits the final queue result.
@@ -901,8 +919,8 @@ func (d *Downloader) clearInFlight(req *articleRequest) {
 
 // unmarkTried removes serverIdx from an article's try-list, used
 // after a retryable failure (dial error, mid-stream disconnect) so
-// the dispatcher can hand the article back to the same server once
-// it recovers, or bounce it to another.
+// the dispatcher can hand the article back to the same server (at
+// once, or after its penalty expires) or bounce it to another.
 func (d *Downloader) unmarkTried(req *articleRequest, serverIdx int) {
 	d.tracker.UnmarkTried(keyFor(req.job, req.artIdx), serverIdx)
 }

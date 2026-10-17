@@ -26,7 +26,9 @@ const (
 	// Penalty502 applies to 502 / 503 server-side errors.
 	Penalty502 = 5 * time.Minute
 
-	// PenaltyTimeout applies after repeated timeouts on the same server.
+	// PenaltyTimeout applies when more bad connections than a server has
+	// connections accrue with no fetch succeeding in between, the latest
+	// being a timeout or a connection lost mid-command.
 	PenaltyTimeout = 10 * time.Minute
 
 	// PenaltyShare applies when a server returns a "maximum connections"

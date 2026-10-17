@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"strings"
 	"sync"
@@ -39,11 +40,20 @@ type mockNNTP struct {
 	// body follows" status line and then close the connection without
 	// sending the body or dot-terminator — simulating a connection-level
 	// failure mid-transfer (as opposed to a clean 430 not-found), so
-	// tests can exercise the "fetch failed" penalty-application branch
-	// in fetchArticle (dispatch.go) that is distinct from ErrNoArticle.
+	// tests can exercise fetchArticle's "fetch failed" branch, which is
+	// distinct from ErrNoArticle.
 	hangup map[string]bool
 
-	// bodiesMu guards the three maps above.
+	// stall[msgID] is how many more BODY requests for msgID get the "222"
+	// status line and then silence until the client closes the connection,
+	// so the client's in-flight read deadline expires mid-body.
+	stall map[string]int
+
+	// respond[msgID] is a status line the BODY handler sends instead of the
+	// article, keeping the connection open.
+	respond map[string]string
+
+	// bodiesMu guards the maps above.
 	bodiesMu sync.Mutex
 
 	// requireAuth demands AUTHINFO. User/pass accepted are user/pass.
@@ -66,6 +76,7 @@ type mockNNTP struct {
 	dials      atomic.Int64
 	fetches    atomic.Int64
 	rejections atomic.Int64
+	stalls     atomic.Int64
 
 	// wg tracks connection goroutines so tests can Shutdown cleanly.
 	wg sync.WaitGroup
@@ -108,11 +119,13 @@ func newMockNNTP(t *testing.T, opts ...mockOption) *mockNNTP {
 		t.Fatalf("listen: %v", err)
 	}
 	ms := &mockNNTP{
-		addr:   ln.Addr().String(),
-		ln:     ln,
-		bodies: make(map[string]string),
-		reject: make(map[string]bool),
-		hangup: make(map[string]bool),
+		addr:    ln.Addr().String(),
+		ln:      ln,
+		bodies:  make(map[string]string),
+		reject:  make(map[string]bool),
+		hangup:  make(map[string]bool),
+		stall:   make(map[string]int),
+		respond: make(map[string]string),
 	}
 	for _, o := range opts {
 		o(ms)
@@ -141,6 +154,20 @@ func (ms *mockNNTP) hangupOnFetch(msgID string) {
 	ms.bodiesMu.Lock()
 	defer ms.bodiesMu.Unlock()
 	ms.hangup[msgID] = true
+}
+
+// stallOnFetch makes the next n BODY requests for msgID stall mid-body.
+func (ms *mockNNTP) stallOnFetch(msgID string, n int) {
+	ms.bodiesMu.Lock()
+	defer ms.bodiesMu.Unlock()
+	ms.stall[msgID] = n
+}
+
+// respondOnFetch makes every BODY request for msgID answer with line.
+func (ms *mockNNTP) respondOnFetch(msgID, line string) {
+	ms.bodiesMu.Lock()
+	defer ms.bodiesMu.Unlock()
+	ms.respond[msgID] = line
 }
 
 func (ms *mockNNTP) acceptLoop() {
@@ -239,7 +266,22 @@ func (ms *mockNNTP) handleConn(c net.Conn) {
 			body, hasBody := ms.bodies[id]
 			rejected := ms.reject[id]
 			hangup := ms.hangup[id]
+			stall := ms.stall[id] > 0
+			if stall {
+				ms.stall[id]--
+			}
+			respond, hasRespond := ms.respond[id]
 			ms.bodiesMu.Unlock()
+			if stall {
+				ms.stalls.Add(1)
+				_ = write(fmt.Sprintf("222 0 <%s> body follows\r\n", id))
+				_, _ = io.Copy(io.Discard, r) // until the client gives up and closes
+				return
+			}
+			if hasRespond {
+				_ = write(respond + "\r\n")
+				continue
+			}
 			if ms.bodyGate != nil {
 				ms.bodyEntered <- id
 				<-ms.bodyGate

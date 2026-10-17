@@ -286,6 +286,12 @@ func TestPenaltyFor(t *testing.T) {
 			want: constants.PenaltyUnknown,
 		},
 		{
+			// A dial or handshake timeout; the catch-all's figure, chosen.
+			name: "timeout → PenaltyUnknown",
+			err:  timeoutErr{},
+			want: constants.PenaltyUnknown,
+		},
+		{
 			name: "unknown error → PenaltyUnknown",
 			err:  errors.New("some random error"),
 			want: constants.PenaltyUnknown,
