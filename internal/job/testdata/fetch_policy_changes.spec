@@ -1,9 +1,9 @@
 pkg ./internal/job/
-run TestTakeFetchPolicyChanges|TestInstallFileVerification_RestoreDoesNotUndoARelease
+run TestTakeFetchPolicyChanges|TestInstallFileVerification_RestoreKeepsTheHold
 
 # setFileFetchPolicy is the one writer of a file's fetch policy (#858). It
-# records each change for the recorder, and refuses to put a hold over a
-# release.
+# records each change for the recorder, and stores exactly the policy it is
+# given: a restored hold stays a hold.
 
 [the writer records no change]
 file internal/job/content.go
@@ -22,20 +22,17 @@ file internal/job/content.go
 --- replace
 --- end
 
-[a hold is restored over a release]
+[a hold is turned into a release once a reason is recorded]
 file internal/job/content.go
 --- anchor
-	if stored == FetchIfNeeded && p.par2Recovered {
+	f := &p.files[fi]
+	if f.Fetch == policy {
 --- replace
-	if false {
---- end
-
-[a restore the release overrode is not handed to the record]
-file internal/job/content.go
---- anchor
-	if f.Fetch == stored && stored == policy {
---- replace
-	if f.Fetch == stored {
+	if policy == FetchIfNeeded && p.par2ReleaseReason != "" {
+		policy = FetchAlways
+	}
+	f := &p.files[fi]
+	if f.Fetch == policy {
 --- end
 
 [the take hands over the policy alone]

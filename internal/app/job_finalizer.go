@@ -184,7 +184,7 @@ func (f *jobFinalizer) retryWithHeldVolumes(jobID string) bool {
 	app := f.app
 	err := app.retryHistoryJob(app.ctx, jobID, false, func(j *job.Job) error {
 		_, err := app.releaseRecoveryVolumes(j,
-			"post-processing failed par2 repair while the recovery volumes were held back")
+			"post-processing failed par2 repair while the recovery volumes were held back", job.Unsized())
 		return err
 	})
 	if err != nil {

@@ -32,18 +32,9 @@ func buildDownloadFileList(j *Job) []string {
 		return []string{fmt.Sprintf("File listing unavailable: %v", mErr)}
 	}
 
-	// On-demand par2 stats: count the skipped recovery volumes. Only the
-	// counts are walked here — the byte figure comes from JobProgress below.
-	var heldVols, recoveryVols int
-	for fi := range m.NumFiles() {
-		if !m.FileIsPar2Recovery(fi) {
-			continue
-		}
-		recoveryVols++
-		if p.FileFetchPolicy(fi) != job.FetchAlways {
-			heldVols++
-		}
-	}
+	// On-demand par2 stats. Only the counts come from here — the byte figure
+	// comes from JobProgress below.
+	fetchedVols, heldVols, recoveryVols := p.RecoveryReleased(m)
 
 	// The bytes this job held back, derived rather than summed here. Summing
 	// them locally was a second implementation of the figure JobProgress
@@ -98,81 +89,26 @@ func buildDownloadFileList(j *Job) []string {
 	}
 
 	switch {
-	case heldVols > 0 && !p.Par2Recovered() && p.HasPar2Verdict():
-		// A verdict was reached (HasPar2Verdict) but the volumes were never
-		// un-deferred (!Par2Recovered) and are still held (heldVols > 0).
-		// That combination covers three situations this method cannot tell
-		// apart: outcomeUnknown (nothing on disk could be identified against
-		// the par2 index, so verification never ran), an outcomeRepair
-		// verdict whose UndeferRecoveryVolumes call failed (verification DID
-		// find damage, but the volumes could not be fetched), and an
-		// outcomeRepair verdict the job's Policy.Repair forbids acting on
-		// (PP=0: repair found damage, but Repairing never runs for this job,
-		// so the volumes are held deliberately, not because fetching them
-		// failed). Reporting any of the three as "verified clean" would be
-		// the mislabel this case exists to remove, so all three get the same
-		// non-committal headline; the release reason in the parenthetical is
-		// what carries the real explanation for whichever one actually
-		// happened.
-		// HasPar2Verdict() is true in this arm (the switch guards on it
-		// directly), and HasPar2Verdict is defined as Par2ReleaseReason() !=
-		// "" (`git grep -n 'func (p \*JobProgress) HasPar2Verdict' internal/job/`), so the reason is always
-		// non-empty here — no fallback needed.
-		reasonStr := fmt.Sprintf(" (reason: %s)", p.Par2ReleaseReason())
-		lines = append(lines, fmt.Sprintf("⚠ Par2: could not verify — %d recovery volume(s) held%s",
-			heldVols, reasonStr))
-	case recoveryVols > 0 && p.Par2Recovered():
-		// Volumes were un-deferred and fetched because repair was needed.
-		// This arm sits ahead of case heldVols > 0: so that partially
-		// un-deferred jobs report that recovery volumes were fetched for
-		// repair rather than falling into the bare heldVols > 0 arm and
-		// claiming "verified clean" (#505).
-		fetchedVols := recoveryVols - heldVols
-		reasonStr := ""
-		if p.Par2ReleaseReason() != "" {
-			reasonStr = fmt.Sprintf(" (reason: %s)", p.Par2ReleaseReason())
-		}
-		lines = append(lines, fmt.Sprintf("⚠ Par2: fetched %d recovery volume(s) for repair%s", fetchedVols, reasonStr))
-	case heldVols > 0:
-		// Still withheld at finalize. This arm is reached only two ways,
-		// since Par2Recovered() is false here (the arm above intercepts any
-		// job where recovery volumes were fetched, including partial
-		// un-deferral):
-		//
-		//  (a) on-demand par2 never ran (fetch policy off, or the job
-		//      finalized before verification) — HasPar2Verdict() is false.
-		//  (b) the clean-verdict path discarded the volumes without
-		//      recording a reason (outcomeClean never calls
-		//      SetPar2ReleaseReason) — HasPar2Verdict() is false.
-		//
-		// The partial un-defer case (formerly latent (c), where a verdict-bearing
-		// job had only some recovery volumes un-deferred so heldVols > 0 and
-		// Par2Recovered() is true) is now intercepted by
-		// case recoveryVols > 0 && p.Par2Recovered(): above (#505).
-		// undeferRecovery is the only active mutation that sets
-		// par2Recovered to true (`git grep -n 'par2Recovered = true' internal/job/`
-		// finds one line). `git grep -n 'par2Recovered =' internal/job/ ':!*_test.go'`
-		// finds three: that one, ResetForRetry resetting it to false, and
-		// restorePar2Recovered applying the value AttachContent seeds from
-		// dispatch_jobs.par2_recovered, so the durable round-trip this arm
-		// depends on is the store one (#504). undeferRecovery has callers in Job.UndeferRecoveryVolumes
-		// (reached from internal/app's releaseRecoveryVolumes, which
-		// maybeReleaseRecoveryVolumes and the finalizer's retry of a par2
-		// failure call;
-		// `git grep -n 'func (j \*Job) UndeferRecoveryVolumes' internal/job/` finds one line)
-		// and Job.markArticleFailed, the body of Job.MarkArticleFailed
-		// (`git grep -n 'func (j \*Job) markArticleFailed' internal/job/`
-		// finds one line). Both pass
-		// job.progress.DeferredRecoveryIndices() — every deferred index at
-		// once — so a real job's held volumes go from "all deferred" to
-		// "none deferred" in one step and heldVols is 0 by the time
-		// Par2Recovered() is true; even if a future block-exact caller
-		// un-defers a strict subset on UndeferRecoveryVolumes' fileIdxs
-		// parameter, the Par2Recovered() arm above intercepts it, so (c) no
-		// longer reaches this arm.
-		//
-		// (a) and (b) both leave the bytes never fetched, which is what
-		// this line reports.
+	case fetchedVols > 0:
+		// The verdict or the finalizer's retry released some or all of the
+		// volumes. RecoveryReleased reports fetched only with a reason set.
+		lines = append(lines, fmt.Sprintf("⚠ Par2: fetched %d of %d recovery volume(s) for repair (reason: %s)",
+			fetchedVols, recoveryVols, p.Par2ReleaseReason()))
+	case heldVols > 0 && p.HasPar2Verdict():
+		// A verdict was recorded and nothing released: outcomeUnknown, an
+		// outcomeRepair the job's Policy.Repair forbids acting on, a release
+		// that failed or that a job beyond repair refused, or a sized release
+		// whose deficit was zero. This switch cannot tell them apart, so none
+		// reads as "verified clean"; the reason says which. HasPar2Verdict is
+		// Par2ReleaseReason() != "", so the reason is non-empty here.
+		lines = append(lines, fmt.Sprintf("⚠ Par2: could not verify — %d recovery volume(s) held (reason: %s)",
+			heldVols, p.Par2ReleaseReason()))
+	case heldVols > 0 && p.ContentFailedBytes() == 0:
+		// No verdict recorded and no content lost, as after the clean verdict
+		// discarded the volumes (outcomeClean records no reason). A lost
+		// article changes no fetch policy, so a job that lost content and
+		// never reached a verdict still holds its volumes; the failed-bytes
+		// condition keeps it from reading as clean.
 		lines = append(lines, fmt.Sprintf("✓ Par2: verified clean from index — %d recovery volume(s) skipped (saved %s)",
 			heldVols, humanfmt.BytesSI(heldBytes)))
 	}

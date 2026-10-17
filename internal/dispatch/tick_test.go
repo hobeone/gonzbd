@@ -695,7 +695,7 @@ func TestPersistIfChanged_Coverage(t *testing.T) {
 		t.Fatalf("Add: %v", err)
 	}
 
-	j.RestoreProgressState("test reason", time.Unix(100, 0), time.Unix(200, 0), false)
+	j.RestoreProgressState("test reason", time.Unix(100, 0), time.Unix(200, 0))
 	st.saveErr = errors.New("save fail")
 	d.persistIfChanged(context.Background(), j)
 

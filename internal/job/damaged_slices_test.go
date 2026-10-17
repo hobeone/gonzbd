@@ -1,6 +1,7 @@
 package job
 
 import (
+	"math"
 	"math/rand/v2"
 	"testing"
 
@@ -30,6 +31,7 @@ func TestDamagedSlices(t *testing.T) {
 		{"zero slice size", []durability.WrittenRow{wr(0, 5)}, 10, 0, 0},
 		{"zero file size", nil, 0, 10, 0},
 		{"gap inside one slice", []durability.WrittenRow{wr(0, 3), wr(6, 4), wr(10, 10)}, 20, 10, 1},
+		{"slice size past int64 is one slice of the file", []durability.WrittenRow{wr(0, 5)}, 25, math.MaxUint64, 1},
 		{"two gaps in one slice count it once", []durability.WrittenRow{wr(0, 2), wr(3, 2), wr(10, 10)}, 20, 10, 1},
 	}
 	for _, tc := range tests {

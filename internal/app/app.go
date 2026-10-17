@@ -1817,9 +1817,6 @@ func (app *Application) maybeReleaseRecoveryVolumes(ctx context.Context, j *job.
 	if !j.HasDeferredPar2() {
 		return false
 	}
-	if p := j.Progress(); p != nil && p.Par2Recovered() {
-		return false
-	}
 	jobName := j.Name()
 
 	cfgSnap := app.config.Snapshot()
@@ -1829,6 +1826,9 @@ func (app *Application) maybeReleaseRecoveryVolumes(ctx context.Context, j *job.
 	dir := filepath.Join(downloadDir, jobName)
 
 	outcome, reason := outcomeRepair, "manifest unreadable, cannot verify integrity"
+	// Every path that cannot size the release leaves it unsized, which
+	// releases every held volume.
+	sizing := job.Unsized()
 	m, err := j.Manifest()
 	if err != nil {
 		app.log.Warn("on-demand par2: cannot verify without the manifest; post-processing will run a full par2 verify instead",
@@ -1854,6 +1854,18 @@ func (app *Application) maybeReleaseRecoveryVolumes(ctx context.Context, j *job.
 				break
 			}
 			outcome, reason = par2Verdict(a, app.log)
+			if outcome == outcomeRepair {
+				var why string
+				sizing, why = recoveryDeficit(m, prog, a, func() ([]durability.WrittenRow, error) {
+					if app.durable == nil {
+						return nil, errors.New("no durability store")
+					}
+					return app.durable.WrittenRows(ctx, jobID)
+				})
+				if why != "" {
+					reason += "; releasing every recovery volume: " + why
+				}
+			}
 		}
 	}
 	switch outcome {
@@ -1879,12 +1891,19 @@ func (app *Application) maybeReleaseRecoveryVolumes(ctx context.Context, j *job.
 				"job", jobID, "reason", reason)
 			return false
 		}
-		n, err := app.releaseRecoveryVolumes(j, reason)
+		n, err := app.releaseRecoveryVolumes(j, reason, sizing)
 		if err != nil {
 			app.log.Warn("on-demand par2: un-defer failed; finalizing without recovery volumes",
 				"job", jobID, "err", err)
 			failReason := fmt.Sprintf("%s; could not fetch recovery volumes: %v", reason, err)
 			j.SetPar2ReleaseReason(failReason)
+			return false
+		}
+		if n == 0 {
+			// The recovery blocks already fetched cover the damage, or the job
+			// is beyond what its recovery could repair.
+			app.log.Info("on-demand par2: repair needed, no further recovery volumes to fetch",
+				"job", jobID, "reason", reason)
 			return false
 		}
 		app.log.Info("on-demand par2: repair needed, fetching recovery volumes",
@@ -1898,17 +1917,14 @@ func (app *Application) maybeReleaseRecoveryVolumes(ctx context.Context, j *job.
 	}
 }
 
-// releaseRecoveryVolumes records reason and un-defers every recovery volume j
-// still holds, so the downloader fetches them, and returns how many it
-// released. It is the release both the Assessing verdict's outcomeRepair and
-// the finalizer's retry of a par2 failure (retryWithHeldVolumes) make.
-func (app *Application) releaseRecoveryVolumes(j *job.Job, reason string) (int, error) {
+// releaseRecoveryVolumes records reason and releases the held recovery volumes
+// sizing asks for (job.Job.ReleaseRecovery), so the downloader fetches them,
+// and returns how many it released. It is the release both the Assessing
+// verdict's outcomeRepair and the finalizer's retry of a par2 failure
+// (retryWithHeldVolumes) make; the retry passes job.Unsized().
+func (app *Application) releaseRecoveryVolumes(j *job.Job, reason string, sizing job.RecoverySizing) (int, error) {
 	j.SetPar2ReleaseReason(reason)
-	idxs := j.DeferredRecoveryIndices()
-	if err := j.UndeferRecoveryVolumes(idxs); err != nil {
-		return 0, err
-	}
-	return len(idxs), nil
+	return j.ReleaseRecovery(sizing)
 }
 
 // par2Outcome is what par2Verdict was able to determine about a completed

@@ -106,6 +106,76 @@ func TestReleaseRecovery(t *testing.T) {
 	}
 }
 
+func TestRecoveryReleased(t *testing.T) {
+	// File 0 is content, file 1 the par2 index (not a recovery volume), and
+	// files 2..4 are three recovery volumes.
+	build := func(t *testing.T) (*Job, *Manifest) {
+		t.Helper()
+		art := func(id string) []JobArticle { return []JobArticle{{ID: id, Bytes: 100, Number: 1}} }
+		m := NewManifest([]JobFile{
+			{Subject: "data.rar", Bytes: 100, Articles: art("<d@x>")},
+			{Subject: "x.par2", Bytes: 100, Articles: art("<i@x>")},
+			{Subject: "x.vol00+01.par2", Bytes: 100, IsPar2Recovery: true, Articles: art("<v0@x>")},
+			{Subject: "x.vol01+02.par2", Bytes: 100, IsPar2Recovery: true, Articles: art("<v1@x>")},
+			{Subject: "x.vol03+04.par2", Bytes: 100, IsPar2Recovery: true, Articles: art("<v2@x>")},
+		})
+		j := New("rr", "rr", Policy{})
+		if err := j.AttachContent(m); err != nil {
+			t.Fatalf("AttachContent: %v", err)
+		}
+		return j, m
+	}
+	hold := func(t *testing.T, j *Job, fis ...int) {
+		t.Helper()
+		for _, fi := range fis {
+			if err := j.SetFileFetchPolicy(fi, FetchIfNeeded); err != nil {
+				t.Fatalf("SetFileFetchPolicy(%d): %v", fi, err)
+			}
+		}
+	}
+	tests := []struct {
+		name                 string
+		prep                 func(*testing.T, *Job)
+		fetched, held, total int
+	}{
+		{"on-demand off: all fetched from ingest, no reason", func(*testing.T, *Job) {}, 0, 0, 3},
+		{"reason set, one of three released", func(t *testing.T, j *Job) {
+			hold(t, j, 3, 4)
+			j.SetPar2ReleaseReason("repair needed")
+		}, 1, 2, 3},
+		{"reason set, none released", func(t *testing.T, j *Job) {
+			hold(t, j, 2, 3, 4)
+			j.SetPar2ReleaseReason("repair needed")
+		}, 0, 3, 3},
+		{"no reason: a FetchAlways volume is not a release", func(t *testing.T, j *Job) {
+			hold(t, j, 3, 4)
+		}, 0, 2, 3},
+		{"a discarded volume counts as not fetched", func(t *testing.T, j *Job) {
+			hold(t, j, 3)
+			if err := j.SetFileFetchPolicy(4, FetchNever); err != nil {
+				t.Fatal(err)
+			}
+			j.SetPar2ReleaseReason("repair needed")
+		}, 1, 2, 3},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			j, m := build(t)
+			tc.prep(t, j)
+			f, h, n := j.Progress().RecoveryReleased(m)
+			if f != tc.fetched || h != tc.held || n != tc.total {
+				t.Errorf("RecoveryReleased = (%d, %d, %d), want (%d, %d, %d)", f, h, n, tc.fetched, tc.held, tc.total)
+			}
+		})
+	}
+	t.Run("nil progress", func(t *testing.T) {
+		var p *JobProgress
+		if f, h, n := p.RecoveryReleased(nil); f != 0 || h != 0 || n != 0 {
+			t.Errorf("nil RecoveryReleased = (%d, %d, %d), want zeros", f, h, n)
+		}
+	})
+}
+
 func TestReleaseRecovery_NotResident(t *testing.T) {
 	j := New("unattached", "x", Policy{})
 	if _, err := j.ReleaseRecovery(Unsized()); !errors.Is(err, ErrNotResident) {
@@ -115,7 +185,7 @@ func TestReleaseRecovery_NotResident(t *testing.T) {
 
 func TestReleaseRecovery_SkipsAlreadyReleased(t *testing.T) {
 	j := releaseJob(t, standardVols())
-	if err := j.UndeferRecoveryVolumes([]int{4}); err != nil {
+	if err := j.SetFileFetchPolicy(4, FetchAlways); err != nil {
 		t.Fatal(err)
 	}
 	got, err := j.ReleaseRecovery(Unsized())

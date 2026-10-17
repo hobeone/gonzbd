@@ -128,3 +128,11 @@ file internal/job/cover.go
 --- replace
 			if false {
 --- end
+
+[a slice past the file is not clamped to it]
+file internal/job/verified.go
+--- anchor
+	sliceSize = min(sliceSize, fileSize)
+--- replace
+	sliceSize = max(sliceSize, 1)
+--- end

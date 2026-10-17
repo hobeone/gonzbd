@@ -56,11 +56,9 @@ func (j *Job) AttachContent(m *Manifest) error {
 	// held and sync.RWMutex is not reentrant.
 	j.progress.restoreDownloadStamps(j.restoredDLStarted, j.restoredDLFinished)
 	j.progress.restorePar2ReleaseReason(j.restoredPar2Reason)
-	j.progress.restorePar2Recovered(j.restoredPar2Recovered)
 	j.restoredPar2Reason = ""
 	j.restoredDLStarted = time.Time{}
 	j.restoredDLFinished = time.Time{}
-	j.restoredPar2Recovered = false
 	return nil
 }
 
@@ -311,26 +309,14 @@ func (j *Job) SetFileFetchPolicy(fi int, policy FetchPolicy) error {
 // above leave the counters to it (#903).
 //
 // It marks the file for Job.TakeFetchPolicyChanges whenever the stored value
-// differs from the one the caller asked for or from the previous one, so the
-// record learns of every change without its caller having to say so.
-//
-// A hold is not set over a release: once par2Recovered is set nothing
-// releases a volume again, so FetchIfNeeded then becomes FetchAlways. A
-// hydration restores a hold over a release in two ways — job_files and
-// dispatch_jobs' par2_recovered are written by different writers, so a crash
-// can land one release and not the other; and a content file's lost article
-// releases the volumes installed before it, ahead of a later volume's
-// restore.
+// differs from the previous one, so the record learns of every change without
+// its caller having to say so.
 func (p *JobProgress) setFileFetchPolicy(fi int, policy FetchPolicy) {
-	stored := policy
-	if stored == FetchIfNeeded && p.par2Recovered {
-		stored = FetchAlways
-	}
 	f := &p.files[fi]
-	if f.Fetch == stored && stored == policy {
+	if f.Fetch == policy {
 		return
 	}
-	f.Fetch = stored
+	f.Fetch = policy
 	p.setPending(fi, p.pendingOf(fi))
 	if !f.fetchChanged {
 		f.fetchChanged = true
@@ -372,8 +358,8 @@ func (j *Job) TakeFetchPolicyChanges() []durability.FileState {
 //
 // It does not require the manifest. A fetch can complete after its job was
 // evicted, so refusing an evicted job would lose the failure. Evicted, it
-// records the bits and the charge alone: the counters and the early par2
-// release need the manifest's file ranges and article sizes, and
+// records the bits and the charge alone: the counters need the manifest's
+// file ranges and article sizes, and
 // RestoreContent's recompute derives the counters from the bits when the job
 // is next hydrated.
 func (j *Job) MarkArticleFailed(artIdx int, charge int64) error {
@@ -401,19 +387,9 @@ func (j *Job) markArticleFailed(artIdx int, charge int64) error {
 		}
 		return nil
 	}
-	// A failure that charges nothing leaves par2 nothing to repair, so it is
-	// no reason to fetch recovery volumes.
-	if charged, ok := j.progress.markFailedUncovered(j.manifest, artIdx, charge); ok && charged > 0 {
-		// Repairing never runs for a job whose Policy.Repair is false
-		// (PP=0), so releasing its recovery volumes here would only spend
-		// bandwidth nothing will use. This is the live-download half of the
-		// gate; the Assessing-verdict half is app.maybeReleaseRecoveryVolumes.
-		if j.policy.Repair && !j.progress.par2Recovered && j.manifest.RecoveryFiles() > 0 {
-			if j.undeferRecovery(j.progress.DeferredRecoveryIndices()) {
-				j.progress.setPar2ReleaseReason("permanent article download failure detected on active queue")
-			}
-		}
-	}
+	// A failure changes no fetch policy: the Assessing verdict sizes any
+	// recovery release from the written rows once the content is down.
+	j.progress.markFailedUncovered(j.manifest, artIdx, charge)
 	return nil
 }
 
@@ -568,44 +544,15 @@ func (j *Job) NumFiles() int {
 	return 0
 }
 
-// undeferRecovery releases each held volume of fileIdxs to FetchAlways and
-// sets par2Recovered, reporting whether any was held. The caller holds
-// contentMu and the job has progress.
-func (j *Job) undeferRecovery(fileIdxs []int) bool {
-	changed := false
+// undeferRecovery releases each held volume of fileIdxs to FetchAlways. The
+// caller holds contentMu and the job has progress.
+func (j *Job) undeferRecovery(fileIdxs []int) {
 	for _, fi := range fileIdxs {
 		if fi < 0 || fi >= len(j.progress.files) || j.progress.files[fi].Fetch != FetchIfNeeded {
 			continue
 		}
 		j.progress.setFileFetchPolicy(fi, FetchAlways)
-		changed = true
 	}
-	if changed {
-		j.progress.par2Recovered = true
-	}
-	return changed
-}
-
-// UndeferRecoveryVolumes marks the specified deferred recovery volumes as
-// FetchAlways, re-activating them for download when repair is needed.
-//
-// Like DiscardDeferredPar2 it is a progress-tier write and takes effect at any
-// residency: the policy, its pending counts and par2Recovered all live on the
-// progress record, and an evicted job's articles are offered only after the
-// hydration that re-attaches its manifest.
-func (j *Job) UndeferRecoveryVolumes(fileIdxs []int) error {
-	j.contentMu.Lock()
-	defer j.contentMu.Unlock()
-	if j.progress == nil {
-		return fmt.Errorf("job %s: %w", j.id, ErrNotResident)
-	}
-	for _, fi := range fileIdxs {
-		if fi < 0 || fi >= len(j.progress.files) {
-			return fmt.Errorf("job %s: fileIdx %d out of range", j.id, fi)
-		}
-	}
-	j.undeferRecovery(fileIdxs)
-	return nil
 }
 
 // DeferredRecoveryIndices returns the indices of all files still held as FetchIfNeeded.
@@ -814,7 +761,6 @@ func (j *Job) ResetForRetry() {
 		return
 	}
 	j.progress.earlyAborted = false
-	j.progress.par2Recovered = false
 	j.progress.clearPar2ReleaseReason()
 	j.progress.clearDownloadStamps()
 
@@ -941,36 +887,23 @@ func (j *Job) ClearDownloadFinished() error {
 // hydration would land in fields the accessors stop reading once progress is
 // non-nil and return successfully having discarded the value — the identical
 // silent drop this function exists to remove, one level up. It adds no writer
-// of those fields; restoreDownloadStamps, restorePar2ReleaseReason and
-// restorePar2Recovered already own them and it calls all three.
+// of those fields; restoreDownloadStamps and restorePar2ReleaseReason already
+// own them and it calls both.
 //
 // Both branches put the timestamps through jobStampOrZero, so a stamp is
 // accepted or rejected the same way whichever record receives it. Without that
 // the pre-hydration accessor could report a stamp that hydration then dropped.
 //
 // AttachContent seeds the fresh JobProgress from the Job-level copy and zeroes it.
-func (j *Job) RestoreProgressState(reason string, started, finished time.Time, recovered bool) {
+func (j *Job) RestoreProgressState(reason string, started, finished time.Time) {
 	j.contentMu.Lock()
 	defer j.contentMu.Unlock()
 	if j.progress != nil {
 		j.progress.restoreDownloadStamps(started, finished)
 		j.progress.restorePar2ReleaseReason(reason)
-		j.progress.restorePar2Recovered(recovered)
 		return
 	}
 	j.restoredPar2Reason = reason
 	j.restoredDLStarted = jobStampOrZero(started)
 	j.restoredDLFinished = jobStampOrZero(finished)
-	j.restoredPar2Recovered = recovered
-}
-
-// Par2Recovered reports whether on-demand par2 un-deferred this job's recovery
-// volumes. Reads the restored value before hydration, as Par2ReleaseReason does.
-func (j *Job) Par2Recovered() bool {
-	j.contentMu.RLock()
-	defer j.contentMu.RUnlock()
-	if j.progress == nil {
-		return j.restoredPar2Recovered
-	}
-	return j.progress.Par2Recovered()
 }
