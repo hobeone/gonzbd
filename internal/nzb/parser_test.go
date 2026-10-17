@@ -488,6 +488,25 @@ func TestParseMissingSubjectDefaultsToUnknown(t *testing.T) {
 	}
 }
 
+// TestParseHexNamedPar2Index pins that a hex-named par2 index keeps its .par2
+// extension through Parse, which par2.IsPar2Name requires of the on-disk name.
+func TestParseHexNamedPar2Index(t *testing.T) {
+	const doc = `<?xml version="1.0"?>
+<nzb xmlns="http://www.newzbin.com/DTD/2003/nzb">
+  <file subject="[1/8] - &quot;ecb7badfd74c9e56b3e236fbab8204b2.par2&quot; yEnc (1/1)">
+    <groups><group>g</group></groups>
+    <segments><segment bytes="100" number="1">id@h</segment></segments>
+  </file>
+</nzb>`
+	got, err := Parse(strings.NewReader(doc))
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	if want := "ecb7badfd74c9e56b3e236fbab8204b2.par2"; got.Files[0].Subject != want {
+		t.Errorf("Subject = %q, want %q", got.Files[0].Subject, want)
+	}
+}
+
 func TestParseISO88591(t *testing.T) {
 	// "café" in Latin-1 is "caf\xE9"
 	const doc = `<?xml version="1.0" encoding="iso-8859-1"?>

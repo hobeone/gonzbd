@@ -40,28 +40,48 @@ func parsePRiVATESubject(subject string) string {
 
 // ExtractFilenameFromSubject attempts to extract a clean filename from a Usenet subject line.
 // It follows the logic of Python SABnzbd's subject_name_extractor.
+//
+// A hex-hash name ("ecb7…b2.par2") from the [PRiVATE] or quoted step loses to
+// a readable name from either, but beats the unquoted search, which can match
+// any dotted token ("Show 1.00"). Any name beats the whole subject: it keeps
+// the real extension that par2.IsPar2Name and unpack.Classify test, where a
+// sanitized subject ends in "yEnc (1_1)".
 func ExtractFilenameFromSubject(subject string) string {
+	var hexName string
+	// pick returns true when name is a readable candidate to use now, and
+	// keeps the first hex candidate as the fallback.
+	pick := func(name string) bool {
+		if name == "" {
+			return false
+		}
+		if !isExcessivelyObfuscated(name) {
+			return true
+		}
+		if hexName == "" {
+			hexName = name
+		}
+		return false
+	}
+
 	// 0. [PRiVATE] tagged subjects
-	if name := parsePRiVATESubject(subject); name != "" && !isExcessivelyObfuscated(name) {
+	if name := parsePRiVATESubject(subject); pick(name) {
 		return name
 	}
 
 	// 1. Filename nicely wrapped in quotes
 	matches := reSubjectFilenameQuotes.FindAllStringSubmatch(subject, -1)
 	for _, m := range matches {
-		name := strings.Trim(m[1], ` "`)
-		if name != "" && !isExcessivelyObfuscated(name) {
+		if name := strings.Trim(m[1], ` "`); pick(name) {
 			return name
 		}
 	}
+	if hexName != "" {
+		return hexName
+	}
 
 	// 2. Found nothing? Try a basic filename-like search
-	match := reSubjectBasicFilename.FindString(subject)
-	if match != "" {
-		name := strings.TrimSpace(match)
-		if !isExcessivelyObfuscated(name) {
-			return name
-		}
+	if name := strings.TrimSpace(reSubjectBasicFilename.FindString(subject)); name != "" {
+		return name
 	}
 
 	// 3. Return the subject
