@@ -23,10 +23,9 @@ import (
 
 // ServerConfig configures the localnntp disk-backed NNTP server.
 type ServerConfig struct {
-	// ReleaseDir is the directory containing `files/<DiskName>`.
-	ReleaseDir string
-	// Manifest is the metadata describing the release structure and segments.
-	Manifest *ReleaseManifest
+	// Releases are the releases served together. Each keeps its own articles.pack and files/
+	// directory; Message-IDs must be unique across all of them. At least one is required.
+	Releases []ReleaseSource
 	// ListenAddr is the TCP address to bind, defaults to "127.0.0.1:0" if empty.
 	ListenAddr string
 	// Faults is the fault injection engine; defaults to NewFaultEngine(1, nil) if nil.
@@ -35,9 +34,6 @@ type ServerConfig struct {
 	Limiter *RateLimiter
 	// Users is an optional auth map of username to password. If empty, auth is not required.
 	Users map[string]string
-	// ExtraReleases are additional releases indexed beside ReleaseDir/Manifest. Each keeps its
-	// own articles.pack and files/ directory; Message-IDs must be unique across all releases.
-	ExtraReleases []ReleaseSource
 	// Conn is the initial connection-level fault state; adjustable at runtime via SetConnSettings.
 	Conn ConnSettings
 }
@@ -141,11 +137,8 @@ type serverRelease struct {
 
 // NewServer initializes a disk-backed NNTP server with immutable pre-indexed segment locations.
 func NewServer(cfg ServerConfig) (*Server, error) {
-	if cfg.Manifest == nil {
-		return nil, errors.New("manifest is required")
-	}
-	if cfg.ReleaseDir == "" {
-		return nil, errors.New("release directory is required")
+	if len(cfg.Releases) == 0 {
+		return nil, errors.New("at least one release is required")
 	}
 	if cfg.Faults == nil {
 		cfg.Faults = NewFaultEngine(1, nil)
@@ -157,7 +150,7 @@ func NewServer(cfg ServerConfig) (*Server, error) {
 		cfg.ListenAddr = "127.0.0.1:0"
 	}
 
-	sources := append([]ReleaseSource{{Dir: cfg.ReleaseDir, Manifest: cfg.Manifest}}, cfg.ExtraReleases...)
+	sources := cfg.Releases
 	segments := make(map[string]segmentLoc)
 	releases := make([]serverRelease, 0, len(sources))
 	closePacks := func() {

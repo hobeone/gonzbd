@@ -175,12 +175,10 @@ func runServe(ctx context.Context, args []string, stdout, stderr io.Writer) int 
 	limiter := NewRateLimiter(*rateMBps)
 
 	srv, err := NewServer(ServerConfig{
-		ReleaseDir:    sources[0].Dir,
-		Manifest:      sources[0].Manifest,
-		ExtraReleases: sources[1:],
-		ListenAddr:    *listen,
-		Faults:        faults,
-		Limiter:       limiter,
+		Releases:   sources,
+		ListenAddr: *listen,
+		Faults:     faults,
+		Limiter:    limiter,
 		Conn: ConnSettings{
 			MaxConnections: *maxConns,
 			Refuse:         *refuse,

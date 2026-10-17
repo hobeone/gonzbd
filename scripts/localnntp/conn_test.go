@@ -25,8 +25,7 @@ type rawClient struct {
 func startConnTestServer(t *testing.T, cfg ServerConfig) *Server {
 	t.Helper()
 	dir := t.TempDir()
-	cfg.ReleaseDir = dir
-	cfg.Manifest = createTestRelease(t, dir)
+	cfg.Releases = []ReleaseSource{{Dir: dir, Manifest: createTestRelease(t, dir)}}
 	srv, err := NewServer(cfg)
 	if err != nil {
 		t.Fatalf("NewServer: %v", err)
@@ -292,9 +291,7 @@ func TestServer_MultiRelease(t *testing.T) {
 	dirB, mB, singleB := writeSecondRelease(t, "-b")
 
 	srv, err := NewServer(ServerConfig{
-		ReleaseDir:    dirA,
-		Manifest:      mA,
-		ExtraReleases: []ReleaseSource{{Dir: dirB, Manifest: mB}},
+		Releases: []ReleaseSource{{Dir: dirA, Manifest: mA}, {Dir: dirB, Manifest: mB}},
 	})
 	if err != nil {
 		t.Fatalf("NewServer: %v", err)
@@ -348,18 +345,14 @@ func TestServer_MultiRelease_DuplicateMessageID(t *testing.T) {
 	mB := createTestRelease(t, dirB) // same Message-IDs as A
 
 	_, err := NewServer(ServerConfig{
-		ReleaseDir:    dirA,
-		Manifest:      mA,
-		ExtraReleases: []ReleaseSource{{Dir: dirB, Manifest: mB}},
+		Releases: []ReleaseSource{{Dir: dirA, Manifest: mA}, {Dir: dirB, Manifest: mB}},
 	})
 	if err == nil || !strings.Contains(err.Error(), "duplicate message-id") {
 		t.Fatalf("NewServer err = %v, want duplicate message-id error", err)
 	}
 
 	_, err = NewServer(ServerConfig{
-		ReleaseDir:    dirA,
-		Manifest:      mA,
-		ExtraReleases: []ReleaseSource{{Dir: "", Manifest: nil}},
+		Releases: []ReleaseSource{{Dir: dirA, Manifest: mA}, {Dir: "", Manifest: nil}},
 	})
 	if err == nil {
 		t.Fatal("NewServer accepted an empty extra release")

@@ -153,8 +153,7 @@ func TestServer_HappyPath_SingleAndMultiPart(t *testing.T) {
 	manifest := createTestRelease(t, dir)
 
 	srv, err := NewServer(ServerConfig{
-		ReleaseDir: dir,
-		Manifest:   manifest,
+		Releases: []ReleaseSource{{Dir: dir, Manifest: manifest}},
 	})
 	if err != nil {
 		t.Fatalf("NewServer: %v", err)
@@ -234,8 +233,7 @@ func TestServer_NNTPProtocol(t *testing.T) {
 	manifest := createTestRelease(t, dir)
 
 	srv, err := NewServer(ServerConfig{
-		ReleaseDir: dir,
-		Manifest:   manifest,
+		Releases: []ReleaseSource{{Dir: dir, Manifest: manifest}},
 	})
 	if err != nil {
 		t.Fatalf("NewServer: %v", err)
@@ -364,9 +362,8 @@ func TestServer_Auth(t *testing.T) {
 	manifest := createTestRelease(t, dir)
 
 	srv, err := NewServer(ServerConfig{
-		ReleaseDir: dir,
-		Manifest:   manifest,
-		Users:      map[string]string{"alice": "secret123"},
+		Releases: []ReleaseSource{{Dir: dir, Manifest: manifest}},
+		Users:    map[string]string{"alice": "secret123"},
 	})
 	if err != nil {
 		t.Fatalf("NewServer: %v", err)
@@ -449,8 +446,7 @@ func TestServer_Faults(t *testing.T) {
 	manifest := createTestRelease(t, dir)
 
 	srv, err := NewServer(ServerConfig{
-		ReleaseDir: dir,
-		Manifest:   manifest,
+		Releases: []ReleaseSource{{Dir: dir, Manifest: manifest}},
 	})
 	if err != nil {
 		t.Fatalf("NewServer: %v", err)
@@ -601,8 +597,7 @@ func TestServer_Snapshots(t *testing.T) {
 	manifest := createTestRelease(t, dir)
 
 	srv, err := NewServer(ServerConfig{
-		ReleaseDir: dir,
-		Manifest:   manifest,
+		Releases: []ReleaseSource{{Dir: dir, Manifest: manifest}},
 	})
 	if err != nil {
 		t.Fatalf("NewServer: %v", err)
@@ -650,8 +645,7 @@ func TestControl_API(t *testing.T) {
 	manifest := createTestRelease(t, dir)
 
 	srv, err := NewServer(ServerConfig{
-		ReleaseDir: dir,
-		Manifest:   manifest,
+		Releases: []ReleaseSource{{Dir: dir, Manifest: manifest}},
 	})
 	if err != nil {
 		t.Fatalf("NewServer: %v", err)
@@ -963,15 +957,19 @@ func TestControl_API(t *testing.T) {
 }
 
 func TestNewServer_Validation(t *testing.T) {
-	_, err := NewServer(ServerConfig{ReleaseDir: ""})
+	_, err := NewServer(ServerConfig{})
 	if err == nil {
-		t.Errorf("expected error for nil manifest")
+		t.Errorf("expected error for no releases")
 	}
 
 	manifest := &ReleaseManifest{Name: "test"}
-	_, err = NewServer(ServerConfig{Manifest: manifest, ReleaseDir: ""})
+	_, err = NewServer(ServerConfig{Releases: []ReleaseSource{{Manifest: manifest}}})
 	if err == nil {
 		t.Errorf("expected error for empty release dir")
+	}
+	_, err = NewServer(ServerConfig{Releases: []ReleaseSource{{Dir: t.TempDir()}}})
+	if err == nil {
+		t.Errorf("expected error for nil manifest")
 	}
 }
 
@@ -980,9 +978,8 @@ func TestServer_NNTPProtocol_Edges(t *testing.T) {
 	manifest := createTestRelease(t, dir)
 
 	srv, err := NewServer(ServerConfig{
-		ReleaseDir: dir,
-		Manifest:   manifest,
-		Users:      map[string]string{"user": "pass"},
+		Releases: []ReleaseSource{{Dir: dir, Manifest: manifest}},
+		Users:    map[string]string{"user": "pass"},
 	})
 	if err != nil {
 		t.Fatalf("NewServer: %v", err)
@@ -1134,8 +1131,7 @@ func TestServer_ArticlesPack_FastPath(t *testing.T) {
 	}
 
 	srv, err := NewServer(ServerConfig{
-		ReleaseDir: dir,
-		Manifest:   manifest,
+		Releases: []ReleaseSource{{Dir: dir, Manifest: manifest}},
 	})
 	if err != nil {
 		t.Fatalf("NewServer: %v", err)
@@ -1257,8 +1253,7 @@ func TestServer_ArticlesPack_FastPath(t *testing.T) {
 		},
 	})
 	srvMissing, err := NewServer(ServerConfig{
-		ReleaseDir: dir,
-		Manifest:   manifestMissing,
+		Releases: []ReleaseSource{{Dir: dir, Manifest: manifestMissing}},
 	})
 	if err != nil {
 		t.Fatalf("NewServer srvMissing: %v", err)
@@ -1279,8 +1274,7 @@ func TestServer_StatDoesNotConsumeBodyFaultAndAcceptBackoff(t *testing.T) {
 	manifest := createTestRelease(t, dir)
 
 	srv, err := NewServer(ServerConfig{
-		ReleaseDir: dir,
-		Manifest:   manifest,
+		Releases: []ReleaseSource{{Dir: dir, Manifest: manifest}},
 	})
 	if err != nil {
 		t.Fatalf("NewServer: %v", err)

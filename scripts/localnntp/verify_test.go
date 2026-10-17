@@ -130,8 +130,7 @@ func TestVerify_Crash_HappyPath(t *testing.T) {
 
 	// Setup mock server control handler
 	srv, err := NewServer(ServerConfig{
-		ReleaseDir: tempDir,
-		Manifest:   manifest,
+		Releases:   []ReleaseSource{{Dir: tempDir, Manifest: manifest}},
 		ListenAddr: "127.0.0.1:0",
 	})
 	if err != nil {
@@ -695,8 +694,7 @@ func TestVerify_Complete_HappyPath(t *testing.T) {
 
 	// Setup mock server
 	srv, err := NewServer(ServerConfig{
-		ReleaseDir: tempDir,
-		Manifest:   manifest,
+		Releases:   []ReleaseSource{{Dir: tempDir, Manifest: manifest}},
 		ListenAddr: "127.0.0.1:0",
 	})
 	if err != nil {
@@ -1368,8 +1366,7 @@ func TestVerify_ReviewFixesAndEdgeCases(t *testing.T) {
 
 	// 7. compareSnapshotRefetches detects faulted re-fetch via Requests map and handles error statuses
 	srv, err := NewServer(ServerConfig{
-		ReleaseDir: tempDir,
-		Manifest:   manifest,
+		Releases: []ReleaseSource{{Dir: tempDir, Manifest: manifest}},
 	})
 	if err != nil {
 		t.Fatal(err)
