@@ -641,28 +641,37 @@ func TestVerify_Crash_MidPar2RepairOnCompleteFile(t *testing.T) {
 	}
 }
 
-func TestVerify_Complete_HappyPath(t *testing.T) {
+// completeFixture is a finished job: history row, extracted payload, and a one-segment manifest.
+type completeFixture struct {
+	tempDir  string
+	manifest *ReleaseManifest
+	cfg      VerifyConfig // complete mode; no server fields set
+}
+
+func newCompleteFixture(t *testing.T) completeFixture {
+	t.Helper()
 	tempDir := t.TempDir()
 	adminDir := filepath.Join(tempDir, "admin")
 	downloadDir := filepath.Join(tempDir, "incomplete")
 	completeDir := filepath.Join(tempDir, "complete")
-	_ = os.MkdirAll(adminDir, 0o755)
-	_ = os.MkdirAll(downloadDir, 0o755)
-	_ = os.MkdirAll(completeDir, 0o755)
+	for _, d := range []string{adminDir, downloadDir, completeDir} {
+		if err := os.MkdirAll(d, 0o750); err != nil {
+			t.Fatal(err)
+		}
+	}
 
 	db := createTestDB(t, adminDir)
 	jobID := "job-comp-1"
 	jobStorage := filepath.Join(completeDir, "myrelease")
-	_ = os.MkdirAll(jobStorage, 0o755)
-
+	if err := os.MkdirAll(jobStorage, 0o750); err != nil {
+		t.Fatal(err)
+	}
 	if _, err := db.Exec(`INSERT INTO history (nzo_id, status, storage, path, fail_message) VALUES (?, ?, ?, ?, ?)`,
 		jobID, "Completed", jobStorage, jobStorage, ""); err != nil {
 		t.Fatal(err)
 	}
 
 	payloadData := []byte("the complete extracted file content")
-	hash := sha256.Sum256(payloadData)
-	hashHex := fmt.Sprintf("%x", hash)
 	if err := os.WriteFile(filepath.Join(jobStorage, "payload.bin"), payloadData, 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -674,7 +683,7 @@ func TestVerify_Complete_HappyPath(t *testing.T) {
 			{
 				Name:   "payload.bin",
 				Size:   int64(len(payloadData)),
-				SHA256: hashHex,
+				SHA256: fmt.Sprintf("%x", sha256.Sum256(payloadData)),
 			},
 		},
 		Files: []ReleaseFile{
@@ -692,11 +701,28 @@ func TestVerify_Complete_HappyPath(t *testing.T) {
 	if err := SaveManifest(manifestPath, manifest); err != nil {
 		t.Fatal(err)
 	}
+	return completeFixture{
+		tempDir:  tempDir,
+		manifest: manifest,
+		cfg: VerifyConfig{
+			Mode:         "complete",
+			ManifestPath: manifestPath,
+			AdminDir:     adminDir,
+			DownloadDir:  downloadDir,
+			CompleteDir:  completeDir,
+			JobID:        jobID,
+		},
+	}
+}
+
+func TestVerify_Complete_HappyPath(t *testing.T) {
+	fx := newCompleteFixture(t)
+	jobID := fx.cfg.JobID
 
 	// Setup mock server
-	mkFilesDir(t, tempDir)
+	mkFilesDir(t, fx.tempDir)
 	srv, err := NewServer(ServerConfig{
-		Releases:   []ReleaseSource{{Dir: tempDir, Manifest: manifest}},
+		Releases:   []ReleaseSource{{Dir: fx.tempDir, Manifest: fx.manifest}},
 		ListenAddr: "127.0.0.1:0",
 	})
 	if err != nil {
@@ -709,16 +735,9 @@ func TestVerify_Complete_HappyPath(t *testing.T) {
 	controlSrv := httptest.NewServer(NewControlHandler(srv))
 	defer controlSrv.Close()
 
-	cfg := VerifyConfig{
-		Mode:             "complete",
-		ManifestPath:     manifestPath,
-		AdminDir:         adminDir,
-		DownloadDir:      downloadDir,
-		CompleteDir:      completeDir,
-		JobID:            jobID,
-		ServerControlURL: controlSrv.URL,
-		CompareSnapshot:  "crash1",
-	}
+	cfg := fx.cfg
+	cfg.ServerControlURL = controlSrv.URL
+	cfg.CompareSnapshot = "crash1"
 
 	report, err := Verify(context.Background(), cfg)
 	if err != nil {
