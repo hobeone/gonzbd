@@ -99,7 +99,7 @@ func TestKindTablesAgree(t *testing.T) {
 
 func TestFailPopped(t *testing.T) {
 	t.Parallel()
-	// A popped command is no longer in the FIFO, so wakeOrphans will
+	// A popped command is no longer in the FIFO, so finishReader's drain will
 	// never reach it: failPopped owes it both the result and the close,
 	// on top of ending the connection.
 	c, _ := newTestConn(t, 1)
@@ -366,7 +366,7 @@ func TestRunReaderFatalPaths(t *testing.T) {
 				t.Fatalf("close reason = %v, want one containing %q", got, tc.wantErr)
 			}
 			// A command already popped off the FIFO is past the reach of
-			// wakeOrphans, so the reader owes it an explicit wake-up.
+			// finishReader's drain, so the reader owes it an explicit wake-up.
 			if pc != nil {
 				select {
 				case <-pc.done:
@@ -678,8 +678,8 @@ var submitWriteFailures = []struct {
 // The reader goroutine classifies the server's teardown while submit's
 // write is failing: submit has already appended its command, so the
 // classification comes from the unsolicited 205, not from an empty FIFO.
-// submit must surface that ErrIdleClosed rather than its own write error,
-// or the downloader charges a server penalty for an idle disconnect.
+// submit must surface that ErrIdleClosed rather than its own write error:
+// internal/downloader's PenaltyFor exempts ErrIdleClosed and not a write error.
 func TestSubmit_WriteOrFlushErrorWhenIdleClosedReturnsCloseError(t *testing.T) {
 	t.Parallel()
 	for _, tc := range submitWriteFailures {
@@ -730,18 +730,13 @@ func tcpPair(t *testing.T) (client, server *net.TCPConn) {
 // must not read the close reason the reader is about to record. Run under
 // -race this fails on any unsynchronized read of it.
 //
-// The order is fixed: submit returns before the server resets, and the
-// reader records its reason only after the reset reaches it. Nothing
-// orders those two accesses for the race detector. submit's last pendingLock
-// release precedes its read, so finishReader's acquire does not cover it.
-// A peer reset fails the reader's read syscall, and the syscall package
-// records an I/O synchronization edge only for a successful read, so the
-// reset carries none either. That is why this is a TCP connection rather
-// than newTestConn's net.Pipe, whose channels would order the two.
-//
-// The race detector does not flag every unordered pair it sees: on the
-// unfixed code one run of this sequence was flagged in roughly a third of
-// processes. Each subtest therefore repeats it on fresh connections.
+// The order is fixed: submit reads before the server resets, and the
+// reader records its reason after. submit's last pendingLock release
+// precedes its read, so finishReader's acquire does not order them, and a
+// failed read syscall records no I/O edge (syscall.Read in GOROOT's
+// syscall/syscall_unix.go acquires ioSync only when err == nil). net.Pipe
+// would order them through its channels, hence TCP. A single run is not
+// reliably flagged, so each subtest repeats it on fresh connections.
 func TestSubmit_WriteFailureRacingReaderTeardown(t *testing.T) {
 	t.Parallel()
 	const rounds = 32
@@ -783,7 +778,11 @@ func submitThenReset(t *testing.T, bufSize int) {
 		t.Fatalf("SetLinger: %v", err)
 	}
 	_ = server.Close() // with linger 0, the client's next read sees a reset
-	<-c.readerDone
+	select {
+	case <-c.readerDone:
+	case <-time.After(5 * time.Second): // hang guard only
+		t.Fatal("the reader did not exit after the connection was reset")
+	}
 	if !c.Closed() {
 		t.Error("c.Closed() = false after the reader exited")
 	}

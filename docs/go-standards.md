@@ -273,7 +273,7 @@ These rules are distilled from real bugs found across dozens of audit and harden
 
 - **Don't expose mutable data to concurrent readers before it is fully initialized.** Calling `addHistory(job)` before `processJob(job)` exposed partially-initialized `StageLog` fields to API handlers reading the same struct.
 
-- **A flag and the value it guards belong in one atomic.** `nntp.Conn` once kept a `closed` atomic flag and a plain `closeErr` field, and set the error before the flag so that a reader seeing the flag would see the error. That ordering helped only readers that checked the flag first. `submit`'s write-failure path read `closeErr` without doing so, while the reader goroutine was writing it, and the race detector flagged it. `Conn.closed` is now an `atomic.Pointer[closeState]` carrying both facts, so no read can see one without the other.
+- **A flag and the value it guards belong in one atomic.** Setting a plain field before an atomic flag orders only the readers that load the flag first; a reader that reads the field directly races the writer. `nntp.Conn.closed` is an `atomic.Pointer[closeState]` holding both the closed mark and its reason, so no read can see one without the other.
 
 - **Use `sync.Once` or `CompareAndSwap` for idempotent stop/close.** Multiple stop paths (shutdown, error, cancel) can race. Using `closeOnce.Do(func(){...})` prevents double-close panics on channels and connections.
 

@@ -348,7 +348,7 @@ func (c *Conn) popPending() *pendingCmd {
 // pc — the command the reader has already taken off the FIFO.
 //
 // That ordering is the whole reason this exists as a named step. The
-// reader's usual teardown, wakeOrphans, drains the FIFO, and pc is no
+// reader's usual teardown, finishReaderWithMode, drains the FIFO, and pc is no
 // longer in it; nothing else will ever close its done channel, so
 // finishReader alone leaves pc's caller blocked until its context
 // expires. Every fatal path taken between popPending and the final
@@ -406,8 +406,9 @@ func (c *Conn) finishReaderWithMode(err error, prePop bool) {
 }
 
 // wakeOrphans drains the pending FIFO and signals all waiting callers
-// with the given error. Called by both finishReader and Close inside
-// closeOnce.Do, so it runs at most once per connection.
+// with the given error. Close calls it inside closeOnce.Do, so it runs
+// at most once per connection; finishReaderWithMode drains the FIFO
+// itself, under the same lock as its store to c.closed.
 func (c *Conn) wakeOrphans(err error) {
 	c.pendingLock.Lock()
 	orphans := c.pending

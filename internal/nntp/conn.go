@@ -78,7 +78,7 @@ type Conn struct {
 	// closed is nil while the Conn is open. Close and
 	// finishReaderWithMode store it inside closeOnce.Do, so it is set at
 	// most once, and that one store records both that the Conn closed
-	// and why: a reader cannot see one without the other.
+	// and why. Read the reason through closeCause.
 	closed     atomic.Pointer[closeState]
 	closeOnce  sync.Once
 	readerDone chan struct{}
