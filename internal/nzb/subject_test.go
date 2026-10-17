@@ -80,6 +80,10 @@ func TestExtractFilenameFromSubject(t *testing.T) {
 		{"private_hex_with_ext",
 			`[PRiVATE]-[grp]-[a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4.par2]-[01/10] - "" yEnc`,
 			"a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4.par2"},
+		// the PRiVATE hex name outranks the unquoted search, which would find grp.v1.00
+		{"private_hex_beats_basic",
+			`[PRiVATE]-[grp.v1.00]-[a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4.par2]-[01/10] - "" yEnc`,
+			"a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4.par2"},
 		{"quoted_real_beats_private_hex",
 			`[PRiVATE]-[grp]-[a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4.rar]-[01/10] - "real.name.mkv" yEnc`,
 			"real.name.mkv"},

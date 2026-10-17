@@ -44,3 +44,11 @@ file internal/nzb/subject.go
 --- replace
 	if name := strings.TrimSpace(reSubjectBasicFilename.FindString(subject)); name != "" && !isExcessivelyObfuscated(name) {
 --- end
+
+[the PRiVATE step's hex candidate not recorded]
+file internal/nzb/subject.go
+--- anchor
+	if name := parsePRiVATESubject(subject); pick(name) {
+--- replace
+	if name := parsePRiVATESubject(subject); name != "" && !isExcessivelyObfuscated(name) {
+--- end
