@@ -4,11 +4,12 @@ import (
 	"bufio"
 	"context"
 	"errors"
-	"fmt"
 	"io"
+	"log/slog"
 	"net"
 	"strings"
 	"testing"
+	"time"
 )
 
 // newTestConn adds the pipelining state to newPipeConn's socket wiring:
@@ -98,7 +99,7 @@ func TestKindTablesAgree(t *testing.T) {
 
 func TestFailPopped(t *testing.T) {
 	t.Parallel()
-	// A popped command is no longer in the FIFO, so wakeOrphans will
+	// A popped command is no longer in the FIFO, so finishReader's drain will
 	// never reach it: failPopped owes it both the result and the close,
 	// on top of ending the connection.
 	c, _ := newTestConn(t, 1)
@@ -118,8 +119,8 @@ func TestFailPopped(t *testing.T) {
 	if pc.result.code != 222 {
 		t.Errorf("result.code = %d, want the response fields preserved", pc.result.code)
 	}
-	if !c.closed.Load() || !errors.Is(c.closeError(), want) {
-		t.Errorf("connection not ended on %v (closed=%v, err=%v)", want, c.closed.Load(), c.closeError())
+	if !c.Closed() || !errors.Is(c.closeError(), want) {
+		t.Errorf("connection not ended on %v (closed=%v, err=%v)", want, c.Closed(), c.closeError())
 	}
 }
 
@@ -206,7 +207,7 @@ func TestFinishReaderIsIdempotent(t *testing.T) {
 	if !errors.Is(pc.result.err, want) {
 		t.Errorf("pending command woke with %v, want %v", pc.result.err, want)
 	}
-	if !c.closed.Load() {
+	if !c.Closed() {
 		t.Error("finishReader did not mark the connection closed")
 	}
 	if !errors.Is(c.closeError(), want) {
@@ -218,6 +219,20 @@ func TestFinishReaderIsIdempotent(t *testing.T) {
 	c.finishReader(errors.New("second reason"))
 	if !errors.Is(c.closeError(), want) {
 		t.Errorf("closeError() = %v after a second finishReader, want the first reason %v", c.closeError(), want)
+	}
+}
+
+// Close after the reader has ended the connection reports the reader's
+// reason, not nil: the caller asked to close a Conn that had already died.
+func TestCloseReturnsReaderReason(t *testing.T) {
+	t.Parallel()
+	c, peer := newTestConn(t, 1)
+	go c.runReader()
+	_ = peer.Close()
+	<-c.readerDone
+
+	if err := c.Close(); !errors.Is(err, io.EOF) {
+		t.Errorf("Close() = %v, want the reader's io.EOF", err)
 	}
 }
 
@@ -351,7 +366,7 @@ func TestRunReaderFatalPaths(t *testing.T) {
 				t.Fatalf("close reason = %v, want one containing %q", got, tc.wantErr)
 			}
 			// A command already popped off the FIFO is past the reach of
-			// wakeOrphans, so the reader owes it an explicit wake-up.
+			// finishReader's drain, so the reader owes it an explicit wake-up.
 			if pc != nil {
 				select {
 				case <-pc.done:
@@ -636,37 +651,141 @@ func TestRunReader_UnsolicitedTeardownWakesPendingWithIdleClosed(t *testing.T) {
 	}
 }
 
+// hookedWriter stands in for the socket under c.bw. Each Write runs
+// onWrite, if set, and then fails with errInjectedWrite.
+type hookedWriter struct{ onWrite func() }
+
+var errInjectedWrite = errors.New("injected write failure")
+
+func (w hookedWriter) Write([]byte) (int, error) {
+	if w.onWrite != nil {
+		w.onWrite()
+	}
+	return 0, errInjectedWrite
+}
+
+// submitWriteFailures names the two places submit can see the socket fail.
+// A one-byte buffer makes bufio hand the command straight to the writer
+// from Write; the default buffer holds it until Flush.
+var submitWriteFailures = []struct {
+	name    string
+	bufSize int
+}{
+	{"write error", 1},
+	{"flush error", 4096},
+}
+
+// The reader goroutine classifies the server's teardown while submit's
+// write is failing: submit has already appended its command, so the
+// classification comes from the unsolicited 205, not from an empty FIFO.
+// submit must surface that ErrIdleClosed rather than its own write error:
+// internal/downloader's PenaltyFor exempts ErrIdleClosed and not a write error.
 func TestSubmit_WriteOrFlushErrorWhenIdleClosedReturnsCloseError(t *testing.T) {
 	t.Parallel()
+	for _, tc := range submitWriteFailures {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			c, peer := newTestConn(t, 1)
+			c.bw = bufio.NewWriterSize(hookedWriter{onWrite: func() {
+				_, _ = peer.Write([]byte("205 closing connection\r\n"))
+				select {
+				case <-c.readerDone:
+				case <-time.After(5 * time.Second): // hang guard only
+					t.Error("the reader did not end the connection on an unsolicited 205")
+				}
+			}}, tc.bufSize)
+			go c.runReader()
 
-	t.Run("write error", func(t *testing.T) {
-		t.Parallel()
-		c, peer := newPipeConn(t)
-		_ = peer.Close()
-		c.bw = bufio.NewWriterSize(c.nc, 1) // Force unbuffered write so c.bw.Write hits peer immediately.
-		c.closeErr = fmt.Errorf("%w: remote closed", ErrIdleClosed)
-		c.sem = make(chan struct{}, 1)
-		c.sem <- struct{}{}
-		pc := newPending(cmdStat, "art@host")
-		err := c.submit(pc, []byte("STAT <art@host>\r\n"))
-		if !errors.Is(err, ErrIdleClosed) {
-			t.Errorf("submit err = %v, want errors.Is(..., ErrIdleClosed)", err)
-		}
-	})
+			c.sem <- struct{}{}
+			err := c.submit(newPending(cmdStat, "art@host"), []byte("STAT <art@host>\r\n"))
+			if !errors.Is(err, ErrIdleClosed) {
+				t.Errorf("submit err = %v, want errors.Is(..., ErrIdleClosed)", err)
+			}
+		})
+	}
+}
 
-	t.Run("flush error", func(t *testing.T) {
-		t.Parallel()
-		c, peer := newPipeConn(t)
-		_ = peer.Close()
-		c.closeErr = fmt.Errorf("%w: remote closed", ErrIdleClosed)
-		c.sem = make(chan struct{}, 1)
-		c.sem <- struct{}{}
-		pc := newPending(cmdStat, "art@host")
-		err := c.submit(pc, []byte("STAT <art@host>\r\n"))
-		if !errors.Is(err, ErrIdleClosed) {
-			t.Errorf("submit err = %v, want errors.Is(..., ErrIdleClosed)", err)
-		}
-	})
+// tcpPair returns both ends of a loopback TCP connection.
+func tcpPair(t *testing.T) (client, server *net.TCPConn) {
+	t.Helper()
+	ln, err := net.ListenTCP("tcp", &net.TCPAddr{IP: net.IPv4(127, 0, 0, 1)})
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	defer func() { _ = ln.Close() }()
+	client, err = net.DialTCP("tcp", nil, ln.Addr().(*net.TCPAddr))
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	server, err = ln.AcceptTCP()
+	if err != nil {
+		_ = client.Close()
+		t.Fatalf("accept: %v", err)
+	}
+	t.Cleanup(func() { _ = client.Close(); _ = server.Close() })
+	return client, server
+}
+
+// A write that fails before the reader goroutine has ended the connection
+// must not read the close reason the reader is about to record. Run under
+// -race this fails on any unsynchronized read of it.
+//
+// The order is fixed: submit reads before the server resets, and the
+// reader records its reason after. submit's last pendingLock release
+// precedes its read, so finishReader's acquire does not order them, and a
+// failed read syscall records no I/O edge (syscall.Read in GOROOT's
+// syscall/syscall_unix.go acquires ioSync only when err == nil). net.Pipe
+// would order them through its channels, hence TCP. A single run is not
+// reliably flagged, so each subtest repeats it on fresh connections.
+func TestSubmit_WriteFailureRacingReaderTeardown(t *testing.T) {
+	t.Parallel()
+	const rounds = 32
+	for _, tc := range submitWriteFailures {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			for range rounds {
+				submitThenReset(t, tc.bufSize)
+			}
+		})
+	}
+}
+
+// submitThenReset fails one submit on a connection whose reader is still
+// live, then resets the connection and waits for the reader to exit.
+func submitThenReset(t *testing.T, bufSize int) {
+	t.Helper()
+	client, server := tcpPair(t)
+	c := &Conn{
+		log:        slog.New(slog.DiscardHandler),
+		nc:         client,
+		br:         bufio.NewReader(client),
+		bw:         bufio.NewWriterSize(hookedWriter{}, bufSize),
+		state:      StateReady,
+		sem:        make(chan struct{}, 1),
+		readerDone: make(chan struct{}),
+	}
+	c.ctx, c.cancel = context.WithCancel(t.Context())
+	t.Cleanup(c.cancel)
+	go c.runReader()
+
+	c.sem <- struct{}{}
+	err := c.submit(newPending(cmdStat, "art@host"), []byte("STAT <art@host>\r\n"))
+	if !errors.Is(err, errInjectedWrite) {
+		t.Errorf("submit err = %v, want the write failure: the reader had not ended the connection", err)
+	}
+
+	if err := server.SetLinger(0); err != nil {
+		t.Fatalf("SetLinger: %v", err)
+	}
+	_ = server.Close() // with linger 0, the client's next read sees a reset
+	select {
+	case <-c.readerDone:
+	case <-time.After(5 * time.Second): // hang guard only
+		t.Fatal("the reader did not exit after the connection was reset")
+	}
+	if !c.Closed() {
+		t.Error("c.Closed() = false after the reader exited")
+	}
 }
 
 // Dummy reference to satisfy scripts/check_test_alignment.
