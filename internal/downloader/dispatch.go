@@ -14,6 +14,7 @@ import (
 	"github.com/hobeone/gonzbd/internal/constants"
 	"github.com/hobeone/gonzbd/internal/decoder"
 	"github.com/hobeone/gonzbd/internal/dispatch"
+	"github.com/hobeone/gonzbd/internal/heldbytes"
 	"github.com/hobeone/gonzbd/internal/job"
 	"github.com/hobeone/gonzbd/internal/nntp"
 	"github.com/hobeone/gonzbd/internal/telemetry"
@@ -186,7 +187,7 @@ func (d *Downloader) applyDispatchPlan(ctx context.Context, plan dispatchPlan, o
 		d.markEmitted(req)
 		d.clearTried(req)
 		telemetry.PipelineErrors.Add(telemetry.ErrClassExhaustedAllServers, 1)
-		d.emitResult(ctx, req, "", nil, 0, 0, ErrNoServersLeft)
+		d.emitResult(ctx, req, "", nil, 0, 0, ErrNoServersLeft, nil)
 	}
 
 	// Handle hopeless jobs.
@@ -625,13 +626,26 @@ func (d *Downloader) handleRequest(ctx context.Context, srv *Server, serverIdx i
 		defer done()
 	}
 
-	body, ok := d.fetchArticle(ctx, srv, serverIdx, mc, req, workerID)
-	done()
-	if !ok {
+	// The article is charged to the budget of decoded bytes not yet written
+	// before it is fetched, so a slow writer stops this connection's fetches
+	// here rather than letting fetched bodies wait for a decode behind it.
+	// The charge is the buffer class of the NZB's declared size, which the
+	// parser bounds below 8 MiB. The wait holds this request's wire slot and
+	// no lock; ctx ends it at shutdown, and the article goes back to the pool
+	// as a fetch cut short by shutdown does.
+	held, err := d.held.Acquire(ctx, decoder.BufferCap(int64(req.bytes)))
+	if err != nil {
+		d.unmarkTried(req, serverIdx)
 		return
 	}
 
-	d.processFetchedArticle(ctx, srv, req, body)
+	body, ok := d.fetchArticle(ctx, srv, serverIdx, mc, req, workerID)
+	done()
+	if !ok {
+		held.Release()
+		return
+	}
+	d.processFetchedArticle(ctx, srv, req, body, held)
 }
 
 // clearEmitted returns req's article to the dispatch pool, on req's own
@@ -738,7 +752,7 @@ func (d *Downloader) fetchArticle(ctx context.Context, srv *Server, serverIdx in
 			// healthy — reuse it.
 			srv.RecordGoodConnection()
 			telemetry.PipelineErrors.Add(telemetry.ErrClassNNTPNoArticle, 1)
-			d.emitResult(ctx, req, name, nil, 0, 0, err)
+			d.emitResult(ctx, req, name, nil, 0, 0, err, nil)
 			return nil, false
 		}
 		// Connection-level failure: tear down, re-dial later.
@@ -775,12 +789,15 @@ func (d *Downloader) fetchArticle(ctx context.Context, srv *Server, serverIdx in
 }
 
 // processFetchedArticle decodes an article payload, verifies CRC, and emits the final queue result.
-func (d *Downloader) processFetchedArticle(ctx context.Context, srv *Server, req *articleRequest, body []byte) {
+// held is the budget charged for the decoded copy: a failed decode releases
+// it here, and a successful one hands it on with the result.
+func (d *Downloader) processFetchedArticle(ctx context.Context, srv *Server, req *articleRequest, body []byte, held *heldbytes.Hold) {
 	name := srv.Cfg().Name
 	// Decoding (Step 3: Parallelize Decoding): Decode article payload
 	// directly in the connection goroutine to utilize all CPU cores.
 	payload, err := decodePayload(body, req.partNumber)
 	if err != nil {
+		held.Release()
 		if payload.data != nil {
 			decoder.PutBuffer(payload.data)
 		}
@@ -793,7 +810,7 @@ func (d *Downloader) processFetchedArticle(ctx context.Context, srv *Server, req
 				"server", name, "msgid", req.messageID)
 			srv.RecordGoodConnection()
 			telemetry.PipelineErrors.Add(telemetry.ErrClassCRCMismatch, 1)
-			d.emitResult(ctx, req, name, nil, 0, 0, err)
+			d.emitResult(ctx, req, name, nil, 0, 0, err, nil)
 			return
 		}
 		d.log.Warn("decode error", "msgid", req.messageID, "err", err)
@@ -802,7 +819,7 @@ func (d *Downloader) processFetchedArticle(ctx context.Context, srv *Server, req
 		d.markEmitted(req)
 		d.clearTried(req)
 		telemetry.PipelineErrors.Add(classifyDecodeError(err), 1)
-		d.emitResult(ctx, req, name, nil, 0, 0, err)
+		d.emitResult(ctx, req, name, nil, 0, 0, err, nil)
 		return
 	}
 
@@ -822,10 +839,13 @@ func (d *Downloader) processFetchedArticle(ctx context.Context, srv *Server, req
 	// nntp-downloader-contract.md §5 and docs/durability-contract.md.
 	d.markEmitted(req)
 	d.clearTried(req)
-	d.emitResult(ctx, req, name, payload.data, payload.offset, payload.crc, nil)
+	d.emitResult(ctx, req, name, payload.data, payload.offset, payload.crc, nil, held)
 }
 
-func (d *Downloader) emitResult(ctx context.Context, req *articleRequest, server string, data []byte, offset int64, crc uint32, err error) {
+// emitResult sends one result to the pipeline. held is data's charge against
+// the budget, nil for a result without data; it travels with the result, and
+// a result dropped here gives it back with its buffer.
+func (d *Downloader) emitResult(ctx context.Context, req *articleRequest, server string, data []byte, offset int64, crc uint32, err error, held *heldbytes.Hold) {
 	res := &ArticleResult{
 		Job:        req.job,
 		FileIdx:    req.fileIdx,
@@ -837,10 +857,12 @@ func (d *Downloader) emitResult(ctx context.Context, req *articleRequest, server
 		Offset:     offset,
 		CRC:        crc,
 		Err:        err,
+		Held:       held,
 	}
 	select {
 	case d.completions <- res:
 	case <-ctx.Done():
+		res.Release()
 		// The result is dropped, and dropping it falsifies a claim three of
 		// this function's callers make just before calling it.
 		//

@@ -42,7 +42,7 @@ func TestEmitResult_ClearsTheEmittedBitWhenTheResultIsDropped(t *testing.T) {
 	cancel()
 
 	req := &articleRequest{job: j, artIdx: artIdx, messageID: "a@h"}
-	d.emitResult(ctx, req, "srv", []byte("payload"), 0, 0, nil)
+	d.emitResult(ctx, req, "srv", []byte("payload"), 0, 0, nil, nil)
 
 	// The consequence, not the bit: the article must be dispatchable again.
 	// Nothing wrote its bytes, so re-fetching costs a fetch and strands
@@ -71,7 +71,7 @@ func TestEmitResult_LeavesTheEmittedBitWhenTheResultIsDelivered(t *testing.T) {
 	}
 
 	req := &articleRequest{job: j, artIdx: artIdx, messageID: "a@h"}
-	d.emitResult(t.Context(), req, "srv", []byte("payload"), 0, 0, nil)
+	d.emitResult(t.Context(), req, "srv", []byte("payload"), 0, 0, nil, nil)
 
 	if got := <-d.Completions(); got.ArtIdx != artIdx {
 		t.Fatalf("completion carried artidx %d, want %d", got.ArtIdx, artIdx)
@@ -100,7 +100,7 @@ func TestEmitResult_ReportsAFailureToClearRatherThanSwallowingIt(t *testing.T) {
 
 	// Out of range for a one-article job, so the clear fails.
 	req := &articleRequest{job: j, artIdx: 4096, messageID: "a@h"}
-	d.emitResult(ctx, req, "srv", nil, 0, 0, nil)
+	d.emitResult(ctx, req, "srv", nil, 0, 0, nil, nil)
 
 	if !strings.Contains(logged.String(), "clear the emitted bit for a dropped result") {
 		t.Errorf("a clear that failed for a real reason was not reported; log was %q",

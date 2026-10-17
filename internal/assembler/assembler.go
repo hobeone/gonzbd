@@ -88,6 +88,14 @@ type WriteRequest struct {
 	// OnArticleWritten.
 	CRC32 uint32
 
+	// Release, when non-nil, is called on the worker once it has dispatched
+	// the request, whatever became of it: written, refused, faulted, or
+	// discarded for a cancelled job. A request still queued when the worker
+	// exits is not released. A WriteArticle that returns an error
+	// never calls it, so the caller still owns what it releases. The pipeline
+	// sets it to give the article's bytes back to the downloader's budget.
+	Release func()
+
 	// FatalErr is set if the article permanently failed to download.
 	// If non-nil, the assembler skips writing and counts the part toward
 	// file completion. Duplicate failures are deduplicated locally
@@ -1147,6 +1155,13 @@ func (a *Assembler) dispatchRequest(
 		// and its callbacks have run. See Assembler.Quiesce.
 		close(req.ackCh)
 		return 0
+	}
+	// An article request the worker received ends here: the control arms
+	// above have returned, and the worker's two receive loops are this
+	// function's callers (`git grep -n 'a\.dispatchRequest(' --
+	// 'internal/assembler/*.go' ':!*_test.go'` returns 2 lines).
+	if req.Release != nil {
+		defer req.Release()
 	}
 	// Skip articles for cancelled and closed jobs.
 	if _, cancelled := cancelledJobs[req.JobID]; cancelled {

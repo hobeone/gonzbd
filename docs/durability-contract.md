@@ -1091,6 +1091,14 @@ returns 1 line), and `reqs` is the one field typed to hold a `WriteRequest`
 returns 2 lines: the field and its `make`). Buffers still upstream of
 `WriteArticle`, in the downloader's decode path, are not counted here.
 
+What bounds those bytes is the downloader's held-bytes budget
+(`docs/nntp-downloader-contract.md` § "Held-bytes budget"), which charges an
+article from before its fetch until the worker has finished with it: the
+worker calls a request's `WriteRequest.Release` once `dispatchRequest` returns
+for it, on every disposition; a request still queued when the worker exits
+at shutdown is not released. `reqs` itself counts requests, so on its own it
+would hold 2048 of them, whatever their size.
+
 Decoder buffers are returned to `sync.Pool` (`decoder.PutBuffer`) on every path,
 including every failure path.
 
@@ -1354,11 +1362,11 @@ are bounded by the flush cadence and by file size, as below.
 
 | Component | Bound / strategy |
 |---|---|
-| Write channel (`reqs`) | 2048 requests (`defaultQueueSize`). At 128 KiB articles, ~256 MB worst-case buffered; backpressures the downloader when disk I/O is slow. |
+| Write channel (`reqs`) | 2048 requests (`defaultQueueSize`); backpressures the pipeline when disk I/O is slow. Its bytes are bounded by the downloader's held-bytes budget (256 MiB by default) together with everything else between the fetch and the write, not by its depth. |
 | Recorder buffers | one row per article written since the last flush, one state per dirty file, and one owed delete per untrusted file whose delete has not landed. A flush that keeps failing re-merges its snapshot, so they grow while SQLite refuses writes. |
 | `JobProgress.written` | one row per written or verified article of a file whose CRC is not yet settled; released at settle or untrust. |
 | `internalFileComplete` | cap 128. A full channel moves a Resumed completion to its own goroutine (§3). |
-| Decoder buffers | every `req.Data` returns to `decoder.PutBuffer` after write, error or discard. |
+| Decoder buffers | every `req.Data` returns to `decoder.PutBuffer` after write, error or discard, and `req.Release` gives its bytes back to the held-bytes budget. |
 | Disk probe cache | one `probeState` per directory, evicted after 10 minutes; at most one outstanding `statfs` per directory. |
 | Record rows | about one `written_articles` row per article, removed by the reclaim rule (§6). |
 
