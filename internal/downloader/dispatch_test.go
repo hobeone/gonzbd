@@ -966,7 +966,7 @@ func TestDownloader_ProcessFetchedArticle_Coverage(t *testing.T) {
 
 	// 1. Failure path: non-CRC decode error
 	body := []byte("invalid data")
-	d.processFetchedArticle(t.Context(), srv, req, body)
+	d.processFetchedArticle(t.Context(), srv, req, body, nil)
 	select {
 	case res := <-d.completions:
 		if res.Err == nil {
@@ -981,7 +981,7 @@ func TestDownloader_ProcessFetchedArticle_Coverage(t *testing.T) {
 
 	// 2. Failure path: CRC mismatch error
 	yencBadCRC := []byte("=ybegin line=128 size=12 part=1 name=t.txt\r\n=ypart begin=1 end=12\r\ntest content\r\n=yend size=12 part=1 pcrc32=12345678\r\n")
-	d.processFetchedArticle(t.Context(), srv, req, yencBadCRC)
+	d.processFetchedArticle(t.Context(), srv, req, yencBadCRC, nil)
 	select {
 	case res := <-d.completions:
 		if !errors.Is(res.Err, decoder.ErrCRCMismatch) {
@@ -2209,7 +2209,7 @@ func TestEmitResult_DeliversTheOutcomeToCompletions(t *testing.T) {
 	}
 	data := []byte("decoded")
 
-	d.emitResult(t.Context(), req, "s1", data, 4096, 0xDEADBEEF, nil)
+	d.emitResult(t.Context(), req, "s1", data, 4096, 0xDEADBEEF, nil, nil)
 
 	select {
 	case res := <-d.completions:
@@ -2242,7 +2242,7 @@ func TestEmitResult_CarriesTheFailureRatherThanDroppingIt(t *testing.T) {
 	d := newDispatchDownloader([]*Server{fakeSrv("s1", 0, true)})
 	req := &articleRequest{job: bareJob("j1"), messageID: "a@h"}
 
-	d.emitResult(t.Context(), req, "s1", nil, 0, 0, ErrNoServersLeft)
+	d.emitResult(t.Context(), req, "s1", nil, 0, 0, ErrNoServersLeft, nil)
 
 	select {
 	case res := <-d.completions:
@@ -2274,7 +2274,7 @@ func TestEmitResult_ReturnsWhenTheContextIsDoneRatherThanBlocking(t *testing.T) 
 
 	done := make(chan struct{})
 	go func() {
-		d.emitResult(ctx, &articleRequest{job: bareJob("j1"), messageID: "a@h"}, "s1", nil, 0, 0, nil)
+		d.emitResult(ctx, &articleRequest{job: bareJob("j1"), messageID: "a@h"}, "s1", nil, 0, 0, nil, nil)
 		close(done)
 	}()
 	select {
@@ -2483,7 +2483,7 @@ func TestEmitResult_DroppedResultRefusedClearIsLoggedAtError(t *testing.T) {
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	d.emitResult(ctx, &articleRequest{job: job.New("j1", "n", job.Policy{}), messageID: "a@b"}, "srv", nil, 0, 0, nil)
+	d.emitResult(ctx, &articleRequest{job: job.New("j1", "n", job.Policy{}), messageID: "a@b"}, "srv", nil, 0, 0, nil, nil)
 	if !strings.Contains(logs.String(), "level=ERROR") {
 		t.Errorf("a refused clear for a dropped result was not logged at Error; log:\n%s", logs.String())
 	}

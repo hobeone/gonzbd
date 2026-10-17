@@ -217,6 +217,7 @@ func (p *pipeline) run(ctx context.Context) {
 						case work <- res:
 						case <-ctx.Done():
 							p.inFlight.Done()
+							res.Release()
 							close(swap.done)
 							return
 						}
@@ -261,6 +262,7 @@ func (p *pipeline) run(ctx context.Context) {
 			case work <- res:
 			case <-ctx.Done():
 				p.inFlight.Done()
+				res.Release()
 				return
 			}
 		}
@@ -348,9 +350,7 @@ func (p *pipeline) handleResult(ctx context.Context, res *downloader.ArticleResu
 	if !p.isCurrent(res) {
 		p.log.Debug("dropping a result fetched for a job instance that is no longer registered",
 			"job", res.JobID(), "msgid", res.MessageID, "err", res.Err)
-		if res.Data != nil {
-			decoder.PutBuffer(res.Data)
-		}
+		res.Release()
 		return
 	}
 
@@ -375,9 +375,7 @@ func (p *pipeline) isCurrent(res *downloader.ArticleResult) bool {
 }
 
 func (p *pipeline) handleFailureResult(ctx context.Context, res *downloader.ArticleResult) {
-	if res.Data != nil {
-		decoder.PutBuffer(res.Data)
-	}
+	res.Release()
 	if errors.Is(res.Err, downloader.ErrNoServersLeft) ||
 		!isRetryableDownloaderError(res.Err) {
 		// Terminal failure: all servers exhausted, or an unrecoverable
@@ -463,14 +461,15 @@ func (p *pipeline) clearEmitted(res *downloader.ArticleResult) {
 }
 
 func (p *pipeline) handleSuccessResult(ctx context.Context, res *downloader.ArticleResult) {
-	// Guarantee buffer reclamation on all exit paths. The assembler takes
-	// ownership of res.Data on successful WriteArticle; on every other path
-	// (early returns, write failures) the buffer must be returned to the pool
-	// to avoid GC pressure from leaked sync.Pool buffers.
+	// Guarantee reclamation on all exit paths. The assembler takes ownership
+	// of res.Data, and of giving its bytes back to the downloader's budget
+	// (WriteRequest.Release), on a successful WriteArticle; on every other
+	// path (early returns, write failures) the result is released here, or
+	// the budget would stay charged for an article nothing holds.
 	bufferConsumed := false
 	defer func() {
-		if !bufferConsumed && res.Data != nil {
-			decoder.PutBuffer(res.Data)
+		if !bufferConsumed {
+			res.Release()
 		}
 	}()
 
@@ -508,9 +507,10 @@ func (p *pipeline) handleSuccessResult(ctx context.Context, res *downloader.Arti
 	// recorder records them.
 
 	writeErr := p.assembler.WriteArticle(ctx, refFor(res), assembler.WriteRequest{
-		Offset: res.Offset,
-		Data:   res.Data,
-		CRC32:  res.CRC,
+		Offset:  res.Offset,
+		Data:    res.Data,
+		CRC32:   res.CRC,
+		Release: res.ReleaseHeld,
 	})
 	if writeErr != nil && !errors.Is(writeErr, context.Canceled) {
 		p.log.Warn("write article failed, returning to dispatch pool",
