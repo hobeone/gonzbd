@@ -35,7 +35,7 @@ func printMsgln(w io.Writer, a ...any) {
 func run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	if len(args) == 0 {
 		printMsgln(stderr, "usage: localnntp <subcommand> [flags]")
-		printMsgln(stderr, "subcommands: gen, serve, verify")
+		printMsgln(stderr, "subcommands: gen, serve, verify, wait")
 		return 1
 	}
 
@@ -46,6 +46,8 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 		return runServe(ctx, args[1:], stdout, stderr)
 	case "verify":
 		return runVerify(ctx, args[1:], stdout, stderr)
+	case "wait":
+		return runWait(ctx, args[1:], stdout, stderr)
 	default:
 		printMsg(stderr, "unknown subcommand: %q\n", args[0])
 		return 1
