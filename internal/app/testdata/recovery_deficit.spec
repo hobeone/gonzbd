@@ -74,6 +74,14 @@ file internal/app/par2_release.go
 	if false && err != nil {
 --- end
 
+[a file's rows are read by its identification index, not its manifest index]
+file internal/app/par2_release.go
+--- anchor
+		damaged += job.DamagedSlices(byFile[pos[i]], f.Desc.FileSize, sliceSize)
+--- replace
+		damaged += job.DamagedSlices(byFile[i], f.Desc.FileSize, sliceSize)
+--- end
+
 [the blocks already fetched are not subtracted]
 file internal/app/par2_release.go
 --- anchor

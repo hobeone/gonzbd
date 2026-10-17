@@ -51,12 +51,19 @@ type sizedVol struct {
 // articles of the given sizes, and one single-article file per volume.
 func newSizedJob(t *testing.T, id, name string, pp int, arts []int, vols []sizedVol) (*job.Job, dispatch.Header) {
 	t.Helper()
+	return newSizedJobAfter(t, id, name, pp, nil, arts, vols)
+}
+
+// newSizedJobAfter is newSizedJob with the files of lead placed before
+// data.bin in the manifest.
+func newSizedJobAfter(t *testing.T, id, name string, pp int, lead []nzb.File, arts []int, vols []sizedVol) (*job.Job, dispatch.Header) {
+	t.Helper()
 	data := nzb.File{Subject: "data.bin"}
 	for i, b := range arts {
 		data.Articles = append(data.Articles, nzb.Article{ID: fmt.Sprintf("d%d@t", i), Bytes: b, Number: i + 1})
 		data.Bytes += int64(b)
 	}
-	parsed := &nzb.NZB{Files: []nzb.File{data}}
+	parsed := &nzb.NZB{Files: append(slices.Clone(lead), data)}
 	for i, v := range vols {
 		parsed.Files = append(parsed.Files, nzb.File{
 			Subject: v.name, Bytes: v.bytes,
@@ -307,6 +314,29 @@ func TestRecoveryDeficit(t *testing.T) {
 		}
 		if src.calls != 0 {
 			t.Errorf("loadRows called %d times, want 0", src.calls)
+		}
+	})
+
+	// The par2 index protects data.bin only, so its identification index is 0
+	// while pad.bin, which par2 does not protect, holds manifest index 0. The
+	// written rows are keyed by manifest index.
+	t.Run("an identified file's rows are read by its manifest index", func(t *testing.T) {
+		t.Parallel()
+		pad := nzb.File{Subject: "pad.bin", Bytes: 1000, Articles: []nzb.Article{{ID: "p0@t", Bytes: 1000, Number: 1}}}
+		j, _ := newSizedJobAfter(t, "order", "order", types.PPRepair, []nzb.File{pad}, []int{artHead, artMid, artTail}, sizedVols)
+		dir := t.TempDir()
+		copyFixturePar2(t, dir)
+		copyFixturePayload(t, dir, "data.bin")
+		padIdx, dataIdx := fileIdxBySubject(t, j, "pad.bin"), fileIdxBySubject(t, j, "data.bin")
+		a := assessDir(t, dir, j)
+		if padIdx != 0 || dataIdx != 1 || len(a.ID.Files) != 1 || a.ID.Files[0].OnDisk != "data.bin" {
+			t.Fatalf("fixture guard: pad.bin at %d, data.bin at %d, identified %+v; want 0, 1 and data.bin alone",
+				padIdx, dataIdx, a.ID.Files)
+		}
+		src := &rowSource{rows: append(rowsExcept(t, j, padIdx), rowsExcept(t, j, dataIdx, 1)...)}
+		got, why := recoveryDeficit(mustManifest(t, j), j.Progress(), a, src.load)
+		if want := job.NeedBlocks(fixtureSliceDamage); got != want || why != "" {
+			t.Errorf("sizing = %+v, %q; want %+v with no reason", got, why, want)
 		}
 	})
 
