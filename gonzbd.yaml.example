@@ -457,7 +457,8 @@ servers:
   # higher-priority server has tried it (e.g. answered "not found") or is
   # out of service (penalized or disabled); a merely busy higher-priority
   # server makes the article wait for it. So a pay-per-GB backup is used
-  # only for what the primary cannot serve.
+  # for what the primary has not got, or while the primary is out of
+  # service.
 
   - # Unique name for this server. Used in logs and penalty tracking.
     name: my-primary-server

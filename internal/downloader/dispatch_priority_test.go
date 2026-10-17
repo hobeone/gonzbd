@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/hobeone/gonzbd/internal/config"
+	"github.com/hobeone/gonzbd/internal/job"
 	"github.com/hobeone/gonzbd/internal/nntp"
 )
 
@@ -193,9 +194,10 @@ func TestBuildDispatchPlan_AnArticleNeedingTheBackupIsNotStuckBehindWaitingOnes(
 	}
 }
 
-// A pass whose remaining articles can all only wait stops instead of walking
-// the rest of the queue: with no try-list entry left to visit, the first
-// waiting article ends it, and an entry keeps it going until it is reached.
+// A job whose remaining articles can all only wait is not walked further: with
+// none of its try-list entries left to visit, a waiting fresh article ends its
+// walk, and an entry keeps the walk going until it is reached. An entry of an
+// instance the pass does not walk does not keep it going.
 func TestBuildDispatchPlan_StopsOnceNoUnvisitedArticleCanBeDispatched(t *testing.T) {
 	t.Parallel()
 
@@ -203,10 +205,12 @@ func TestBuildDispatchPlan_StopsOnceNoUnvisitedArticleCanBeDispatched(t *testing
 		name        string
 		tried       []int32 // articles the primary has already tried
 		inFlight    []int32 // of those, the ones a fetch is still running for
+		ghost       bool    // an entry for an instance the pass never walks
 		wantScanned int
 		wantBackup  []int32
 	}{
-		{name: "no try-list entries", wantScanned: 1},
+		{name: "no try-list entries", wantScanned: 0},
+		{name: "an entry outside the walk", ghost: true, wantScanned: 0},
 		{name: "an entry at article 7", tried: []int32{7}, wantScanned: 8, wantBackup: []int32{7}},
 		{name: "an in-flight entry at article 3", tried: []int32{3}, inFlight: []int32{3}, wantScanned: 4},
 	} {
@@ -228,6 +232,10 @@ func TestBuildDispatchPlan_StopsOnceNoUnvisitedArticleCanBeDispatched(t *testing
 			for _, idx := range tc.inFlight {
 				d.tracker.IncrementInFlightLocked(keyFor(j, idx))
 			}
+			ghost := bareJob("ghost")
+			if tc.ghost {
+				d.tracker.SetTriedLocked(keyFor(ghost, 0), mask)
+			}
 			d.tracker.Unlock()
 
 			plan := d.buildDispatchPlan(context.Background(), defaultOpts(d.servers))
@@ -243,6 +251,60 @@ func TestBuildDispatchPlan_StopsOnceNoUnvisitedArticleCanBeDispatched(t *testing
 				t.Errorf("backup received %v, want %v", got, tc.wantBackup)
 			}
 		})
+	}
+}
+
+// A job whose walk ends early does not end the pass: a later job's article
+// that needs the backup is still reached.
+func TestBuildDispatchPlan_AWaitingJobDoesNotHideALaterJobsBackupArticle(t *testing.T) {
+	t.Parallel()
+
+	primary := fakeSrv("primary", 0, true)
+	backup := fakeSrv("backup", 1, true)
+	d := newDispatchDownloader([]*Server{primary, backup})
+	first, fm := makeJobWithArticles(t, articleIDs(5))
+	addTestJob(t, d.dispatcher, first, fm)
+	second := job.New("j2", "j2.nzb", job.Policy{})
+	_, sm := makeJobWithArticles(t, []string{"b0@h", "b1@h", "b2@h"})
+	addTestJob(t, d.dispatcher, second, sm)
+	d.workCh["primary"] <- &articleRequest{messageID: "blocker"}
+	var mask serverMask
+	mask.set(0)
+	d.tracker.Lock()
+	// The first job's walk begins, at its in-flight article 1, and ends at
+	// article 2, which waits.
+	d.tracker.SetTriedLocked(keyFor(first, 1), mask)
+	d.tracker.IncrementInFlightLocked(keyFor(first, 1))
+	d.tracker.SetTriedLocked(keyFor(second, 2), mask)
+	d.tracker.Unlock()
+
+	d.buildDispatchPlan(context.Background(), defaultOpts(d.servers))
+
+	select {
+	case req := <-d.workCh["backup"]:
+		if req.job != second || req.artIdx != 2 {
+			t.Errorf("backup received %s/%d, want j2/2", req.jobID(), req.artIdx)
+		}
+	default:
+		t.Error("backup received nothing; the first job's waiting articles ended the pass")
+	}
+}
+
+// Within a tier the first server in slice order with room takes the article.
+func TestTryDispatch_TheFirstPeerWithRoomTakesTheArticle(t *testing.T) {
+	t.Parallel()
+
+	peerA := fakeSrv("peerA", 0, true)
+	peerB := fakeSrv("peerB", 0, true)
+	d := newDispatchDownloader([]*Server{peerA, peerB})
+
+	handled, _, _ := d.tryDispatch(context.Background(), fakeArticle("msg1@h"), defaultOpts(d.servers))
+
+	if !handled {
+		t.Fatal("article not dispatched")
+	}
+	if drained(d.workCh["peerA"]) {
+		t.Error("peerA, first in slice order, did not receive the article")
 	}
 }
 

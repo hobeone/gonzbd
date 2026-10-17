@@ -271,8 +271,9 @@ of their failure ratio.
 
 8. **Strict priority tiers**: an article is offered to a server of priority P
    only once every server with a lower `Priority` value has tried it (its bit
-   is in the article's `serverMask`) or is not a candidate for it (disabled,
-   penalized, deactivated, or excluded by `top_only` or `max_art_opt`).
+   is in the article's `serverMask`) or is not an active candidate for it
+   (disabled, penalized, deactivated, or excluded by `top_only` or
+   `max_art_opt`).
    `selectServerForArticle` owns the rule: the article's tier is the lowest
    `Priority` among its candidates that are `Active`, and a full work channel
    on every server of that tier makes the article wait for it, never fall to
@@ -291,10 +292,11 @@ of their failure ratio.
    A pass that finds the tier of a fresh article (one with no try-list entry)
    full does not stop there, because an article later in the queue may
    already have been tried by that tier and be dispatchable to the next one.
-   It stops once it has visited every try-list entry that existed when it
-   began: every article after that point is fresh, and one
-   `selectServerForArticle` call over an empty mask answers for all of them
-   (`passSaturated`).
+   It stops walking a job once it has visited every try-list entry that job's
+   instance had when the pass began (`TriedCounts`): every later article of
+   the job is fresh, and one `selectServerForArticle` call over an empty mask
+   answers for all of them (`freshArticlesWait`). The pass then moves to the
+   next job, and ends only when every server is full.
 
 ## `nntp.Conn` pipelining contract
 

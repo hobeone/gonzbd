@@ -9,6 +9,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+	"weak"
 
 	"github.com/hobeone/gonzbd/internal/config"
 	"github.com/hobeone/gonzbd/internal/constants"
@@ -76,9 +77,10 @@ func (d *Downloader) buildDispatchPlan(ctx context.Context, opts dispatchOpts) d
 		return plan
 	}
 
-	// triedLeft counts the try-list entries the pass has not yet visited; see
-	// passSaturated. Entries deleted meanwhile only keep the pass going longer.
-	triedLeft, _ := d.tracker.Len()
+	// The try-list entries of each instance when the pass began; see
+	// freshArticlesWait. Entries deleted meanwhile only keep the walk going
+	// longer.
+	tried := d.tracker.TriedCounts()
 
 	for _, row := range d.dispatcher.List() {
 		// != IntentRun, not == IntentPause: a cancelled job (IntentCancel)
@@ -118,6 +120,12 @@ func (d *Downloader) buildDispatchPlan(ctx context.Context, opts dispatchOpts) d
 			continue
 		}
 
+		// triedLeft counts the entries of this job's walk not yet visited.
+		triedLeft := tried[weak.Make(j)]
+		if triedLeft == 0 && d.freshArticlesWait(opts) {
+			continue
+		}
+
 		jobAdded := j.Added()
 		stopAll := false
 		_ = j.ForEachUnfinishedArticle(func(fi int, artIdx int32, id string, bytes int, number int, subject string) bool { //nolint:errcheck // an evicted job (ErrNotResident, its one refusal) has nothing to dispatch this pass
@@ -144,15 +152,21 @@ func (d *Downloader) buildDispatchPlan(ctx context.Context, opts dispatchOpts) d
 			if exReq != nil {
 				plan.exhausted = append(plan.exhausted, exReq)
 			}
-			if d.passSaturated(opts, triedLeft) {
-				stopAll = true
-				return false
-			}
 			if ctx.Err() != nil {
 				stopAll = true
 				return false
 			}
-			return true
+			if triedLeft > 0 || !d.freshArticlesWait(opts) {
+				if d.allServersFull(opts.serverCfgs) {
+					stopAll = true
+					return false
+				}
+				return true
+			}
+			// Nothing left in this job can be dispatched; later jobs can only
+			// if some server still has room.
+			stopAll = d.allServersFull(opts.serverCfgs)
+			return false
 		})
 		if stopAll {
 			break
@@ -162,26 +176,22 @@ func (d *Downloader) buildDispatchPlan(ctx context.Context, opts dispatchOpts) d
 	return plan
 }
 
-// passSaturated reports whether no article the pass has yet to visit can be
-// dispatched, so the pass may stop. Without it, a full primary beside an idle
-// backup would have every pass walk every unfinished article.
+// freshArticlesWait reports whether an article with no try-list entry must
+// wait this pass. Such an article has the candidates of an empty mask, so one
+// selectServerForArticle call answers for all of them, and buildDispatchPlan
+// stops walking a job once it is true and the job has no entry left to
+// visit: every unvisited article of the job is then such an article. An
+// entry is created only by SetTriedLocked, whose one caller is tryDispatch,
+// for the article it is visiting
+// (`git grep -n 'SetTriedLocked(' -- '*.go' ':!*_test.go'` finds 3 lines:
+// that call, the declaration, and this comment). UnmarkTried rewrites an
+// entry only while it exists.
 //
-// An article with no try-list entry has the candidates of an empty mask, so
-// one selectServerForArticle call answers for every such article. Once
-// triedLeft reaches 0 every unvisited article is one: an entry is created only
-// by SetTriedLocked, whose one caller is tryDispatch, for the article it is
-// visiting (`git grep -n 'SetTriedLocked(' -- '*.go' ':!*_test.go'` finds 3
-// lines: that call, the declaration, and this comment).
-// UnmarkTried rewrites an entry only while it exists.
-//
-// An exhausted article (-1) does not stop the pass, which must reach every
-// article to report it.
-func (d *Downloader) passSaturated(opts dispatchOpts, triedLeft int) bool {
-	if triedLeft <= 0 {
-		srv, idx := d.selectServerForArticle(serverMask{}, false, opts)
-		return srv == nil && idx != -1
-	}
-	return d.allServersFull(opts.serverCfgs)
+// An exhausted article (-1) does not count as waiting: the walk must reach
+// every article to report it.
+func (d *Downloader) freshArticlesWait(opts dispatchOpts) bool {
+	srv, idx := d.selectServerForArticle(serverMask{}, false, opts)
+	return srv == nil && idx != -1
 }
 
 // allServersFull reports whether every active, enabled server has a full work channel.

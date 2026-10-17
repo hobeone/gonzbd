@@ -1,8 +1,8 @@
 # Strict server-priority tiers (#985): an article is offered to a priority
 # only once every server of a better priority has tried it or is not active,
-# and a pass stops once no unvisited article can be dispatched.
+# and a pass stops walking a job once nothing unvisited in it can dispatch.
 pkg ./internal/downloader/
-run TestTryDispatch_FullPrimaryHoldsTheArticleRatherThanOverflowing|TestTryDispatch_AnArticleThePrimaryTriedGoesToTheBackup|TestTryDispatch_AWaitingArticleMovesDownWhenThePrimaryIsPenalized|TestTryDispatch_PriorityOutranksConfigOrder|TestTryDispatch_AFullMiddleTierHoldsTheArticleWhenTheTopIsPenalized|TestTryDispatch_ServersSharingATierBalanceBelowAPenalizedTop|TestTryDispatch_WorkChFullSkipsToNextServer|TestBuildDispatchPlan_AnArticleNeedingTheBackupIsNotStuckBehindWaitingOnes|TestBuildDispatchPlan_StopsOnceNoUnvisitedArticleCanBeDispatched|TestBuildDispatchPlan_ReportsEveryArticleWithNoServerLeft|TestDownloader_BackupStaysIdleWhileThePrimaryHasEveryArticle|TestDownloader_OnlyArticlesThePrimaryLacksReachTheBackup|TestDownloader_WorkMovesToTheBackupWhenThePrimaryIsPenalized
+run TestTryDispatch_FullPrimaryHoldsTheArticleRatherThanOverflowing|TestTryDispatch_AnArticleThePrimaryTriedGoesToTheBackup|TestTryDispatch_AWaitingArticleMovesDownWhenThePrimaryIsPenalized|TestTryDispatch_PriorityOutranksConfigOrder|TestTryDispatch_AFullMiddleTierHoldsTheArticleWhenTheTopIsPenalized|TestTryDispatch_ServersSharingATierBalanceBelowAPenalizedTop|TestTryDispatch_TheFirstPeerWithRoomTakesTheArticle|TestTryDispatch_WorkChFullSkipsToNextServer|TestBuildDispatchPlan_AnArticleNeedingTheBackupIsNotStuckBehindWaitingOnes|TestBuildDispatchPlan_StopsOnceNoUnvisitedArticleCanBeDispatched|TestBuildDispatchPlan_AWaitingJobDoesNotHideALaterJobsBackupArticle|TestBuildDispatchPlan_ReportsEveryArticleWithNoServerLeft|TestDownloader_BackupStaysIdleWhileThePrimaryHasEveryArticle|TestDownloader_OnlyArticlesThePrimaryLacksReachTheBackup|TestDownloader_WorkMovesToTheBackupWhenThePrimaryIsPenalized
 
 [a worse tier is no longer skipped, so a full tier overflows]
 file internal/downloader/dispatch.go
@@ -38,7 +38,15 @@ file internal/downloader/dispatch.go
 			tier += 0
 --- end
 
-[the pass never counts a visited try-list entry]
+[the last peer with room, not the first, takes the article]
+file internal/downloader/dispatch.go
+--- anchor
+		if pick == nil && hasRoom(d.workCh[cfg.Name]) {
+--- replace
+		if hasRoom(d.workCh[cfg.Name]) {
+--- end
+
+[the walk never counts a visited try-list entry]
 file internal/downloader/dispatch.go
 --- anchor
 			if hadTryList {
@@ -58,26 +66,44 @@ file internal/downloader/dispatch.go
 		return false, nil, false
 --- end
 
-[the pass starts believing no entry is left to visit]
+[the count is not scoped to the walked job]
 file internal/downloader/dispatch.go
 --- anchor
-	triedLeft, _ := d.tracker.Len()
+		triedLeft := tried[weak.Make(j)]
 --- replace
-	triedLeft := 0
+		triedLeft := len(tried) + 0*tried[weak.Make(j)]
 --- end
 
-[the pass never stops on a waiting fresh article]
+[a job with nothing to dispatch is walked anyway]
 file internal/downloader/dispatch.go
 --- anchor
-	if triedLeft <= 0 {
+		if triedLeft == 0 && d.freshArticlesWait(opts) {
 --- replace
-	if false {
+		if false {
 --- end
 
-[an exhausted article stops the pass]
+[the walk never stops on a waiting fresh article]
 file internal/downloader/dispatch.go
 --- anchor
-		return srv == nil && idx != -1
+			if triedLeft > 0 || !d.freshArticlesWait(opts) {
 --- replace
-		return srv == nil && idx == idx
+			if true {
+--- end
+
+[a job's walk ending ends the whole pass]
+file internal/downloader/dispatch.go
+--- anchor
+			stopAll = d.allServersFull(opts.serverCfgs)
+			return false
+--- replace
+			stopAll = true
+			return false
+--- end
+
+[an exhausted article counts as waiting]
+file internal/downloader/dispatch.go
+--- anchor
+	return srv == nil && idx != -1
+--- replace
+	return srv == nil && idx == idx
 --- end
