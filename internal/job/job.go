@@ -225,12 +225,11 @@ type Job struct {
 	// Three functions write them, not two: RestoreProgressState and
 	// SetPar2ReleaseReason write values, and AttachContent writes the zeroes
 	// after seeding — `git grep -n 'j\.restored' -- 'internal/job/content.go'`
-	// finds 17 lines across those three plus the five accessors that read
-	// them. All seventeen are inside a contentMu critical section.
-	restoredPar2Reason    string
-	restoredDLStarted     time.Time
-	restoredDLFinished    time.Time
-	restoredPar2Recovered bool
+	// finds 13 lines across those three plus the four accessors that read
+	// them. All thirteen are inside a contentMu critical section.
+	restoredPar2Reason string
+	restoredDLStarted  time.Time
+	restoredDLFinished time.Time
 
 	// settleCombineHook, when non-nil, runs in SettleFileCRC after the rows
 	// are taken and before they are combined, with contentMu not held. It is

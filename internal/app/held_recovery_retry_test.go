@@ -341,8 +341,8 @@ func TestFinalize_RetriesOnlyAParErrorWithHeldVolumes(t *testing.T) {
 		t.Parallel()
 		const id = "feedface0651a005"
 		h := newHeldRecoveryApp(t, id)
-		if err := h.job.UndeferRecoveryVolumes(h.job.DeferredRecoveryIndices()); err != nil {
-			t.Fatalf("UndeferRecoveryVolumes: %v", err)
+		if _, err := h.job.ReleaseRecovery(job.Unsized()); err != nil {
+			t.Fatalf("ReleaseRecovery: %v", err)
 		}
 		h.app.finalizer.finalize(h.failedPar2Run(h.job))
 		if _, held := h.app.dispatcher.Job(id); held {
@@ -376,7 +376,7 @@ func TestReleaseRecoveryVolumes(t *testing.T) {
 	t.Parallel()
 	h := newHeldRecoveryApp(t, "feedface0651a008")
 	want := len(h.job.DeferredRecoveryIndices())
-	n, err := h.app.releaseRecoveryVolumes(h.job, "because")
+	n, err := h.app.releaseRecoveryVolumes(h.job, "because", job.Unsized())
 	if err != nil || n != want || want == 0 {
 		t.Fatalf("releaseRecoveryVolumes = %d, %v; want %d (> 0), nil", n, err, want)
 	}
@@ -389,7 +389,7 @@ func TestReleaseRecoveryVolumes(t *testing.T) {
 
 	evicted := newHeldRecoveryApp(t, "feedface0651a009")
 	evicted.job.Evict()
-	if n, err := evicted.app.releaseRecoveryVolumes(evicted.job, "because"); err != nil || n != want {
+	if n, err := evicted.app.releaseRecoveryVolumes(evicted.job, "because", job.Unsized()); err != nil || n != want {
 		t.Errorf("releaseRecoveryVolumes on an evicted job = %d, %v; want %d, nil", n, err, want)
 	}
 	if evicted.job.HasDeferredPar2() {

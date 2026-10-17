@@ -78,7 +78,7 @@ func TestCollectManifestsWithOptions(t *testing.T) {
 		"b.rar": payload(41, 2048),
 	})
 
-	got := collectManifestsWithOptions(sets, slog.New(slog.DiscardHandler), DefaultParseOptions())
+	got, _ := collectManifestsWithOptions(sets, slog.New(slog.DiscardHandler), DefaultParseOptions())
 	if len(got) != 2 {
 		t.Fatalf("collected %d descriptions, want 2", len(got))
 	}
@@ -100,11 +100,11 @@ func TestCollectManifestsWithOptions(t *testing.T) {
 	if err != nil {
 		t.Fatalf("FindPar2Files: %v", err)
 	}
-	if got := collectManifestsWithOptions(badSets, slog.New(slog.DiscardHandler), DefaultParseOptions()); len(got) != 2 {
+	if got, _ := collectManifestsWithOptions(badSets, slog.New(slog.DiscardHandler), DefaultParseOptions()); len(got) != 2 {
 		t.Errorf("an unparseable set changed the collected count to %d, want 2", len(got))
 	}
 
-	if got := collectManifestsWithOptions(nil, slog.New(slog.DiscardHandler), DefaultParseOptions()); len(got) != 0 {
+	if got, _ := collectManifestsWithOptions(nil, slog.New(slog.DiscardHandler), DefaultParseOptions()); len(got) != 0 {
 		t.Errorf("collected %d descriptions from no sets", len(got))
 	}
 }

@@ -1,5 +1,5 @@
 pkg ./internal/app/
-run TestPermanentArticleFailure_ReleasedVolumeReachesTheRecord|TestMaybeReleaseRecoveryVolumes_MarksThePolicyForCheckpointing
+run TestPermanentArticleFailure_LeavesTheVolumeHeldUntilReleased|TestMaybeReleaseRecoveryVolumes_MarksThePolicyForCheckpointing
 
 # A fetch policy reaches job_files because its one writer records the change
 # and the recorder's flush takes it (#858). The two halves are neutered

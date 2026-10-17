@@ -194,11 +194,10 @@ func TestClone_DoesNotShareTheChargeMap(t *testing.T) {
 	}
 }
 
-// TestMarkArticleFailedCharge_ReleasesRecoveryOnlyForACharge pins that a
-// failure charging nothing leaves held recovery volumes held: par2 has nothing
-// to repair, so fetching them spends bandwidth for nothing. One that charges a
-// byte releases them, as any permanent failure does.
-func TestMarkArticleFailedCharge_ReleasesRecoveryOnlyForACharge(t *testing.T) {
+// TestMarkArticleFailedCharge_ChangesNoFetchPolicy pins that a failure leaves
+// held recovery volumes held whether or not it charges a byte: only the
+// Assessing verdict releases, sized from the written rows.
+func TestMarkArticleFailedCharge_ChangesNoFetchPolicy(t *testing.T) {
 	newFixture := func(t *testing.T) *Job {
 		t.Helper()
 		m := NewManifest([]JobFile{
@@ -218,7 +217,7 @@ func TestMarkArticleFailedCharge_ReleasesRecoveryOnlyForACharge(t *testing.T) {
 		want      FetchPolicy
 	}{
 		"nothing uncovered holds the volume": {0, FetchIfNeeded},
-		"a byte uncovered releases it":       {1, FetchAlways},
+		"a byte uncovered holds it too":      {1, FetchIfNeeded},
 	}
 	for name, tc := range cases {
 		t.Run(name, func(t *testing.T) {

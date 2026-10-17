@@ -133,8 +133,8 @@ func TestFetchPolicyChange_PendingFollowsThePolicy(t *testing.T) {
 		if err := j.SetFileFetchPolicy(1, FetchIfNeeded); err != nil {
 			t.Fatalf("SetFileFetchPolicy: %v", err)
 		}
-		if err := j.UndeferRecoveryVolumes([]int{1}); err != nil {
-			t.Fatalf("UndeferRecoveryVolumes: %v", err)
+		if n, err := j.ReleaseRecovery(Unsized()); err != nil || n != 1 {
+			t.Fatalf("ReleaseRecovery = %d, %v, want 1, nil", n, err)
 		}
 		checkPendingMatchesRecompute(t, j, m, 5)
 	})
@@ -152,11 +152,11 @@ func TestFetchPolicyDoors_OneResidencyRule(t *testing.T) {
 			t.Fatalf("SetFileFetchPolicy: %v", err)
 		}
 		j.Evict()
-		if err := j.UndeferRecoveryVolumes([]int{1}); err != nil {
-			t.Fatalf("UndeferRecoveryVolumes on an evicted job: %v", err)
+		if n, err := j.ReleaseRecovery(Unsized()); err != nil || n != 1 {
+			t.Fatalf("ReleaseRecovery on an evicted job = %d, %v, want 1, nil", n, err)
 		}
-		if !j.Par2Recovered() {
-			t.Error("Par2Recovered = false after the release")
+		if got := j.Progress().FileFetchPolicy(1); got != FetchAlways {
+			t.Errorf("policy = %v after the release, want FetchAlways", got)
 		}
 		if err := j.RestoreContent(m); err != nil {
 			t.Fatalf("RestoreContent: %v", err)
@@ -182,14 +182,6 @@ func TestFetchPolicyDoors_OneResidencyRule(t *testing.T) {
 		checkPendingMatchesRecompute(t, j, m, 2)
 		if got := offered(t, j); !slices.Equal(got, []int32{0, 1}) {
 			t.Errorf("offered %v, want the content file's articles only", got)
-		}
-	})
-	t.Run("out of range", func(t *testing.T) {
-		t.Parallel()
-		j, _ := newHeldVolumeJob(t)
-		j.Evict()
-		if err := j.UndeferRecoveryVolumes([]int{2}); err == nil {
-			t.Error("UndeferRecoveryVolumes accepted file index 2 of a two-file job")
 		}
 	})
 }

@@ -54,7 +54,7 @@ Fault rules match against requested message IDs, target filenames, part numbers,
 
 | Fault Action | Behavior & Impact | gonzbd Pipeline Response |
 |---|---|---|
-| `drop` | Server returns NNTP error `430 No such article` | Downloader charges article failure and promotes `.vol*.par2` recovery volumes inline inside `Job.MarkArticleFailed` |
+| `drop` | Server returns NNTP error `430 No such article` | Downloader charges the article failure (`Job.MarkArticleFailed`); `.vol*.par2` stays deferred (`FetchIfNeeded`) until initial download finishes and `Assessing` (`maybeReleaseRecoveryVolumes`) releases the covering volumes in a second download wave |
 | `corrupt-payload` | Valid yEnc CRC32 header, but corrupt internal payload bytes | Passes yEnc decoder; `.vol*.par2` remains deferred (`FetchIfNeeded`) until initial download finishes and `Assessing` (`maybeReleaseRecoveryVolumes`) detects the file-level CRC mismatch and triggers a second recovery download wave |
 | `corrupt-wire` | Invalid yEnc body or bad CRC32 line | Rejected immediately by `internal/decoder` (`ErrCRCMismatch`); downloader tries alternate servers or marks failed |
 | `drop-mid-body` | Server sends half the body then abruptly closes TCP connection | Downloader catches mid-stream EOF / connection reset, drops socket, and applies a server penalty (clear immediately in single-server tests via `GET /api?mode=status&name=unblock_server&value=localnntp`) |
@@ -263,7 +263,7 @@ When validating recovery, test across these specific lifecycle checkpoints:
    - Injects `POST /rate` to throttle to 10-80 MB/s.
    - Kills during active extraction. Verifies partial unrar temp state does not corrupt resumed download.
 2. **Killing during `Assessing` / `on_demand_par2` recovery promotion**:
-   - Note that permanent `430` failures (`drop`) promote `.vol*.par2` recovery volumes inline inside `Job.MarkArticleFailed`, whereas `corrupt-payload` (valid yEnc CRC with corrupted payload bytes) keeps `.vol*.par2` deferred (`FetchIfNeeded`) until initial download finishes and `Assessing` (`maybeReleaseRecoveryVolumes`) verifies assembled CRCs against the `.par2` index.
+   - Note that both permanent `430` failures (`drop`) and `corrupt-payload` (valid yEnc CRC with corrupted payload bytes) keep `.vol*.par2` deferred (`FetchIfNeeded`) until initial download finishes and `Assessing` (`maybeReleaseRecoveryVolumes`) assesses the download against the `.par2` index and releases the volumes the damage needs.
    - Inject `corrupt-payload:part04.rar:parts=2:bytes=64:max=1` and wait for `"on-demand par2: repair needed, fetching recovery volumes"` in `gonzbd.log` to deterministically kill during the second recovery download wave.
 3. **Killing during `Repairing` / `Extracting`**:
    - For mid-repair `SIGKILL`: wait for `<target>.par2engine-*.tmp` in the incomplete job directory (written by `par2engine` during out-of-place repair) and `kill -9`. On restart, `sweepTempFiles` (`internal/postproc/postproc.go`) removes names matched by `fsutil.IsTempFile` (`internal/fsutil/rootedcreate.go`), including `.gonzbd-tmp-<16 lowercase hex>` and `<target>.par2engine-<16 uppercase base32>.tmp`, before `recover_par2_names`.

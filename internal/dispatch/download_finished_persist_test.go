@@ -17,7 +17,7 @@ func TestPersist_RecordsTheDownloadFinishOnlyOutsideFetching(t *testing.T) {
 	runner := &stateRunner{}
 	d := newTestDispatcher(t, withStore(st), withRunner(runner))
 	j := job.New("j1", "n", job.Policy{})
-	j.RestoreProgressState("", time.Unix(1700000100, 0), time.Unix(1700000200, 0), false)
+	j.RestoreProgressState("", time.Unix(1700000100, 0), time.Unix(1700000200, 0))
 	if got := j.DownloadFinished(); got.IsZero() {
 		t.Fatal("fixture: the job carries no finish to persist")
 	}

@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"slices"
 )
 
 // Rename records a file relocation ApplyRenames performed.
@@ -18,14 +19,24 @@ type Rename struct {
 }
 
 func collectManifests(sets []Set, log *slog.Logger) []FileDesc {
-	return collectManifestsWithOptions(sets, log, DefaultParseOptions())
+	manifest, _ := collectManifestsWithOptions(sets, log, DefaultParseOptions())
+	return manifest
 }
 
-func collectManifestsWithOptions(sets []Set, log *slog.Logger, opts ParseOptions) []FileDesc {
+// parsedSetInfo is what a parsed set says about itself beyond its entries.
+type parsedSetInfo struct {
+	id        [16]byte
+	sliceSize uint64
+}
+
+// collectManifestsWithOptions returns the entries of every set that parsed and
+// one parsedSetInfo per parsed set.
+func collectManifestsWithOptions(sets []Set, log *slog.Logger, opts ParseOptions) ([]FileDesc, []parsedSetInfo) {
 	if log == nil {
 		log = slog.Default()
 	}
 	var manifest []FileDesc
+	var infos []parsedSetInfo
 	for _, set := range sets {
 		parFile := set.ParseFile()
 		if parFile == "" {
@@ -35,12 +46,24 @@ func collectManifestsWithOptions(sets []Set, log *slog.Logger, opts ParseOptions
 		}
 		log.Info("quickcheck: parsing par2 manifest",
 			"file", filepath.Base(parFile))
-		descs, err := ParseFileDescriptionsWithOptions(parFile, opts)
+		parsed, err := ParsePar2SetWithOptions(parFile, opts)
 		if err != nil {
 			log.Warn("quickcheck: failed to parse par2 file",
 				"file", filepath.Base(parFile), "err", err)
 			continue
 		}
+		// One SetID is one set of File Description packets; collecting it twice
+		// would leave the copies' entries Unaccounted in Identify. A SetID
+		// repeated with a different slice size is kept, so SliceSize refuses it.
+		if slices.ContainsFunc(infos, func(i parsedSetInfo) bool {
+			return i.id == parsed.SetID && i.sliceSize == parsed.SliceSize
+		}) {
+			log.Info("par2 set already parsed under another name; skipping",
+				"file", filepath.Base(parFile))
+			continue
+		}
+		descs := parsed.Files
+		infos = append(infos, parsedSetInfo{id: parsed.SetID, sliceSize: parsed.SliceSize})
 		log.Info("quickcheck: par2 manifest entries",
 			"file", filepath.Base(parFile), "entries", len(descs))
 		for i := range descs {
@@ -48,7 +71,7 @@ func collectManifestsWithOptions(sets []Set, log *slog.Logger, opts ParseOptions
 		}
 		manifest = append(manifest, descs...)
 	}
-	return manifest
+	return manifest, infos
 }
 
 func scanFlatFiles(dir string, log *slog.Logger) (map[string]os.DirEntry, error) {

@@ -24,7 +24,7 @@ func TestDownloadBegun(t *testing.T) {
 	if restored.DownloadBegun() {
 		t.Error("a fresh job with no progress reports DownloadBegun")
 	}
-	restored.RestoreProgressState("", stamp, time.Time{}, false)
+	restored.RestoreProgressState("", stamp, time.Time{})
 	if !restored.DownloadBegun() {
 		t.Error("a restored job with a start stamp and no progress does not report DownloadBegun")
 	}

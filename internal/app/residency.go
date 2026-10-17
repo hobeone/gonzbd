@@ -250,8 +250,7 @@ func (r *appResidency) fault(ctx context.Context, j *job.Job, f *storagefault.Fa
 // the record is the current truth; a retry re-derives it. The policy's one
 // writer records every change it makes, and the recorder's next flush writes
 // it (job.Job.TakeFetchPolicyChanges), so the persisted value catches up to
-// memory within a flush. A restored hold over a release is set as FetchAlways
-// instead (see JobProgress.setFileFetchPolicy).
+// memory within a flush. A restored FetchIfNeeded stays held.
 //
 // Each finished file is then peeked and marked complete
 // (job.Job.MarkFileComplete), in that order, while the manifest is certainly

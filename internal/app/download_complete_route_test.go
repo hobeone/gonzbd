@@ -46,7 +46,7 @@ func (s unassessedStage) Run(ctx context.Context, pj *postproc.Job) error {
 	if a := s.app.Load(); a != nil {
 		if j, ok := a.Dispatcher().Job(pj.JobID()); ok {
 			p := j.Progress()
-			recovered = p != nil && p.Par2Recovered()
+			recovered = p != nil && p.HasPar2Verdict()
 		}
 	}
 	if !recovered {
@@ -172,8 +172,8 @@ func startRouteApp(t *testing.T, repo *history.Repository, adminDir, downloadDir
 // volume, and checks that post-processing did not start the job before that.
 //
 // The directory holds no par2 index, so maybeReleaseRecoveryVolumes rules
-// repair and releases the volume, which sets Par2Recovered. Par2Recovered is
-// the signal rather than HasDeferredPar2, because a job with no progress
+// repair and releases the volume, which records the release reason. The reason is
+// the signal (HasPar2Verdict) rather than HasDeferredPar2, because a job with no progress
 // record reports no deferred volume either.
 func assertAssessed(t *testing.T, a *app.Application, stage unassessedStage, id string) {
 	t.Helper()
@@ -183,7 +183,7 @@ func assertAssessed(t *testing.T, a *app.Application, stage unassessedStage, id 
 			return false
 		}
 		p := j.Progress()
-		return p != nil && p.Par2Recovered()
+		return p != nil && p.HasPar2Verdict()
 	})
 	if !assessed {
 		t.Errorf("the complete job never reached the on-demand par2 verdict: " +

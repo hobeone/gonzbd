@@ -717,7 +717,7 @@ func TestMaybeReleaseRecoveryVolumes_MarksThePolicyForCheckpointing(t *testing.T
 	}{
 		// The seeded CRC decides the outcome: the fixture payload's real CRC
 		// reaches outcomeClean and DiscardDeferredPar2, a wrong one reaches
-		// outcomeRepair and UndeferRecoveryVolumes. Both move a policy, so both
+		// outcomeRepair and ReleaseRecovery. Both move a policy, so both
 		// owe a mark.
 		{"clean verdict discards", "markclean", "markclean-name", 0x1068AFA6},
 		{"repair verdict undefers", "markrepair", "markrepair-name", 0xDEADBEEF},

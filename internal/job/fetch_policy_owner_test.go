@@ -9,7 +9,7 @@ import (
 // newInterleavedRecoveryJob attaches a repairing job whose files are a
 // recovery volume, a content file and a second recovery volume, one article
 // each, in that index order.
-func newInterleavedRecoveryJob(t *testing.T, restoredRecovered bool) *Job {
+func newInterleavedRecoveryJob(t *testing.T) *Job {
 	t.Helper()
 	m := NewManifest([]JobFile{
 		{Subject: "a.vol00+01.par2", Bytes: 100, IsPar2Recovery: true,
@@ -19,38 +19,33 @@ func newInterleavedRecoveryJob(t *testing.T, restoredRecovered bool) *Job {
 			Articles: []JobArticle{{ID: "<v1@x>", Bytes: 100, Number: 1}}},
 	})
 	j := New("j", "j", PolicyFromPP(3))
-	j.RestoreProgressState("", time.Time{}, time.Time{}, restoredRecovered)
+	j.RestoreProgressState("", time.Time{}, time.Time{})
 	if err := j.AttachContent(m); err != nil {
 		t.Fatalf("AttachContent: %v", err)
 	}
 	return j
 }
 
-// TestInstallFileVerification_RestoreDoesNotUndoARelease pins that a hydration
-// never ends with par2Recovered set and a recovery volume still held: nothing
-// releases a volume once par2Recovered is set, so such a volume would wait on
-// the post-processing retry instead (#858).
-//
-// Two ways in. The record can say so — the dispatcher's row carries
-// par2_recovered and the recorder's job_files row carries the policy, and a
-// crash between their writes leaves the release in one and not the other. And
-// a hydration can say so itself: files install in index order, so a content
-// file's lost article releases the volumes held so far, and a later volume's
-// restore puts its hold back.
-func TestInstallFileVerification_RestoreDoesNotUndoARelease(t *testing.T) {
+// TestInstallFileVerification_RestoreKeepsTheHold pins that a hydration
+// restores a held volume as held: the restored policy is FetchIfNeeded, and
+// neither a restored release reason nor a content file's lost article earlier
+// in the same hydration turns it into FetchAlways (#858). Only the Assessing
+// verdict releases a volume, and it does so through Job.ReleaseRecovery.
+func TestInstallFileVerification_RestoreKeepsTheHold(t *testing.T) {
 	t.Parallel()
 	cases := []struct {
-		name              string
-		restoredRecovered bool
-		failed            []int32 // file 1's lost articles, by global index
+		name   string
+		reason string
+		failed []int32 // file 1's lost articles, by global index
 	}{
-		{name: "the record already released", restoredRecovered: true},
-		{name: "a content loss earlier in the hydration releases", failed: []int32{1}},
+		{name: "a restored release reason", reason: "repair needed"},
+		{name: "a content loss earlier in the hydration", failed: []int32{1}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			j := newInterleavedRecoveryJob(t, tc.restoredRecovered)
+			j := newInterleavedRecoveryJob(t)
+			j.SetPar2ReleaseReason(tc.reason)
 			install := []FileVerification{
 				{FileIdx: 0, RestorePolicy: true, Policy: FetchIfNeeded},
 				{FileIdx: 1, RestorePolicy: true, Policy: FetchAlways, Failed: tc.failed},
@@ -62,23 +57,13 @@ func TestInstallFileVerification_RestoreDoesNotUndoARelease(t *testing.T) {
 				}
 			}
 			p := j.Progress()
-			if !p.Par2Recovered() {
-				t.Fatal("precondition: Par2Recovered = false, so this is not the case under test")
+			if held := p.DeferredRecoveryIndices(); !slices.Equal(held, []int{0, 2}) {
+				t.Errorf("held volumes = %v, want [0 2]: a restored hold must stay a hold", held)
 			}
-			if held := p.DeferredRecoveryIndices(); len(held) > 0 {
-				t.Errorf("volumes %v still FetchIfNeeded with Par2Recovered set: nothing releases them again", held)
-			}
-			// The record holds the hold for both volumes, so both are owed a
-			// write of the release.
-			var owed []int
-			for _, st := range j.TakeFetchPolicyChanges() {
-				if FetchPolicy(st.FetchPolicy) != FetchAlways {
-					t.Errorf("file %d handed to the record at %v, want FetchAlways", st.FileIdx, FetchPolicy(st.FetchPolicy))
+			for _, fi := range []int{0, 2} {
+				if got := p.FileFetchPolicy(fi); got != FetchIfNeeded {
+					t.Errorf("file %d policy = %v, want FetchIfNeeded", fi, got)
 				}
-				owed = append(owed, st.FileIdx)
-			}
-			if !slices.Equal(owed, []int{0, 2}) {
-				t.Errorf("files handed to the record = %v, want [0 2]", owed)
 			}
 		})
 	}
@@ -103,7 +88,7 @@ func TestTakeFetchPolicyChanges(t *testing.T) {
 	}
 	t.Run("set, release and discard", func(t *testing.T) {
 		t.Parallel()
-		j := newInterleavedRecoveryJob(t, false)
+		j := newInterleavedRecoveryJob(t)
 		if err := j.SetFileFetchPolicy(0, FetchIfNeeded); err != nil {
 			t.Fatalf("SetFileFetchPolicy: %v", err)
 		}
@@ -125,15 +110,17 @@ func TestTakeFetchPolicyChanges(t *testing.T) {
 		if err := j.MarkArticleFailed(1, WholeArticle); err != nil {
 			t.Fatalf("MarkArticleFailed: %v", err)
 		}
-		if got := taken(j); !slices.Equal(got, []int{0, 2}) {
-			t.Errorf("after the failure's release, took %v, want [0 2]", got)
+		if got := taken(j); got != nil {
+			t.Errorf("after the failure, took %v, want nothing: a failure changes no fetch policy", got)
 		}
-		st := j.TakeFetchPolicyChanges()
-		if st != nil {
-			t.Errorf("a second take after the release returned %+v", st)
+		if err := j.SetFileFetchPolicy(2, FetchAlways); err != nil {
+			t.Fatalf("SetFileFetchPolicy: %v", err)
+		}
+		if got := taken(j); !slices.Equal(got, []int{2}) {
+			t.Errorf("after the release, took %v, want [2]", got)
 		}
 
-		k := newInterleavedRecoveryJob(t, false)
+		k := newInterleavedRecoveryJob(t)
 		if err := k.SetFileFetchPolicy(2, FetchIfNeeded); err != nil {
 			t.Fatalf("SetFileFetchPolicy: %v", err)
 		}
@@ -150,7 +137,7 @@ func TestTakeFetchPolicyChanges(t *testing.T) {
 		t.Parallel()
 		// The take's state replaces the file's whole job_files row, so a
 		// policy change must not also clear its complete flag or filename.
-		j := newInterleavedRecoveryJob(t, false)
+		j := newInterleavedRecoveryJob(t)
 		if err := j.RecordFileFilename(2, j.Name(), "a.vol01+02.par2"); err != nil {
 			t.Fatalf("RecordFileFilename: %v", err)
 		}

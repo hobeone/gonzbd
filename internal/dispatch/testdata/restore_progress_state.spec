@@ -37,24 +37,12 @@ file internal/job/content.go
 	}
 --- end
 
-[persistIfChanged stops reading the par2Recovered flag back, so a restored job's stored true is overwritten with false]
+[persistIfChanged stops reading the release reason back, so a restored job's stored reason is overwritten with empty]
 file internal/dispatch/tick.go
 --- anchor
-	p.Par2Recovered = j.Par2Recovered()
+	p.Par2ReleaseReason = j.Par2ReleaseReason()
 --- replace
-	p.Par2Recovered = false
---- end
-
-[the Job accessor loses its pre-hydration fallback, so a never-hydrated job reports false]
-file internal/job/content.go
---- anchor
-	if j.progress == nil {
-		return j.restoredPar2Recovered
-	}
---- replace
-	if j.progress == nil {
-		return false
-	}
+	p.Par2ReleaseReason = ""
 --- end
 
 [RestoreProgressState stops recording the reason, as the old silent no-op did]

@@ -298,8 +298,7 @@ type Options struct {
 	// The article is permanently failed from this package's point of view —
 	// the offset comes from the server and a re-fetch yields the same one —
 	// so the caller records it as permanently failed in the job. That is what
-	// charges its bytes against the job's par2 recovery budget and releases
-	// on-demand recovery volumes. Without it the article stays Emitted, which
+	// charges its bytes against the job's par2 recovery budget. Without it the article stays Emitted, which
 	// is not Outstanding: ForEachUnfinishedArticle skips a set Emitted bit, so
 	// the job waits forever on an article nothing will re-dispatch.
 	OnArticleRejected func(jobID string, fileIdx int, artIdx int32, reason string, uncovered int64)

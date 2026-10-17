@@ -228,13 +228,6 @@ CREATE TABLE dispatch_jobs (
     -- a job hopeless. That must not be reachable from a degraded read.
     recovery_bytes    INTEGER NOT NULL DEFAULT 0,
 
-    -- Set when on-demand par2 un-deferred this job's recovery volumes because
-    -- repair was needed. Without it a job repaired and then restarted before
-    -- finalize prints no par2 summary line at all: every arm of that switch
-    -- tests either this flag or a held-volume count that un-deferring has
-    -- already driven to zero.
-    par2_recovered    INTEGER NOT NULL DEFAULT 0,
-
     -- The job's unwanted.State: 0 none, 1 blocked by the unwanted-extension
     -- check at ingest, 2 approved by the user. Persisted because approval is
     -- an event, not a function of the NZB: an approved job must not be

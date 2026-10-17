@@ -122,30 +122,18 @@ func TestJob_ContentMethods(t *testing.T) {
 		t.Fatalf("FileFilename = %q, want renamed.rar", got)
 	}
 
-	// MarkArticleFailed triggers on-demand par2 release
+	// MarkArticleFailed changes no fetch policy and records no reason.
 	if err := j.MarkArticleFailed(0, WholeArticle); err != nil {
 		t.Fatalf("MarkArticleFailed: %v", err)
 	}
-	if len(j.DeferredRecoveryIndices()) != 0 {
-		t.Fatalf("DeferredRecoveryIndices after MarkArticleFailed = %v, want empty", j.DeferredRecoveryIndices())
+	if got := j.DeferredRecoveryIndices(); len(got) != 1 || got[0] != 1 {
+		t.Fatalf("DeferredRecoveryIndices after MarkArticleFailed = %v, want [1]", got)
 	}
-	if j.Progress().Par2ReleaseReason() == "" {
-		t.Fatal("Par2ReleaseReason should be set on failure release")
-	}
-
-	// A hold is not set over that release.
-	if err := j.SetFileFetchPolicy(1, FetchIfNeeded); err != nil {
-		t.Fatalf("SetFileFetchPolicy: %v", err)
-	}
-	if got := j.Progress().FileFetchPolicy(1); got != FetchAlways {
-		t.Fatalf("Fetch policy = %v after a hold over a release, want FetchAlways", got)
+	if got := j.Progress().Par2ReleaseReason(); got != "" {
+		t.Fatalf("Par2ReleaseReason = %q after a live failure, want empty", got)
 	}
 
-	// DiscardDeferredPar2, on a job no release has reached.
-	j.progress.restorePar2Recovered(false)
-	if err := j.SetFileFetchPolicy(1, FetchIfNeeded); err != nil {
-		t.Fatalf("SetFileFetchPolicy: %v", err)
-	}
+	// DiscardDeferredPar2
 	if !j.DiscardDeferredPar2() {
 		t.Fatal("DiscardDeferredPar2 should return true when changed")
 	}
@@ -153,12 +141,12 @@ func TestJob_ContentMethods(t *testing.T) {
 		t.Fatalf("Fetch policy = %v, want FetchNever", j.Progress().FileFetchPolicy(1))
 	}
 
-	// UndeferRecoveryVolumes
+	// ReleaseRecovery
 	if err := j.SetFileFetchPolicy(1, FetchIfNeeded); err != nil {
 		t.Fatalf("SetFileFetchPolicy: %v", err)
 	}
-	if err := j.UndeferRecoveryVolumes([]int{1}); err != nil {
-		t.Fatalf("UndeferRecoveryVolumes: %v", err)
+	if n, err := j.ReleaseRecovery(Unsized()); err != nil || n != 1 {
+		t.Fatalf("ReleaseRecovery = %d, %v, want 1, nil", n, err)
 	}
 	if j.Progress().FileFetchPolicy(1) != FetchAlways {
 		t.Fatalf("Fetch policy = %v, want FetchAlways", j.Progress().FileFetchPolicy(1))
@@ -339,8 +327,8 @@ func TestContentMethods_UnattachedJobAndRunsErrors(t *testing.T) {
 	if err := j.MarkFileComplete(0); err == nil {
 		t.Error("MarkFileComplete on unattached job should error")
 	}
-	if err := j.UndeferRecoveryVolumes(nil); err == nil {
-		t.Error("UndeferRecoveryVolumes on unattached job should error")
+	if _, err := j.ReleaseRecovery(Unsized()); err == nil {
+		t.Error("ReleaseRecovery on unattached job should error")
 	}
 	j.SetPar2ReleaseReason("reason")
 	if err := j.RecordFileFilename(0, j.Name(), "fn"); err == nil {
@@ -406,7 +394,7 @@ func TestContentMethods_UnattachedJobAndRunsErrors(t *testing.T) {
 		Articles: []JobArticle{{ID: "<r1@x>", Bytes: 100, Number: 1}},
 	}})
 	jRestored := New("restored", "restored", Policy{})
-	jRestored.RestoreProgressState("repair needed", start, finish, false)
+	jRestored.RestoreProgressState("repair needed", start, finish)
 
 	// Readable before hydration: the Job-level fields are authoritative while
 	// progress is nil, which is what stops persistIfChanged zeroing the row
@@ -462,7 +450,7 @@ func TestResetForRetry_ClearsDownloadStamps(t *testing.T) {
 	finish := time.Unix(1700000100, 0).UTC()
 	// Restore before attaching, so the stamps reach the JobProgress the way a
 	// restarted job's do; then check ResetForRetry clears them.
-	j.RestoreProgressState("", start, finish, false)
+	j.RestoreProgressState("", start, finish)
 	if err := j.AttachContent(m); err != nil {
 		t.Fatalf("AttachContent: %v", err)
 	}
@@ -776,7 +764,7 @@ func TestJob_ProgressAccessors(t *testing.T) {
 		t.Fatalf("MarkJobStarted: %v", err)
 	}
 	markWritten(t, j, 0)
-	// MarkArticleFailed triggers on-demand par2 release and sets Par2ReleaseReason
+	// MarkArticleFailed charges the loss; it releases nothing and sets no Par2ReleaseReason
 	if err := j.MarkArticleFailed(1, WholeArticle); err != nil {
 		t.Fatalf("MarkArticleFailed: %v", err)
 	}
@@ -799,8 +787,12 @@ func TestJob_ProgressAccessors(t *testing.T) {
 	if exp, rem, fail := j.ProgressFigures(); exp != j.ExpectedBytes() || rem != j.RemainingBytes() || fail != j.FailedBytes() {
 		t.Errorf("ProgressFigures() = (%d, %d, %d), want (%d, %d, %d)", exp, rem, fail, j.ExpectedBytes(), j.RemainingBytes(), j.FailedBytes())
 	}
-	if got := j.Par2ReleaseReason(); got == "" {
-		t.Error("Par2ReleaseReason() is empty after par2 release")
+	if got := j.Par2ReleaseReason(); got != "" {
+		t.Errorf("Par2ReleaseReason() = %q after a failure, want empty: only a release records one", got)
+	}
+	j.SetPar2ReleaseReason("released")
+	if got := j.Par2ReleaseReason(); got != "released" {
+		t.Errorf("Par2ReleaseReason() = %q after SetPar2ReleaseReason, want released", got)
 	}
 
 	j.SetRecoveryBytes(1234)
