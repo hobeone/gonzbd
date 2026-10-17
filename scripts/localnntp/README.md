@@ -43,6 +43,8 @@ Flags:
 - `--obfuscate`: Obfuscate volume filenames in the NZB (default: `false`).
 - `--sidecars`: Include sample media and NFO sidecars (default: `true`).
 
+Message-IDs are derived from the namespace `<name>/<seed>` (the `--name` and `--seed` values) plus the file name and part number. Releases generated with a different `--name` or `--seed` therefore never share a Message-ID, even though each contains a `sample.mkv`, which is what lets `serve` index several of them together.
+
 ---
 
 ### 2. Running the Server (`serve`)
@@ -58,16 +60,16 @@ go run ./scripts/localnntp serve \
 ```
 
 Flags:
-- `--dir`: Release directory containing `manifest.json` (required, **repeatable**). Each directory keeps its own `articles.pack` and `files/`; all releases share one Message-ID index, and startup fails if a Message-ID appears in two releases. Fault rules, stats and snapshots span every release.
+- `--dir`: Release directory containing `manifest.json` (required, **repeatable**). Each directory keeps its own `articles.pack` and `files/`; all releases share one Message-ID index, and startup fails if a Message-ID appears in two releases. Fault rules, stats and snapshots span every release. Startup also fails for a release without a `files/` directory, and for an `articles.pack` that cannot be opened, is not a regular file, or is shorter than the manifest's wire offsets need; only a missing `articles.pack` is tolerated, and that release is then served from `files/` without the fast path.
 - `--listen`: Address to bind the NNTP server (default: `"127.0.0.1:11190"`).
 - `--control`: Address to bind the HTTP control API (default: `"127.0.0.1:11191"`).
 - `--rate-mbps`: Bandwidth limit in MB/s (`0` = unlimited).
 - `--seed`: RNG seed for fault engine (default: `1`).
 - `--fault`: Repeatable fault specification string.
-- `--max-connections`: Cap on simultaneous client connections; a connection over the cap gets `502 too many connections` and is closed (`0` = unlimited).
+- `--max-connections`: Cap on simultaneous client connections; a connection over the cap gets `502 too many connections` and is closed (`0` = unlimited; a negative value is an error).
 - `--refuse`: Accept then close immediately with no greeting (a dead server).
 - `--reject-greeting`: Greet with `400 service temporarily unavailable` and close.
-- `--auth-fail`: `AUTHINFO PASS` answers `481` whatever the credentials, and `BODY`/`ARTICLE`/`STAT` answer `480` until authenticated.
+- `--auth-fail`: `AUTHINFO PASS` answers `481` whatever the credentials, and `BODY`/`ARTICLE`/`STAT` answer `480` on every connection while it is set, including connections that authenticated before it was set.
 
 The four connection flags are the initial state of the runtime-adjustable connection faults below.
 
@@ -80,7 +82,7 @@ curl -s -X POST http://127.0.0.1:11191/conn -d '{"max_connections": 2, "auth_fai
 curl -s -X POST http://127.0.0.1:11191/conn -d '{"kill_active": true}'   # one-shot: closes every open client connection
 ```
 
-JSON fields: `max_connections` (int), `refuse` (bool), `reject_greeting` (bool), `auth_fail` (bool), `kill_active` (bool, an action rather than state). The response is `{"conn": {...}, "killed": N}`.
+JSON fields: `max_connections` (int), `refuse` (bool), `reject_greeting` (bool), `auth_fail` (bool), `kill_active` (bool, an action rather than state). A negative `max_connections` is rejected with `400`. The response is `{"conn": {...}, "killed": N}`. Killed connections leave the open set before the response is sent, so a reconnect straight after is not counted against `max_connections`.
 
 `GET /stats` reports the current state as `conn` (`max_connections`, `refuse`, `reject_greeting`, `auth_fail`), plus `active_connections`, `peak_connections` and `connections_rejected_total` (refused, rejected-greeting and over-cap connections).
 
@@ -129,17 +131,18 @@ Flags:
 - `--snapshot-as`: Snapshot name to record on the server in `crash` mode.
 - `--snapshot`: Snapshot name to compare against in `complete` mode.
 - `--expect-archive-cleanup`: Expect `.rar` and `.par2` files to be cleaned up from `complete_dir` (default: `true`).
-- `--servers-for-fetch-check`: Repeatable control URL (`complete` mode only). Fetches `/stats` from each, sums `served_clean` per Message-ID, and reports `served_clean_sum`, `distinct_ids_served` and `multi_served_ids` (formatted `<id> xN`) in the report.
-- `--expect-single-fetch`: With `--servers-for-fetch-check`, fail if any Message-ID was served clean more than once across all those servers. Par2 volumes may be served without ever being needed, so only an ID served more than once is an error. Independent of `--snapshot`.
+- `--servers-for-fetch-check`: Repeatable control URL (`complete` mode only; the same URL twice is an error, since it would count one server twice). Fetches `/stats` from each, sums `served_clean` per Message-ID, and adds `served_clean_sum`, `distinct_ids_served` and `multi_served_ids` (formatted `<id> xN`) to the report. The report carries those fields only when this flag is given.
+- `--expect-single-fetch`: With `--servers-for-fetch-check`, fail if any Message-ID was served clean more than once across all those servers, if nothing was served clean at all, or if a non-par2 segment of the manifest was never served clean (par2 volumes may be served without being needed, and are not required). Because every non-par2 segment must be served clean, do not combine it with `drop` or `corrupt-*` faults on those segments. Independent of `--snapshot`.
 
 ---
 
 ### 4. Waiting for State (`wait`)
 
-Polls one condition and exits `0` when it holds (printing the matching value or path on stdout), `1` on timeout (printing the last observed value on stderr), `2` on a usage error. Exactly one condition family per call.
+Polls one condition and exits `0` when it holds (printing the matching value or path on stdout), `1` on timeout (printing the last observed value on stderr), `2` on a usage error or a SQL statement that can never succeed. Exactly one condition family per call; a flag that belongs to another family is a usage error.
 
 ```bash
-# SQLite scalar, opened read-only; a missing db or table is "not yet", not an error
+# SQLite scalar, opened read-only; a missing db, a table not created yet, a busy or locked
+# database and a query with no row yet are "not yet"; a syntax error or unknown column exits 2
 go run ./scripts/localnntp wait --timeout 10m --db /tmp/gonzbd/admin/history.db \
   --sql "SELECT count(*) FROM written_articles" --ge 50
 go run ./scripts/localnntp wait --db /tmp/gonzbd/admin/history.db --sql "SELECT status FROM history LIMIT 1" --eq Completed
@@ -154,6 +157,6 @@ go run ./scripts/localnntp wait --glob-root /tmp/gonzbd/incomplete --glob-name '
 
 Flags:
 - `--timeout` (default `10m`), `--interval` (default `200ms`).
-- `--db` with `--sql` (a query returning one scalar) and exactly one of `--ge N` / `--gt N` (numeric) or `--eq VALUE` (string compare).
-- `--log` with `--regex`.
+- `--db` with `--sql` (a query returning one scalar) and exactly one of `--ge N` / `--gt N` (a finite number; `NaN` and `Inf` are rejected) or `--eq VALUE` (string compare). A SQL `NULL` never satisfies any of them, including `--eq ""`; it is reported as `(NULL)`.
+- `--log` with `--regex`, and optionally `--from-end`: ignore lines already in the file when `wait` starts, so a previous run's output cannot satisfy the wait. A log that does not exist yet is read from its first byte.
 - `--glob` (a `filepath.Glob` pattern; `**` is not supported) or `--glob-root` with `--glob-name` (a `filepath.Match` pattern against the base name, searched recursively).

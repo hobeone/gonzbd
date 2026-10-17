@@ -24,9 +24,11 @@ The tool consists of three integrated subsystems (plus a `wait` helper for polli
 | Subcommand | Description | Key Flags |
 |---|---|---|
 | `gen` | Generates synthetic RAR5+PAR2 releases and NZB XML | `--dir`, `--size`, `--volumes`, `--par2-redundancy`, `--seed` |
-| `serve` | Runs disk-backed NNTP server & HTTP control API | `--dir` (repeatable: several releases, one Message-ID index; duplicate IDs fail startup), `--listen`, `--control`, `--rate-mbps`, `--fault`, `--max-connections`, `--refuse`, `--reject-greeting`, `--auth-fail` |
+| `serve` | Runs disk-backed NNTP server & HTTP control API | `--dir` (repeatable: several releases, one Message-ID index; duplicate IDs, a missing `files/` or an unusable `articles.pack` fail startup; only an absent pack falls back to the slow path), `--listen`, `--control`, `--rate-mbps`, `--fault`, `--max-connections`, `--refuse`, `--reject-greeting`, `--auth-fail` |
 | `verify` | Validates SQLite state against disk & server stats | `--mode` (`crash`\|`complete`), `--manifest`, `--admin-dir`, `--download-dir`, `--complete-dir`, `--server`, `--snapshot-as`, `--snapshot`, `--expect-archive-cleanup`, `--servers-for-fetch-check` (repeatable), `--expect-single-fetch` |
-| `wait` | Blocks until a SQLite scalar, log line or path satisfies a condition; exit 0 holds, 1 timeout, 2 usage | `--timeout`, `--interval`, then exactly one of `--db`+`--sql`+(`--ge`\|`--gt`\|`--eq`), `--log`+`--regex`, `--glob`, `--glob-root`+`--glob-name` |
+| `wait` | Blocks until a SQLite scalar, log line or path satisfies a condition; exit 0 holds, 1 timeout, 2 usage | `--timeout`, `--interval`, then exactly one of `--db`+`--sql`+(`--ge`\|`--gt`\|`--eq`), `--log`+`--regex`, `--glob`, `--glob-root`+`--glob-name`; `--from-end` (with `--log`) ignores lines already present at start; a flag from another family, or a SQL error that can never succeed, exits 2 |
+
+`gen` derives Message-IDs from `<name>/<seed>` plus file name and part number, so releases with a different `--name` or `--seed` never collide in a multi-release `serve`.
 
 `gen` stages the payload under `$TMPDIR` (`os.MkdirTemp`, so `/tmp` by default) before writing the release. For multi-GiB releases set `TMPDIR` to a directory on a real disk if `/tmp` is tmpfs, or generation fills RAM.
 
@@ -36,8 +38,8 @@ All endpoints are hosted on the address configured by `--control` (default: `127
 
 | Method & Route | Purpose | Payload / Query Parameters |
 |---|---|---|
-| `GET /stats` | Returns aggregate counters, served article map and connection state | Response: `{ "served_clean_total": ..., "served_clean": { "<id>": count }, "conn": {...}, "active_connections": N, "peak_connections": N, "connections_rejected_total": N }` |
-| `POST /conn` | Sets connection-level faults; omitted fields keep their value | JSON body: `{"max_connections": 2, "refuse": false, "reject_greeting": false, "auth_fail": false, "kill_active": true}` (`kill_active` is a one-shot action closing all open client connections). Response: `{"conn": {...}, "killed": N}` |
+| `GET /stats` | Returns aggregate counters, per-ID maps, active rules, snapshots and connection state | Response keys: `served_clean_total`, `faults_fired_total`, `bytes_sent_total`, `rate_mbps`, `served_clean` (`{"<id>": count}`), `requests` (`{"<id>": count}`), `rules`, `snapshots`, `conn` (`max_connections`, `refuse`, `reject_greeting`, `auth_fail`), `active_connections`, `peak_connections`, `connections_rejected_total` |
+| `POST /conn` | Sets connection-level faults; omitted fields keep their value | JSON body: `{"max_connections": 2, "refuse": false, "reject_greeting": false, "auth_fail": false, "kill_active": true}` (`kill_active` is a one-shot action closing all open client connections and freeing their `max_connections` slots at once; a negative `max_connections` is a `400`). Response: `{"conn": {...}, "killed": N}` |
 | `POST /faults` | Installs a dynamic fault injection rule | JSON body: `{"spec": "<spec>"}` or structured rule object |
 | `DELETE /faults` | Clears all active fault rules | None |
 | `POST /rate` | Dynamically updates bandwidth throttle | JSON body: `{"rate_mbps": 50.0}` (`0` = unlimited) |
@@ -67,10 +69,10 @@ Set with `serve --max-connections/--refuse/--reject-greeting/--auth-fail` or liv
 | `max_connections` | A connection over the cap gets `502 too many connections` and is closed (what real providers do); `0` = unlimited |
 | `refuse` | Accept then close with no greeting (dead server) |
 | `reject_greeting` | `400 service temporarily unavailable`, then close |
-| `auth_fail` | `AUTHINFO PASS` answers `481` regardless of credentials; `BODY`/`ARTICLE`/`STAT` answer `480` until authenticated (auth is otherwise only required when the server has users configured) |
+| `auth_fail` | `AUTHINFO PASS` answers `481` regardless of credentials; `BODY`/`ARTICLE`/`STAT` answer `480` on every connection while it is set, including ones that authenticated earlier (without it, auth is required only when the server has users configured) |
 | `kill_active` | One-shot: abruptly closes every open client connection |
 
-`active_connections`, `peak_connections` and `connections_rejected_total` in `GET /stats` count admitted and refused connections.
+In `GET /stats`, `active_connections` is the number of admitted connections currently open, `peak_connections` its high-water mark, and `connections_rejected_total` the connections refused, answered with a `400` greeting, or turned away over the cap.
 
 ### Format Specification Syntax
 
@@ -104,7 +106,7 @@ go run ./scripts/localnntp gen \
 This writes:
 - `/tmp/fake-usenet/movie/files/` — The split `.partNN.rar` and `.par2` files.
 - `/tmp/fake-usenet/movie/manifest.json` — Release structural manifest and SHA-256 expected outputs.
-- `/tmp/fake-usenet/movie/StressMovie.nzb` — Standard NZB XML pointing to synthetic Message-IDs.
+- `/tmp/fake-usenet/movie/StressMovie.nzb` — Standard NZB XML pointing to synthetic Message-IDs. They derive from the namespace `<name>/<seed>` (here `StressMovie/42`) plus file name and part, so releases with a different `--name` or `--seed` can be served together.
 - `/tmp/fake-usenet/movie/articles.pack` — Pre-encoded yEnc articles pack file.
 
 ### Step 2: Start the Local NNTP Server
@@ -178,7 +180,7 @@ go run ./scripts/localnntp wait --timeout 5m --interval 100ms \
   && kill -9 $GONZBD_PID
 ```
 
-`wait` opens the database read-only and tolerates it (or the table) not existing yet; on timeout it exits `1` and prints the last observed count. The equivalent `sqlite3` loop still works if you prefer it:
+`wait` opens the database read-only and tolerates it (or the table) not existing yet; on timeout it exits `1` and prints the last observed count, while a SQL error that can never succeed (a syntax error, say) exits `2` at once. The equivalent `sqlite3` loop still works if you prefer it:
 
 ```bash
 while true; do
@@ -249,7 +251,7 @@ go run ./scripts/localnntp verify --mode complete ... \
   --expect-single-fetch
 ```
 
-It sums `served_clean` per Message-ID across the servers and fails listing any ID served more than once; the report also carries `served_clean_sum` and `distinct_ids_served`. Par2 volumes can be served without being needed, so only IDs served more than once are errors. Provider-failure scenarios use `POST /conn` (for example `{"max_connections": 2}` for `502`s, or `{"kill_active": true}` mid-download).
+It sums `served_clean` per Message-ID across the servers (each URL once) and, with `--expect-single-fetch`, fails if any ID was served more than once, if nothing was served clean, or if a non-par2 segment of the manifest never was (par2 volumes may be served without being needed and are not required, so avoid `drop`/`corrupt-*` faults on other segments in such a run). Whenever `--servers-for-fetch-check` is given, the report also carries `served_clean_sum`, `distinct_ids_served` and `multi_served_ids`; without it those fields are absent. Provider-failure scenarios use `POST /conn` (for example `{"max_connections": 2}` for `502`s, or `{"kill_active": true}` mid-download).
 
 ---
 
