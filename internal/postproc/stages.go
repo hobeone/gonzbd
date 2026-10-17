@@ -4,6 +4,7 @@
 package postproc
 
 import (
+	"cmp"
 	"context"
 	"encoding/json"
 	"errors"
@@ -216,6 +217,14 @@ type Job struct {
 	ParError    bool
 	UnpackError bool
 
+	// parCause and unpackCause are the error text of the stage that set
+	// ParError and UnpackError. recordStageFailure is their only writer and
+	// FailReason their only reader: `grep -nE 'parCause|unpackCause'
+	// stages.go` finds them nowhere else in non-test code. A flag set
+	// without a stage error has no cause.
+	parCause    string
+	unpackCause string
+
 	// quickCheck is what the quickcheck stage was able to determine about
 	// this job's file CRCs. See QuickCheckOutcome. QuickCheckStage is its
 	// only writer: `git grep -n '[.]quickCheck =' -- '*.go' ':!*_test.go'`
@@ -352,6 +361,39 @@ func (e StageLogEntry) MarshalJSON() ([]byte, error) {
 // finds 4 lines).
 func (j *Job) Failed() bool {
 	return j.ParError || j.UnpackError || j.FailMsg != ""
+}
+
+// FailReason is the one statement of why a failed job failed: the cause of
+// each failed stage, then FailMsg, joined by "; ". It is empty exactly when
+// Failed is false. A repair or unpack failure with no recorded cause reads
+// "repair failed" or "unpack failed".
+func (j *Job) FailReason() string {
+	var reasons []string
+	if j.ParError {
+		reasons = append(reasons, cmp.Or(j.parCause, "repair failed"))
+	}
+	if j.UnpackError {
+		reasons = append(reasons, cmp.Or(j.unpackCause, "unpack failed"))
+	}
+	if j.FailMsg != "" {
+		reasons = append(reasons, j.FailMsg)
+	}
+	return strings.Join(reasons, "; ")
+}
+
+// recordStageFailure keeps err as the cause of whichever of ParError and
+// UnpackError the stage that returned it newly set. parBefore and
+// unpackBefore are those flags as they were before the stage ran.
+func (j *Job) recordStageFailure(parBefore, unpackBefore bool, err error) {
+	if err == nil {
+		return
+	}
+	if j.ParError && !parBefore {
+		j.parCause = err.Error()
+	}
+	if j.UnpackError && !unpackBefore {
+		j.unpackCause = err.Error()
+	}
 }
 
 // payloadDeleter marks a stage that removes files from DownloadDir as it runs,
