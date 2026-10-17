@@ -7,7 +7,10 @@
 - **Synthetic Release Generation**: Creates multi-volume RAR5 archives with configurable PAR2 recovery sets, sidecar files (NFO, samples), split segments, and formatted NZB XML.
 - **Fast Line-Rate Server**: Serves NNTP `ARTICLE`, `BODY`, `STAT`, `CAPABILITIES`, and `AUTHINFO` commands using an immutable pre-encoded `articles.pack` fast path exceeding 1 GB/s.
 - **Semantic Fault Engine**: Injects article drops, wire corruption, payload corruption (invalid content with valid yEnc CRC to trigger DirectUnpack / quickcheck repair), mid-body disconnects, and stalls.
-- **Dynamic HTTP Control API**: Provides live endpoints for updating bandwidth rate limits, adding/clearing fault rules, and recording point-in-time article snapshots.
+- **Multi-Release Serving**: `serve --dir` is repeatable, so several releases share one server and one Message-ID index.
+- **Connection-Level Faults**: Connection caps (`502`), dead servers, `400` greetings, auth failures and abrupt kills of open connections, switchable at runtime.
+- **Dynamic HTTP Control API**: Provides live endpoints for updating bandwidth rate limits, adding/clearing fault rules, setting connection faults, and recording point-in-time article snapshots.
+- **State Waiter (`wait`)**: Blocks until a SQLite scalar, a log line or a file path satisfies a condition, replacing shell polling loops.
 - **Crash & Completion Verifier**: Verifies `gonzbd` SQLite state (`written_articles`, `job_files`, `dispatch_jobs`, `history`) against partial and complete files on disk (including a file-scoped post-processing fallback reported via `fallback_rows` when a `complete=1` file was renamed or backed up to `.1` during mid-post-processing crashes), ensuring zero re-fetches after crash recovery.
 
 ---
@@ -55,12 +58,31 @@ go run ./scripts/localnntp serve \
 ```
 
 Flags:
-- `--dir`: Release directory containing `manifest.json` (required).
+- `--dir`: Release directory containing `manifest.json` (required, **repeatable**). Each directory keeps its own `articles.pack` and `files/`; all releases share one Message-ID index, and startup fails if a Message-ID appears in two releases. Fault rules, stats and snapshots span every release.
 - `--listen`: Address to bind the NNTP server (default: `"127.0.0.1:11190"`).
 - `--control`: Address to bind the HTTP control API (default: `"127.0.0.1:11191"`).
 - `--rate-mbps`: Bandwidth limit in MB/s (`0` = unlimited).
 - `--seed`: RNG seed for fault engine (default: `1`).
 - `--fault`: Repeatable fault specification string.
+- `--max-connections`: Cap on simultaneous client connections; a connection over the cap gets `502 too many connections` and is closed (`0` = unlimited).
+- `--refuse`: Accept then close immediately with no greeting (a dead server).
+- `--reject-greeting`: Greet with `400 service temporarily unavailable` and close.
+- `--auth-fail`: `AUTHINFO PASS` answers `481` whatever the credentials, and `BODY`/`ARTICLE`/`STAT` answer `480` until authenticated.
+
+The four connection flags are the initial state of the runtime-adjustable connection faults below.
+
+#### Connection faults at runtime
+
+`POST /conn` on the control address changes them live. Omitted fields keep their current value; unknown fields are rejected with `400`.
+
+```bash
+curl -s -X POST http://127.0.0.1:11191/conn -d '{"max_connections": 2, "auth_fail": false}'
+curl -s -X POST http://127.0.0.1:11191/conn -d '{"kill_active": true}'   # one-shot: closes every open client connection
+```
+
+JSON fields: `max_connections` (int), `refuse` (bool), `reject_greeting` (bool), `auth_fail` (bool), `kill_active` (bool, an action rather than state). The response is `{"conn": {...}, "killed": N}`.
+
+`GET /stats` reports the current state as `conn` (`max_connections`, `refuse`, `reject_greeting`, `auth_fail`), plus `active_connections`, `peak_connections` and `connections_rejected_total` (refused, rejected-greeting and over-cap connections).
 
 ---
 
@@ -107,3 +129,31 @@ Flags:
 - `--snapshot-as`: Snapshot name to record on the server in `crash` mode.
 - `--snapshot`: Snapshot name to compare against in `complete` mode.
 - `--expect-archive-cleanup`: Expect `.rar` and `.par2` files to be cleaned up from `complete_dir` (default: `true`).
+- `--servers-for-fetch-check`: Repeatable control URL (`complete` mode only). Fetches `/stats` from each, sums `served_clean` per Message-ID, and reports `served_clean_sum`, `distinct_ids_served` and `multi_served_ids` (formatted `<id> xN`) in the report.
+- `--expect-single-fetch`: With `--servers-for-fetch-check`, fail if any Message-ID was served clean more than once across all those servers. Par2 volumes may be served without ever being needed, so only an ID served more than once is an error. Independent of `--snapshot`.
+
+---
+
+### 4. Waiting for State (`wait`)
+
+Polls one condition and exits `0` when it holds (printing the matching value or path on stdout), `1` on timeout (printing the last observed value on stderr), `2` on a usage error. Exactly one condition family per call.
+
+```bash
+# SQLite scalar, opened read-only; a missing db or table is "not yet", not an error
+go run ./scripts/localnntp wait --timeout 10m --db /tmp/gonzbd/admin/history.db \
+  --sql "SELECT count(*) FROM written_articles" --ge 50
+go run ./scripts/localnntp wait --db /tmp/gonzbd/admin/history.db --sql "SELECT status FROM history LIMIT 1" --eq Completed
+
+# A log line matching a regex (read incrementally; the file may not exist yet)
+go run ./scripts/localnntp wait --log /tmp/gonzbd/gonzbd.log --regex 'repair needed, fetching recovery volumes'
+
+# A path appearing
+go run ./scripts/localnntp wait --glob '/tmp/gonzbd/complete/*/*.mkv'
+go run ./scripts/localnntp wait --glob-root /tmp/gonzbd/incomplete --glob-name '*.par2engine-*.tmp'
+```
+
+Flags:
+- `--timeout` (default `10m`), `--interval` (default `200ms`).
+- `--db` with `--sql` (a query returning one scalar) and exactly one of `--ge N` / `--gt N` (numeric) or `--eq VALUE` (string compare).
+- `--log` with `--regex`.
+- `--glob` (a `filepath.Glob` pattern; `**` is not supported) or `--glob-root` with `--glob-name` (a `filepath.Match` pattern against the base name, searched recursively).

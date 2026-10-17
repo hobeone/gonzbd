@@ -9,7 +9,7 @@ description: Use when running local Usenet stress tests, multi-GiB RAR5+PAR2 dow
 
 `localnntp` is a self-contained Usenet simulation and verification harness for `gonzbd`. It allows agents and engineers to run multi-gigabyte end-to-end downloads, semantic NNTP fault injection, bandwidth shaping, and hard `SIGKILL` crash/restore verifications entirely on local disk without connecting to external Usenet servers or writing mock fixtures by hand.
 
-The tool consists of three integrated subsystems:
+The tool consists of three integrated subsystems (plus a `wait` helper for polling gonzbd state, see the quick reference):
 
 1. **Synthetic Release Generator (`gen`)**: Produces deterministic multi-volume RAR5 archives with configurable PAR2 parity files, sidecars (`.nfo`, sample media), segment splitting, yEnc formatting, NZB XML index generation, and pre-computed `articles.pack` binary bundles.
 2. **High-Performance NNTP Server (`serve`)**: Serves RFC 3977 / 2980 NNTP commands (`ARTICLE`, `BODY`, `STAT`, `CAPABILITIES`, `AUTHINFO`) with line-rate throughput via the immutable pre-encoded `articles.pack` fast path (1+ GB/s). Houses a dynamic HTTP control API for live fault injection, rate limiting, and snapshot tracking.
@@ -24,8 +24,11 @@ The tool consists of three integrated subsystems:
 | Subcommand | Description | Key Flags |
 |---|---|---|
 | `gen` | Generates synthetic RAR5+PAR2 releases and NZB XML | `--dir`, `--size`, `--volumes`, `--par2-redundancy`, `--seed` |
-| `serve` | Runs disk-backed NNTP server & HTTP control API | `--dir`, `--listen`, `--control`, `--rate-mbps`, `--fault` |
-| `verify` | Validates SQLite state against disk & server stats | `--mode` (`crash`\|`complete`), `--manifest`, `--admin-dir`, `--download-dir`, `--complete-dir`, `--server`, `--snapshot-as`, `--snapshot`, `--expect-archive-cleanup` |
+| `serve` | Runs disk-backed NNTP server & HTTP control API | `--dir` (repeatable: several releases, one Message-ID index; duplicate IDs fail startup), `--listen`, `--control`, `--rate-mbps`, `--fault`, `--max-connections`, `--refuse`, `--reject-greeting`, `--auth-fail` |
+| `verify` | Validates SQLite state against disk & server stats | `--mode` (`crash`\|`complete`), `--manifest`, `--admin-dir`, `--download-dir`, `--complete-dir`, `--server`, `--snapshot-as`, `--snapshot`, `--expect-archive-cleanup`, `--servers-for-fetch-check` (repeatable), `--expect-single-fetch` |
+| `wait` | Blocks until a SQLite scalar, log line or path satisfies a condition; exit 0 holds, 1 timeout, 2 usage | `--timeout`, `--interval`, then exactly one of `--db`+`--sql`+(`--ge`\|`--gt`\|`--eq`), `--log`+`--regex`, `--glob`, `--glob-root`+`--glob-name` |
+
+`gen` stages the payload under `$TMPDIR` (`os.MkdirTemp`, so `/tmp` by default) before writing the release. For multi-GiB releases set `TMPDIR` to a directory on a real disk if `/tmp` is tmpfs, or generation fills RAM.
 
 ### HTTP Control API Endpoints
 
@@ -33,7 +36,8 @@ All endpoints are hosted on the address configured by `--control` (default: `127
 
 | Method & Route | Purpose | Payload / Query Parameters |
 |---|---|---|
-| `GET /stats` | Returns aggregate counters and served article map | Response: `{ "served_clean_total": ..., "served_clean": { "<id>": count } }` |
+| `GET /stats` | Returns aggregate counters, served article map and connection state | Response: `{ "served_clean_total": ..., "served_clean": { "<id>": count }, "conn": {...}, "active_connections": N, "peak_connections": N, "connections_rejected_total": N }` |
+| `POST /conn` | Sets connection-level faults; omitted fields keep their value | JSON body: `{"max_connections": 2, "refuse": false, "reject_greeting": false, "auth_fail": false, "kill_active": true}` (`kill_active` is a one-shot action closing all open client connections). Response: `{"conn": {...}, "killed": N}` |
 | `POST /faults` | Installs a dynamic fault injection rule | JSON body: `{"spec": "<spec>"}` or structured rule object |
 | `DELETE /faults` | Clears all active fault rules | None |
 | `POST /rate` | Dynamically updates bandwidth throttle | JSON body: `{"rate_mbps": 50.0}` (`0` = unlimited) |
@@ -53,6 +57,20 @@ Fault rules match against requested message IDs, target filenames, part numbers,
 | `corrupt-wire` | Invalid yEnc body or bad CRC32 line | Rejected immediately by `internal/decoder` (`ErrCRCMismatch`); downloader tries alternate servers or marks failed |
 | `drop-mid-body` | Server sends half the body then abruptly closes TCP connection | Downloader catches mid-stream EOF / connection reset, drops socket, and applies a server penalty (clear immediately in single-server tests via `GET /api?mode=status&name=unblock_server&value=localnntp`) |
 | `stall` | Server sends `222` status line then sleeps for `timeout` before closing | Triggers client socket read timeout (`idleTimeoutReader`) and server penalty |
+
+### Connection-Level Faults
+
+Set with `serve --max-connections/--refuse/--reject-greeting/--auth-fail` or live through `POST /conn`.
+
+| Setting | Server behavior |
+|---|---|
+| `max_connections` | A connection over the cap gets `502 too many connections` and is closed (what real providers do); `0` = unlimited |
+| `refuse` | Accept then close with no greeting (dead server) |
+| `reject_greeting` | `400 service temporarily unavailable`, then close |
+| `auth_fail` | `AUTHINFO PASS` answers `481` regardless of credentials; `BODY`/`ARTICLE`/`STAT` answer `480` until authenticated (auth is otherwise only required when the server has users configured) |
+| `kill_active` | One-shot: abruptly closes every open client connection |
+
+`active_connections`, `peak_connections` and `connections_rejected_total` in `GET /stats` count admitted and refused connections.
 
 ### Format Specification Syntax
 
@@ -140,6 +158,10 @@ Start the daemon and submit the NZB:
 GONZBD_PID=$!
 sleep 1
 
+# gonzbd only WARNS on unknown config YAML keys, so a typo silently falls back to a default.
+# Check the log after every start:
+grep 'unknown field ignored' /tmp/gonzbd-crash/gonzbd.log && echo "FIX THE CONFIG"
+
 # Enqueue the job via SABnzbd compatibility API
 curl -sf "http://127.0.0.1:18089/api?mode=addfile&output=json&apikey=0123456789abcdef" \
   -F "nzbfile=@/tmp/fake-usenet/movie/StressMovie.nzb"
@@ -147,15 +169,21 @@ curl -sf "http://127.0.0.1:18089/api?mode=addfile&output=json&apikey=0123456789a
 
 ### Step 4: Deliver `SIGKILL` During Active Download
 
-Monitor `/tmp/gonzbd-crash/admin/history.db` until partial article records appear, then kill the daemon immediately:
+Wait until partial article records appear in `/tmp/gonzbd-crash/admin/history.db`, then kill the daemon immediately:
+
+```bash
+go run ./scripts/localnntp wait --timeout 5m --interval 100ms \
+  --db /tmp/gonzbd-crash/admin/history.db \
+  --sql "SELECT count(*) FROM written_articles" --gt 50 \
+  && kill -9 $GONZBD_PID
+```
+
+`wait` opens the database read-only and tolerates it (or the table) not existing yet; on timeout it exits `1` and prints the last observed count. The equivalent `sqlite3` loop still works if you prefer it:
 
 ```bash
 while true; do
   COUNT=$(sqlite3 /tmp/gonzbd-crash/admin/history.db "SELECT count(*) FROM written_articles;" 2>/dev/null || echo 0)
-  if [ "$COUNT" -gt 50 ]; then
-    kill -9 $GONZBD_PID
-    break
-  fi
+  if [ "$COUNT" -gt 50 ]; then kill -9 $GONZBD_PID; break; fi
   sleep 0.1
 done
 ```
@@ -188,14 +216,12 @@ GONZBD_PID=$!
 Wait until the job reaches `Completed` in `/tmp/gonzbd-crash/admin/history.db`:
 
 ```bash
-while true; do
-  STATUS=$(sqlite3 /tmp/gonzbd-crash/admin/history.db "SELECT status FROM history LIMIT 1;" 2>/dev/null || echo "")
-  if [ "$STATUS" = "Completed" ]; then
-    break
-  fi
-  sleep 0.5
-done
+go run ./scripts/localnntp wait --timeout 15m --interval 500ms \
+  --db /tmp/gonzbd-crash/admin/history.db \
+  --sql "SELECT status FROM history LIMIT 1" --eq Completed
 ```
+
+Other waits that replace ad-hoc loops: a log line (`wait --log /tmp/gonzbd-crash/gonzbd.log --regex 'repair needed, fetching recovery volumes'`) or a temp file appearing (`wait --glob-root /tmp/gonzbd-crash/incomplete --glob-name '*.par2engine-*.tmp'`).
 
 ### Step 7: Run Completion & No-Refetch Verification
 
@@ -211,6 +237,19 @@ go run ./scripts/localnntp verify \
   --server "http://127.0.0.1:11191" \
   --snapshot "crash1"
 ```
+
+### Multi-Server and Multi-Release Variants
+
+To serve several releases from one server, repeat `--dir` (Message-IDs must be unique across releases). To test several servers, run one `serve` per server, each with its own `--listen` and `--control`, and add the cross-server exactly-once check to the completion verify:
+
+```bash
+go run ./scripts/localnntp verify --mode complete ... \
+  --servers-for-fetch-check http://127.0.0.1:11191 \
+  --servers-for-fetch-check http://127.0.0.1:12191 \
+  --expect-single-fetch
+```
+
+It sums `served_clean` per Message-ID across the servers and fails listing any ID served more than once; the report also carries `served_clean_sum` and `distinct_ids_served`. Par2 volumes can be served without being needed, so only IDs served more than once are errors. Provider-failure scenarios use `POST /conn` (for example `{"max_connections": 2}` for `502`s, or `{"kill_active": true}` mid-download).
 
 ---
 
