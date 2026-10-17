@@ -96,6 +96,31 @@ type Identification struct {
 	// Ignored is the delivered files that were not considered, because par2
 	// does not protect its own sidecars. See ignoredExtensions.
 	Ignored []string
+
+	// sets is one entry per par2 set that parsed, set by IdentifyWithOptions
+	// and copied unchanged by Assessment.CRCExcluding (`git grep -n 'sets: [ai]'
+	// -- internal/par2/ ':!*_test.go'` returns those 3 lines). SliceSize reads it.
+	sets []parsedSetInfo
+}
+
+// SliceSize is the slice size of the par2 set these files were identified
+// against. ok is false when no set parsed, when more than one distinct SetID
+// parsed (their sizes need not agree, and a caller sizing recovery for one set
+// cannot use another's), or when the size is zero.
+func (id Identification) SliceSize() (size uint64, ok bool) {
+	if len(id.sets) == 0 {
+		return 0, false
+	}
+	first := id.sets[0]
+	for _, s := range id.sets[1:] {
+		if s.id != first.id || s.sliceSize != first.sliceSize {
+			return 0, false
+		}
+	}
+	if first.sliceSize == 0 {
+		return 0, false
+	}
+	return first.sliceSize, true
 }
 
 // Accounted reports whether every par2 entry was matched to a delivered file.
@@ -179,10 +204,10 @@ func IdentifyWithOptions(dir string, sets []Set, log *slog.Logger, opts ParseOpt
 		log = slog.Default()
 	}
 
-	manifest := collectManifestsWithOptions(sets, log, opts)
+	manifest, infos := collectManifestsWithOptions(sets, log, opts)
 	if len(manifest) == 0 {
 		log.Info("identify: no file descriptions found in any par2 set")
-		return Identification{}, nil
+		return Identification{sets: infos}, nil
 	}
 
 	flatFiles, err := scanFlatFiles(dir, log)
@@ -207,7 +232,7 @@ func IdentifyWithOptions(dir string, sets []Set, log *slog.Logger, opts ParseOpt
 
 	claimedFile := make(map[string]bool, len(candidates))
 	claimedEntry := make(map[int]bool, len(manifest))
-	id := Identification{Ignored: ignored}
+	id := Identification{Ignored: ignored, sets: infos}
 
 	// Pass 0 — an entry whose par2 path already names a file on disk is that
 	// file, and nothing below can see it.

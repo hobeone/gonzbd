@@ -73,7 +73,7 @@ func (a Assessment) CRCExcluding(sets map[string]bool, log *slog.Logger) CRCVeri
 	if len(sets) == 0 {
 		return a.CRC
 	}
-	var kept Identification
+	kept := Identification{sets: a.ID.sets}
 	for _, f := range a.ID.Files {
 		if !sets[f.Desc.Set] {
 			kept.Files = append(kept.Files, f)
@@ -106,6 +106,23 @@ func (a Assessment) Undelivered() []FileDesc {
 	}
 	undelivered = append(undelivered, a.ID.Unaccounted...)
 	return undelivered
+}
+
+// DeliveredIndices is aligned to a.ID.Files: element i is the position in the
+// delivered-file list given to Assess of the file a.ID.Files[i] was joined to,
+// by the same join verifyIdentified uses, or -1 when it was not delivered.
+func (a Assessment) DeliveredIndices() []int {
+	out := make([]int, len(a.ID.Files))
+	idx := newDeliveredIndex(a.files, nil)
+	for i, f := range a.ID.Files {
+		d, ok := idx.match(f.OnDisk)
+		if !ok {
+			out[i] = -1
+			continue
+		}
+		out[i] = d.pos
+	}
+	return out
 }
 
 // Assess identifies the files in dir against the par2 sets, verifies the
@@ -157,6 +174,8 @@ func AssessWithOptions(dir string, sets []Set, files []AssembledFile, log *slog.
 type delivered struct {
 	crc     uint32
 	matched bool
+	// pos is the file's position in the slice the index was built from.
+	pos int
 }
 
 // deliveredIndex indexes delivered files by exact filename and by unambiguous basename.
@@ -169,8 +188,8 @@ func newDeliveredIndex(files []AssembledFile, log *slog.Logger) deliveredIndex {
 	byName := make(map[string]*delivered, len(files))
 	byBase := make(map[string]*delivered, len(files))
 	ambiguousBase := make(map[string]bool)
-	for _, af := range files {
-		d := &delivered{crc: af.CRC32}
+	for i, af := range files {
+		d := &delivered{crc: af.CRC32, pos: i}
 		byName[af.FileName] = d
 		base := joinKey(af.FileName)
 		if _, dup := byBase[base]; dup {
