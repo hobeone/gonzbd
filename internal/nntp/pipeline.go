@@ -282,10 +282,10 @@ func (c *Conn) submit(pc *pendingCmd, cmd []byte) error {
 	defer c.sendLock.Unlock()
 
 	// Check closed inside pendingLock to prevent a race with
-	// finishReader: if finishReader sets closed=true and drains
+	// finishReader: if finishReader marks the Conn closed and drains
 	// pending, a concurrent submit must not re-append after the drain.
 	c.pendingLock.Lock()
-	if c.closed.Load() {
+	if c.Closed() {
 		c.pendingLock.Unlock()
 		c.releaseSem()
 		return c.closeError()
@@ -387,19 +387,16 @@ func (c *Conn) finishReaderWithMode(err error, prePop bool) {
 		if prePop && len(orphans) == 0 && err != nil && !errors.Is(err, ErrIdleClosed) {
 			err = fmt.Errorf("%w: %w", ErrIdleClosed, err)
 		}
-		// Set closeErr BEFORE the atomic flag so that any concurrent
-		// reader of c.closed sees a valid closeErr. Holding pendingLock
-		// across closed.Store(true) and draining c.pending ensures submit
-		// (which checks c.closed.Load() under pendingLock) either appends
-		// before this drain or observes c.closed == true.
-		c.closeErr = err
-		c.closed.Store(true)
+		// Holding pendingLock across the store and the drain ensures
+		// submit (which checks c.closed under pendingLock) either appends
+		// before this drain or observes the Conn closed.
+		c.closed.Store(&closeState{err: err})
 		c.pendingLock.Unlock()
 
 		if c.cancel != nil {
 			c.cancel() // release context resources; prevents leak when Close() is never called
 		}
-		_ = c.nc.Close() //nolint:errcheck // best-effort cleanup; underlying error already captured in c.closeErr
+		_ = c.nc.Close() //nolint:errcheck // best-effort cleanup; underlying error already captured in c.closed
 
 		for _, pc := range orphans {
 			pc.result = cmdResult{err: err}
@@ -433,11 +430,27 @@ func (c *Conn) releaseSem() {
 	}
 }
 
+// closeState is what Conn.closed holds once the Conn has closed. err is
+// the reason finishReaderWithMode recorded, and nil when Close ended
+// the Conn first.
+type closeState struct{ err error }
+
+// closeCause returns the reason the reader goroutine recorded for ending
+// the connection, or nil while the Conn is open or when Close ended it.
+// It is safe to call from any goroutine at any time: the reason is read
+// through the same atomic load that reports the Conn closed.
+func (c *Conn) closeCause() error {
+	if s := c.closed.Load(); s != nil {
+		return s.err
+	}
+	return nil
+}
+
 // closeError returns the recorded reason the connection became unusable,
 // or a generic ErrClosed if none was captured.
 func (c *Conn) closeError() error {
-	if c.closeErr != nil {
-		return c.closeErr
+	if err := c.closeCause(); err != nil {
+		return err
 	}
 	return ErrClosed
 }

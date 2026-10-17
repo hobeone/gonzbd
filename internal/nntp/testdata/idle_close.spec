@@ -5,7 +5,7 @@ run ^TestConn_Closed$|^TestRunReader_IdleDisconnectClassified$|^TestFinishReader
 file internal/nntp/conn.go
 --- anchor
 func (c *Conn) Closed() bool {
-	return c.closed.Load()
+	return c.closed.Load() != nil
 }
 --- replace
 func (c *Conn) Closed() bool {
