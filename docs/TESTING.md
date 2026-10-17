@@ -122,6 +122,7 @@ sudo apt install unrar rar par2 p7zip-full
 | `duplicate_test.go` | Duplicate detection |
 | `oneshot_test.go` | One-shot CLI download mode |
 | `truncation_test.go` | Truncated article handling |
+| `ondemand_par2_partial_test.go` | On-demand par2 with one missing interior article: only the byte-minimal covering recovery volumes are fetched, and the job repairs (generates its par2 set with the `par2` binary) |
 | `replay_test.go` | Historical NZB replay (requires fixtures) |
 | `directunpack_integration_test.go` | Pure-Go RAR extraction via rarengine: multi-volume streaming and volume-boundary handling |
 | `pause_integration_test.go` | Tests pause and resume behaviors of the active queue and downloading connection goroutines |

@@ -1807,7 +1807,10 @@ func (app *Application) reportDownloadComplete(j *job.Job, rep reporter) (bool, 
 
 // maybeReleaseRecoveryVolumes gives j's on-demand par2 verdict, acts on it on
 // j alone, not on whatever instance holds j's ID by then, and reports whether
-// it un-deferred recovery volumes to fetch.
+// it released at least one recovery volume to fetch. On outcomeRepair the
+// release is sized to the damage (recoveryDeficit) and may leave volumes held;
+// a second Assessing re-runs this and releases more only while a deficit
+// remains, so a job that returns true here is assessed again.
 func (app *Application) maybeReleaseRecoveryVolumes(ctx context.Context, j *job.Job) bool {
 	if ctx.Err() != nil {
 		return false
@@ -1946,7 +1949,8 @@ const (
 	// outcomeRepair means at least one par2-tracked file is corrupt, has no
 	// assembled CRC to check, could not be verified, or a par2 entry matched
 	// no delivered file while others in the same set did match — repair is
-	// possible and the volumes must be fetched.
+	// possible and recovery volumes must be fetched (recoveryDeficit sizes how
+	// many).
 	outcomeRepair
 
 	// outcomeUnknown means nothing delivered matched any par2 entry, by name

@@ -144,10 +144,10 @@ const (
 // This enum is read through two predicates that mean different things —
 // `!= FetchAlways` for dispatch, completion and byte accounting, and
 // `== FetchIfNeeded` for HasDeferredPar2 and DeferredRecoveryIndices, which
-// gate CRC re-verification and whether a late failure may re-arm a volume. A
+// gate CRC re-verification and which volumes a release may free. A
 // fourth value would need a decision at each of those sites, and the failure
 // mode of missing one is silence: a policy matching neither predicate is
-// excluded from every aggregate and invisible to the un-defer path, so its
+// excluded from every aggregate and invisible to the release path, so its
 // file is never fetched and never blocks completion.
 //
 // It is hand-written, which on its own would make it a second copy of the
@@ -909,9 +909,8 @@ func (p *JobProgress) UsesOnDemandPar2() bool {
 // held pending the verdict.
 //
 // FetchIfNeeded only, and that exclusion is load-bearing rather than tidy.
-// undeferRecovery walks this list on any first-time permanent article
-// failure while the job is not yet par2-recovered. If a discarded volume
-// appeared here, one late failure would re-activate exactly the volumes the
+// ReleaseRecovery chooses the volumes it frees from this list. If a discarded
+// volume appeared here, a release would re-activate exactly the volumes the
 // CRC oracle proved unnecessary — undoing on-demand par2 entirely.
 func (p *JobProgress) DeferredRecoveryIndices() []int {
 	var idxs []int

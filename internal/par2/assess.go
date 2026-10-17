@@ -235,8 +235,8 @@ func (idx deliveredIndex) match(onDisk string) (*delivered, bool) {
 //
 // An ambiguous basename is therefore refused rather than resolved, which is
 // the rule Identify already applies to a shared Hash16k and a shared CRC32.
-// The file falls through to Unverified, which fetches recovery volumes and
-// runs par2 — the conservative direction, and the same one a genuinely
+// The file falls through to Unverified, which releases every held recovery
+// volume (the release cannot be sized) and runs par2 — the conservative direction, and the same one a genuinely
 // unmatched entry takes.
 //
 // The pass this replaces had the same collision and could not see it: it keyed

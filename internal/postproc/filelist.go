@@ -51,8 +51,9 @@ func buildDownloadFileList(j *Job) []string {
 	// a deferrable recovery volume at ingest, through
 	// Job.InstallFileVerification replaying a row those same callers
 	// produced, through DiscardDeferredPar2 (gated on FetchIfNeeded), and
-	// through undeferRecovery (gated on FetchIfNeeded, and moving files back
-	// ONTO FetchAlways); a fresh progress starts at the FetchAlways zero. If that
+	// through undeferRecovery, which Job.ReleaseRecovery calls (gated on
+	// FetchIfNeeded, and moving files back ONTO FetchAlways); a fresh progress
+	// starts at the FetchAlways zero. If that
 	// ever changes, heldVols and heldBytes stop describing the same set and the
 	// line printing both goes wrong before anything else does.
 	heldBytes := m.TotalBytes() - p.ExpectedBytes()
