@@ -50,12 +50,16 @@ type dispatchTracker struct {
 	mu       sync.Mutex
 	tryList  map[articleKey]serverMask
 	inFlight map[articleKey]int
+	// faults counts an article's connection faults per server index; see
+	// UnmarkTriedAfterFault.
+	faults map[articleKey]map[int]int
 }
 
 func newDispatchTracker() *dispatchTracker {
 	return &dispatchTracker{
 		tryList:  make(map[articleKey]serverMask),
 		inFlight: make(map[articleKey]int),
+		faults:   make(map[articleKey]map[int]int),
 	}
 }
 
@@ -119,12 +123,54 @@ func (m *dispatchTracker) UnmarkTried(key articleKey, serverIdx int) {
 	}
 }
 
-// ClearTried removes the entire tried mask entry for the key.
-// Self-locking.
+// maxConnFaultsPerArticle is how many connection faults one article may
+// suffer on one server before that server counts as tried for it. SABnzbd's
+// max_art_tries default is the same figure.
+const maxConnFaultsPerArticle = 3
+
+// UnmarkTriedAfterFault is UnmarkTried for a fetch that ended in a connection
+// fault, bounded per article and server: the article's
+// maxConnFaultsPerArticle-th fault on serverIdx leaves serverIdx marked
+// instead, so an article that faults every time moves on to the next server,
+// or to ErrNoServersLeft, rather than being retried on this one without end.
+// Faults on one server do not count toward another's bound. It reports
+// whether serverIdx was left marked. Self-locking.
+func (m *dispatchTracker) UnmarkTriedAfterFault(key articleKey, serverIdx int) bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	perServer := m.faults[key]
+	if perServer == nil {
+		perServer = make(map[int]int)
+		m.faults[key] = perServer
+	}
+	perServer[serverIdx]++
+	if perServer[serverIdx] >= maxConnFaultsPerArticle {
+		delete(perServer, serverIdx)
+		if len(perServer) == 0 {
+			delete(m.faults, key)
+		}
+		return true
+	}
+	mask, ok := m.tryList[key]
+	if !ok {
+		return false
+	}
+	mask.unset(serverIdx)
+	if mask.isEmpty() {
+		delete(m.tryList, key)
+	} else {
+		m.tryList[key] = mask
+	}
+	return false
+}
+
+// ClearTried removes the entire tried mask entry for the key, and its
+// connection-fault count. Self-locking.
 func (m *dispatchTracker) ClearTried(key articleKey) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	delete(m.tryList, key)
+	delete(m.faults, key)
 }
 
 // instanceRef names one job instance that has entries in the tracker.
@@ -133,8 +179,8 @@ type instanceRef struct {
 	inst  weak.Pointer[job.Job]
 }
 
-// Instances returns each instance that has a try-list or in-flight entry,
-// once.
+// Instances returns each instance that has a try-list, in-flight or
+// connection-fault entry, once.
 func (m *dispatchTracker) Instances() []instanceRef {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -153,13 +199,16 @@ func (m *dispatchTracker) Instances() []instanceRef {
 	for k := range m.inFlight {
 		add(k)
 	}
+	for k := range m.faults {
+		add(k)
+	}
 	return out
 }
 
-// DropInstances removes every try-list and in-flight entry made for one of
-// the given instances. It is the tracker's one deleter of whole instances'
-// entries; the per-article deleters are DecrementInFlight, UnmarkTried and
-// ClearTried. Downloader.reapTracker is its caller:
+// DropInstances removes every try-list, in-flight and connection-fault entry
+// made for one of the given instances. It is the tracker's one deleter of
+// whole instances' entries; the per-article deleters are DecrementInFlight,
+// UnmarkTried, UnmarkTriedAfterFault and ClearTried. Downloader.reapTracker is its caller:
 // `git grep -n 'DropInstances(' -- '*.go' ':!*_test.go'` finds 3 lines: that
 // call, this declaration, and the line quoting the pattern.
 func (m *dispatchTracker) DropInstances(stale map[weak.Pointer[job.Job]]struct{}) {
@@ -173,6 +222,11 @@ func (m *dispatchTracker) DropInstances(stale map[weak.Pointer[job.Job]]struct{}
 	for k := range m.inFlight {
 		if _, ok := stale[k.inst]; ok {
 			delete(m.inFlight, k)
+		}
+	}
+	for k := range m.faults {
+		if _, ok := stale[k.inst]; ok {
+			delete(m.faults, k)
 		}
 	}
 }

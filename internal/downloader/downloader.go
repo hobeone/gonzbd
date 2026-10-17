@@ -932,7 +932,7 @@ func (d *Downloader) CancelJob(jobID string) {
 	d.reapTracker(jobID)
 }
 
-// reapTracker drops the try-list and in-flight entries of every instance under
+// reapTracker drops the tracker entries of every instance under
 // the ID aborted, and of every instance that is not the one registered under
 // its own ID. The second clause removes what an instance left behind when it
 // was deregistered without an abort, as a job settled at Fetching and then

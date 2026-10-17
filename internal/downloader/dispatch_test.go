@@ -1406,58 +1406,10 @@ func TestFetchArticle_DialFailureCountsConnError(t *testing.T) {
 	}
 }
 
-// A connection-level failure during Fetch (mid-stream disconnect, distinct
-// from a clean 430 ErrNoArticle) must apply the clamped penalty via the
-// second clampPenalty call site in fetchArticle. Exercises the "fetch
-// failed" branch that TestDownloaderDialFailure does not reach.
-func TestFetchArticle_FetchFailureAppliesClampedPenalty(t *testing.T) {
-	t.Parallel()
-
-	ms := newMockNNTP(t)
-	ms.addArticle("hangup@h", "body")
-	ms.hangupOnFetch("hangup@h")
-
-	srv := testServer(t, "s", ms.addr)
-	d := &Downloader{
-		dispatcher: newTestDispatcher(t),
-		tracker:    newDispatchTracker(),
-		log:        slog.New(slog.DiscardHandler),
-		opts:       Options{NoPenalties: true},
-		limiter:    bpsmeter.NewLimiter(0),
-	}
-	d.pauseCtx, d.pauseCancel = context.WithCancel(context.Background())
-	defer d.pauseCancel()
-
-	j, m := makeJobWithArticles(t, []string{"hangup@h"})
-	addTestJob(t, d.dispatcher, j, m)
-
-	req := &articleRequest{job: j, messageID: "hangup@h"}
-	mc := &managedConn{}
-	defer mc.Close(d, "worker1")
-	before := time.Now()
-	body, ok := d.fetchArticle(t.Context(), srv, 0, mc, req, "worker1")
-	if ok || body != nil {
-		t.Fatalf("expected fetchArticle to report a connection-level failure, got ok=%v body=%v", ok, body)
-	}
-
-	if srv.BadConnections() != 1 {
-		t.Errorf("BadConnections = %d, want 1 (mid-stream disconnect is a server fault)", srv.BadConnections())
-	}
-
-	expiry := srv.PenaltyExpiry()
-	got := expiry.Sub(before)
-	if got > constants.PenaltyShort+2*time.Second {
-		t.Errorf("penalty duration = %v, want <= constants.PenaltyShort (%v) when NoPenalties is set", got, constants.PenaltyShort)
-	}
-	if got <= 0 {
-		t.Errorf("penalty duration = %v, want > 0 for a connection-level fetch failure", got)
-	}
-}
-
 // TestFetchArticle_FetchFailureCountsConnError is a non-parallel sibling of
-// TestFetchArticle_FetchFailureAppliesClampedPenalty asserting
+// TestFetchArticle_ConnFaultRunAppliesClampedPenalty asserting
 // telemetry.PipelineErrors classification for a connection-level fetch
-// failure. Kept separate from the t.Parallel() test above because
+// failure. Kept separate from that t.Parallel() test because
 // PipelineErrors is process-global state.
 func TestFetchArticle_FetchFailureCountsConnError(t *testing.T) {
 	telemetry.Reset()
