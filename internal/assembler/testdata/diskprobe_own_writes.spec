@@ -4,7 +4,7 @@ run TestCheckDiskSpace_CountsOwnWritesBeforeTTL|TestDiskProbe_NoteWritten
 [a written article is not counted against the free-space estimate]
 file internal/assembler/assembler.go
 --- anchor
-		a.diskProbe.NoteWritten(f.info.Dir, o.n)
+		a.diskProbe.NoteWritten(o.n)
 --- replace
 		_ = o.n
 --- end
@@ -12,7 +12,7 @@ file internal/assembler/assembler.go
 [the estimate ignores the bytes written since the reading]
 file internal/assembler/diskprobe.go
 --- anchor
-	return max(st.free-(st.wrote-st.wroteAtProbe), 0)
+	return max(st.free-(p.wrote.Load()-st.wroteAtProbe), 0)
 --- replace
 	return st.free
 --- end
@@ -20,17 +20,17 @@ file internal/assembler/diskprobe.go
 [a fresh probe does not reset the subtraction]
 file internal/assembler/diskprobe.go
 --- anchor
-		st.wroteAtProbe = st.wrote
+		st.wroteAtProbe = p.wrote.Load()
 --- replace
-		_ = st.wrote
+		_ = p.wrote.Load()
 --- end
 
 [the estimate is allowed to go negative]
 file internal/assembler/diskprobe.go
 --- anchor
-	return max(st.free-(st.wrote-st.wroteAtProbe), 0)
+	return max(st.free-(p.wrote.Load()-st.wroteAtProbe), 0)
 --- replace
-	return st.free - (st.wrote - st.wroteAtProbe)
+	return st.free - (p.wrote.Load() - st.wroteAtProbe)
 --- end
 
 [bytes written during the probe are forgotten]
@@ -39,5 +39,5 @@ file internal/assembler/diskprobe.go
 	st.free, st.err, st.fetchedAt = free, err, time.Now()
 --- replace
 	st.free, st.err, st.fetchedAt = free, err, time.Now()
-	st.wroteAtProbe = st.wrote
+	st.wroteAtProbe = p.wrote.Load()
 --- end

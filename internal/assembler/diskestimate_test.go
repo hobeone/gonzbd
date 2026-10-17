@@ -44,12 +44,12 @@ func TestDiskProbe_NoteWrittenReducesCachedReading(t *testing.T) {
 	if got := probeFree(t, p, dir); got != 1000 {
 		t.Fatalf("first reading = %d, want 1000", got)
 	}
-	p.NoteWritten(dir, 300)
-	p.NoteWritten(dir, 200)
+	p.NoteWritten(300)
+	p.NoteWritten(200)
 	if got := probeFree(t, p, dir); got != 500 {
 		t.Errorf("reading after 500 bytes written = %d, want 500 (cached 1000 less 500)", got)
 	}
-	p.NoteWritten(dir, 700)
+	p.NoteWritten(700)
 	if got := probeFree(t, p, dir); got != 0 {
 		t.Errorf("reading after 1200 bytes written = %d, want 0 (floored, never negative)", got)
 	}
@@ -96,7 +96,7 @@ func TestDiskProbe_NoteWrittenKeepsBytesWrittenDuringProbe(t *testing.T) {
 	_, _ = p.FreeBytes(ctx, dir) // times out; the probe goroutine stays parked
 	<-entered
 
-	p.NoteWritten(dir, 400)
+	p.NoteWritten(400)
 	close(release)
 
 	if got := probeFree(t, p, dir); got != 600 {
@@ -104,24 +104,37 @@ func TestDiskProbe_NoteWrittenKeepsBytesWrittenDuringProbe(t *testing.T) {
 	}
 }
 
-func TestDiskProbe_NoteWrittenIgnoresUnknownDirAndNonPositive(t *testing.T) {
+// TestDiskProbe_NoteWrittenReachesEveryDirectory pins that a write to one
+// directory lowers the estimate of another: job directories share a
+// filesystem, so free space is not per directory.
+func TestDiskProbe_NoteWrittenReachesEveryDirectory(t *testing.T) {
+	var calls atomic.Int32
+	p := NewDiskProbe(time.Hour)
+	p.statfs = fixedStatfs(1000, &calls)
+	dirA, dirB := t.TempDir(), t.TempDir()
+
+	probeFree(t, p, dirA)
+	probeFree(t, p, dirB)
+	p.NoteWritten(250)
+	for _, dir := range []string{dirA, dirB} {
+		if got := probeFree(t, p, dir); got != 750 {
+			t.Errorf("reading for %s = %d, want 750", dir, got)
+		}
+	}
+}
+
+func TestDiskProbe_NoteWrittenBeforeFirstReadingAndNonPositive(t *testing.T) {
 	var calls atomic.Int32
 	p := NewDiskProbe(time.Hour)
 	p.statfs = fixedStatfs(1000, &calls)
 	dir := t.TempDir()
 
-	p.NoteWritten(dir, 999) // no reading yet: nothing to adjust, and no entry is created
-	p.mu.Lock()
-	n := len(p.dirs)
-	p.mu.Unlock()
-	if n != 0 {
-		t.Fatalf("NoteWritten on an unprobed dir created %d entries, want 0", n)
-	}
+	p.NoteWritten(999) // before any reading: the first probe sees these bytes itself
 	if got := probeFree(t, p, dir); got != 1000 {
 		t.Errorf("first reading = %d, want 1000: bytes written before any reading are in it already", got)
 	}
-	p.NoteWritten(dir, 0)
-	p.NoteWritten(dir, -5)
+	p.NoteWritten(0)
+	p.NoteWritten(-5)
 	if got := probeFree(t, p, dir); got != 1000 {
 		t.Errorf("reading after non-positive notes = %d, want 1000", got)
 	}

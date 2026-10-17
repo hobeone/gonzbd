@@ -1192,8 +1192,12 @@ until the next probe:
 - A write that faults is not counted, although part of it may have landed, and
   neither are writes by other processes or by par2 and unpack.
 - A fresh probe replaces the estimate with its own reading.
-- The counter is per directory string: two job directories on one filesystem do
-  not reduce each other's estimate.
+- The total is not split by directory: job directories share a filesystem, so
+  a write to one lowers every directory's estimate. Directories on different
+  filesystems lower each other's too, which errs low.
+- A filesystem whose `statfs` ignores data still in the client's write-back
+  cache (NFS) reports more than is really free, and bytes noted before the
+  probe was launched are not subtracted a second time.
 
 `NoteWritten` takes only the probe's own mutexes and performs no I/O.
 

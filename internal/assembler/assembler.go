@@ -1673,7 +1673,7 @@ func (a *Assembler) routeOutcome(f *openFile, req WriteRequest, o outcome) {
 	case dispositionWritten:
 		// The cached statfs reading does not see these bytes until it is
 		// refreshed (#987).
-		a.diskProbe.NoteWritten(f.info.Dir, o.n)
+		a.diskProbe.NoteWritten(o.n)
 		if a.opts.OnArticleWritten != nil {
 			a.opts.OnArticleWritten(req.JobID, req.FileIdx, req.ArtIdx, req.Offset, o.n, req.CRC32)
 		}
