@@ -15,6 +15,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/hobeone/gonzbd/internal/job"
 	"github.com/hobeone/gonzbd/test/mocknntp"
 )
 
@@ -33,20 +34,42 @@ type onDemandRun struct {
 
 // writePar2Fixture writes a 600 KiB data file and a par2 set for it into dir:
 // an index and recovery volumes of 1, 2, 4 and 8 blocks (16 KiB blocks, 15
-// recovery blocks in all). It returns the payload.
-func writePar2Fixture(t *testing.T, dir string) []byte {
+// recovery blocks in all). It returns the payload and the volumes' names by
+// block count.
+//
+// The sizes are par2cmdline's default scheme for 15 blocks, so no -n or -u is
+// passed. A par2 whose default differs fails the fixture guard rather than an
+// assertion about the cover, and the names are read back from the directory
+// rather than spelled here, since the padding of "+MM" is the tool's choice.
+func writePar2Fixture(t *testing.T, dir string) (payload []byte, volByBlocks map[int]string) {
 	t.Helper()
-	payload := make([]byte, 600*1024)
+	payload = make([]byte, 600*1024)
 	rand.New(rand.NewSource(982)).Read(payload) //nolint:gosec // G404: deterministic test data
 	if err := os.WriteFile(filepath.Join(dir, "data.bin"), payload, 0o600); err != nil {
 		t.Fatalf("write data.bin: %v", err)
 	}
-	cmd := exec.CommandContext(t.Context(), "par2", "create", "-q", "-s16384", "-c15", "-n4", "data.par2", "data.bin")
+	cmd := exec.CommandContext(t.Context(), "par2", "create", "-q", "-s16384", "-c15", "data.par2", "data.bin")
 	cmd.Dir = dir
 	if out, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("par2 create: %v\n%s", err, out)
 	}
-	return payload
+	vols, err := filepath.Glob(filepath.Join(dir, "data.vol*.par2"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	volByBlocks = make(map[int]string, len(vols))
+	for _, v := range vols {
+		name := filepath.Base(v)
+		if n, ok := job.RecoveryVolumeBlocks(name); ok {
+			volByBlocks[n] = name
+		}
+	}
+	for _, n := range []int{1, 2, 4, 8} {
+		if _, ok := volByBlocks[n]; !ok || len(vols) != 4 {
+			t.Fatalf("fixture guard: par2 create made %v, want one volume each of 1, 2, 4 and 8 blocks", vols)
+		}
+	}
+	return payload, volByBlocks
 }
 
 // runOnDemandPar2 serves the fixture in dir (after dropping the articles named
@@ -174,7 +197,7 @@ func TestOnDemandPar2_PartialRelease_FetchesOnlyTheCoveringVolumes(t *testing.T)
 	requireTool(t, "par2")
 
 	fixtureDir := t.TempDir()
-	payload := writePar2Fixture(t, fixtureDir)
+	payload, vol := writePar2Fixture(t, fixtureDir)
 	wantSHA := sha256.Sum256(payload)
 
 	// Article 5 of data.bin covers bytes [196608, 245760): blocks 12-14.
@@ -187,14 +210,14 @@ func TestOnDemandPar2_PartialRelease_FetchesOnlyTheCoveringVolumes(t *testing.T)
 	if served("data.par2") == 0 {
 		t.Errorf("the par2 index was not fetched")
 	}
-	for _, vol := range []string{"data.vol00+1.par2", "data.vol01+2.par2"} {
-		if served(vol) == 0 {
-			t.Errorf("%s was not fetched; the covering volumes for a 3-block deficit are +1 and +2", vol)
+	for _, blocks := range []int{1, 2} {
+		if served(vol[blocks]) == 0 {
+			t.Errorf("%s was not fetched; the covering volumes for a 3-block deficit are +1 and +2", vol[blocks])
 		}
 	}
-	for _, vol := range []string{"data.vol03+4.par2", "data.vol07+8.par2"} {
-		if n := served(vol); n != 0 {
-			t.Errorf("%s: %d articles fetched, want none (not part of the cheapest cover)", vol, n)
+	for _, blocks := range []int{4, 8} {
+		if n := served(vol[blocks]); n != 0 {
+			t.Errorf("%s: %d articles fetched, want none (not part of the cheapest cover)", vol[blocks], n)
 		}
 	}
 	if !strings.Contains(damaged.stageLog, "fetched 2 of 4 recovery volume(s)") {
