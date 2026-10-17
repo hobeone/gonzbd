@@ -58,6 +58,19 @@ func releasedSet(j *Job, n int) []int {
 
 func TestReleaseRecovery(t *testing.T) {
 	all := []int{1, 2, 3, 4, 5}
+	// One volume alone reaches any in-range need, so a sized release frees it
+	// and only it; a bound that fires frees the other too.
+	bigAndSmall := []heldVol{{"x.vol00+65535.par2", 1000}, {"x.vol01+100.par2", 10}}
+	// 1100 candidates make 1100*(32768+1) cells, above maxCoverCells; the
+	// first is the cheap volume that alone covers the need.
+	manyVols := []heldVol{{"x.vol00+65535.par2", 1}}
+	for i := 1; i < 1100; i++ {
+		manyVols = append(manyVols, heldVol{fmt.Sprintf("x.vol%04d+01.par2", i), 1000})
+	}
+	allMany := make([]int, len(manyVols))
+	for i := range allMany {
+		allMany[i] = i + 1
+	}
 	tests := []struct {
 		name   string
 		vols   []heldVol
@@ -79,6 +92,10 @@ func TestReleaseRecovery(t *testing.T) {
 		{"minus-form beside counted volumes is skipped", []heldVol{
 			{"x.vol00-01.par2", 1}, {"x.vol00+02.par2", 5000}, {"x.vol02+02.par2", 6000},
 		}, NeedBlocks(3), nil, []int{2, 3}},
+		{"need at MaxPar2Slices is still sized", bigAndSmall, NeedBlocks(MaxPar2Slices), nil, []int{1}},
+		{"need above MaxPar2Slices releases all", bigAndSmall, NeedBlocks(MaxPar2Slices + 1), nil, []int{1, 2}},
+		{"a cover table above maxCoverCells releases all", manyVols, NeedBlocks(MaxPar2Slices), nil, allMany},
+		{"the same volumes below maxCoverCells stay sized", manyVols[:1000], NeedBlocks(MaxPar2Slices), nil, []int{1}},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -172,6 +189,64 @@ func TestRecoveryReleased(t *testing.T) {
 		var p *JobProgress
 		if f, h, n := p.RecoveryReleased(nil); f != 0 || h != 0 || n != 0 {
 			t.Errorf("nil RecoveryReleased = (%d, %d, %d), want zeros", f, h, n)
+		}
+	})
+}
+
+func TestFetchedRecoveryBlocks(t *testing.T) {
+	// File 0 is content, file 1 an unclassified file, files 2.. recovery volumes.
+	art := func(id string) []JobArticle { return []JobArticle{{ID: id, Bytes: 100, Number: 1}} }
+	m := NewManifest([]JobFile{
+		{Subject: "data.rar", Bytes: 100, Articles: art("<d@x>")},
+		// Named like a volume but not classified as one, so it must not count.
+		{Subject: "x.vol15+16.par2", Bytes: 100, Articles: art("<i@x>")},
+		{Subject: "x.vol00+01.par2", Bytes: 100, IsPar2Recovery: true, Articles: art("<v0@x>")},
+		{Subject: "x.vol01+02.par2", Bytes: 100, IsPar2Recovery: true, Articles: art("<v1@x>")},
+		{Subject: "x.vol03+04.par2", Bytes: 100, IsPar2Recovery: true, Articles: art("<v2@x>")},
+		{Subject: "x.vol07-08.par2", Bytes: 100, IsPar2Recovery: true, Articles: art("<v3@x>")},
+	})
+	tests := []struct {
+		name string
+		prep func(f []FileProgress)
+		want int
+	}{
+		{"complete, released, unfailed volumes count", func(f []FileProgress) {
+			f[2].Complete, f[3].Complete = true, true
+		}, 3},
+		{"an incomplete volume counts nothing", func(f []FileProgress) {
+			f[2].Complete = true
+		}, 1},
+		{"a volume with a failed article counts nothing", func(f []FileProgress) {
+			f[2].Complete, f[3].Complete = true, true
+			f[3].FailedBytes = 1
+		}, 1},
+		{"a held volume counts nothing", func(f []FileProgress) {
+			f[2].Complete, f[3].Complete = true, true
+			f[3].Fetch = FetchIfNeeded
+		}, 1},
+		{"a minus-form volume has no count", func(f []FileProgress) {
+			f[5].Complete = true
+		}, 0},
+		{"a file not classified as a recovery volume is not counted", func(f []FileProgress) {
+			f[1].Complete = true
+		}, 0},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			j := New("fr", "fr", Policy{})
+			if err := j.AttachContent(m); err != nil {
+				t.Fatalf("AttachContent: %v", err)
+			}
+			tc.prep(j.progress.files)
+			if got := j.Progress().FetchedRecoveryBlocks(m); got != tc.want {
+				t.Errorf("FetchedRecoveryBlocks = %d, want %d", got, tc.want)
+			}
+		})
+	}
+	t.Run("nil progress", func(t *testing.T) {
+		var p *JobProgress
+		if got := p.FetchedRecoveryBlocks(m); got != 0 {
+			t.Errorf("nil FetchedRecoveryBlocks = %d, want 0", got)
 		}
 	})
 }

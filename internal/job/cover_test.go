@@ -1,6 +1,7 @@
 package job
 
 import (
+	"math"
 	"math/rand/v2"
 	"testing"
 )
@@ -61,6 +62,12 @@ func TestCheapestCover(t *testing.T) {
 		}
 		if _, ok := cheapestCover([]int{0, -3}, []int64{0, 0}, 1); ok {
 			t.Error("ok with no positive blocks")
+		}
+	})
+	t.Run("a count beyond int range does not overflow", func(t *testing.T) {
+		got, ok := cheapestCover([]int{math.MaxInt, math.MaxInt, 3}, []int64{300, 200, 100}, 5)
+		if !ok || len(got) != 1 || got[0] != 1 {
+			t.Errorf("got %v, %v, want [1], true", got, ok)
 		}
 	})
 }

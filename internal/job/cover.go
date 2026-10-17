@@ -14,15 +14,19 @@ import (
 // nil. need <= 0 is covered by the empty set, so it returns (nil, true).
 //
 // It is a 0/1 knapsack over block totals capped at need: time is
-// O(len(blocks) * need), and the choice table is one bit per cell. The caller
-// bounds need.
-func cheapestCover(blocks []int, bytes []int64, need int) (cover []int, ok bool) {
+// O(len(blocks) * need), and the choice table is one bit per cell.
+// ReleaseRecovery bounds need. Each count is capped at need first, which leaves
+// the cover exact (one volume of need blocks already covers it) and keeps the
+// sums below from overflowing for any count.
+func cheapestCover(inBlocks []int, bytes []int64, need int) (cover []int, ok bool) {
 	if need <= 0 {
 		return nil, true
 	}
+	blocks := make([]int, len(inBlocks))
 	var total int
-	for _, b := range blocks {
-		total += max(b, 0)
+	for i, b := range inBlocks {
+		blocks[i] = min(max(b, 0), need)
+		total += blocks[i]
 	}
 	if total < need {
 		return nil, false
@@ -53,7 +57,7 @@ func cheapestCover(blocks []int, bytes []int64, need int) (cover []int, ok bool)
 				bit := v*width + nc
 				took[bit/64] |= 1 << (bit % 64)
 				if nc == need {
-					intoNeed[v] = int32(c) //nolint:gosec // c <= need, which the caller bounds at 32768
+					intoNeed[v] = int32(c) //nolint:gosec // c <= need, which ReleaseRecovery bounds at MaxPar2Slices
 				}
 			}
 		}

@@ -15,13 +15,22 @@ func NeedBlocks(n int) RecoverySizing { return RecoverySizing{need: max(n, 0), s
 // Unsized releases every held volume.
 func Unsized() RecoverySizing { return RecoverySizing{} }
 
+// MaxPar2Slices is the PAR2 limit on the input slices of one recovery set, so
+// no deficit of a genuine set exceeds it.
+const MaxPar2Slices = 32768
+
+// maxCoverCells bounds candidates*(need+1), the cover's table at 4 MiB of bits
+// and its DP at 2^25 steps, all under contentMu.
+const maxCoverCells = 1 << 25
+
 // ReleaseRecovery frees held recovery volumes (FetchIfNeeded to FetchAlways)
 // and returns how many it freed. A job already beyond repair releases nothing.
 //
 // Sized, it frees the cheapest-by-bytes subset of the volumes whose names
 // carry a block count that reaches the need, or every held volume when they
-// cannot reach it. Unsized, or without a resident manifest to read names and
-// sizes from, it frees every held volume.
+// cannot reach it, when the need exceeds MaxPar2Slices, or when the cover
+// would exceed maxCoverCells. Unsized, or without a resident manifest to read
+// names and sizes from, it frees every held volume.
 func (j *Job) ReleaseRecovery(s RecoverySizing) (released int, err error) {
 	j.contentMu.Lock()
 	defer j.contentMu.Unlock()
@@ -43,10 +52,12 @@ func (j *Job) ReleaseRecovery(s RecoverySizing) (released int, err error) {
 				bytes = append(bytes, j.manifest.FileBytes(i))
 			}
 		}
-		if cover, ok := cheapestCover(blocks, bytes, s.need); ok {
-			held = held[:0:0]
-			for _, k := range cover {
-				held = append(held, idxs[k])
+		if s.need <= MaxPar2Slices && len(idxs)*(s.need+1) <= maxCoverCells {
+			if cover, ok := cheapestCover(blocks, bytes, s.need); ok {
+				held = held[:0:0]
+				for _, k := range cover {
+					held = append(held, idxs[k])
+				}
 			}
 		}
 	}

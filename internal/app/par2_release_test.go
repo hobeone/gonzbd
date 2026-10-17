@@ -155,6 +155,9 @@ func TestRecoveryDeficit(t *testing.T) {
 		if err := j.SetFileFetchPolicy(fi, job.FetchAlways); err != nil {
 			t.Fatalf("SetFileFetchPolicy: %v", err)
 		}
+		if err := j.MarkFileComplete(fi); err != nil {
+			t.Fatalf("MarkFileComplete: %v", err)
+		}
 		return fi
 	}
 
@@ -205,7 +208,7 @@ func TestRecoveryDeficit(t *testing.T) {
 			name: "more slices than a par2 set can hold is unsized without reading rows",
 			tweak: func(a *par2.Assessment) {
 				a.ID.Files = slices.Clone(a.ID.Files)
-				a.ID.Files[0].Desc.FileSize = 4 * (maxPar2Slices + 1)
+				a.ID.Files[0].Desc.FileSize = 4 * (job.MaxPar2Slices + 1)
 			},
 			want: job.Unsized(), wantWhy: "more than", wantCalls: 0,
 		},
@@ -213,12 +216,12 @@ func TestRecoveryDeficit(t *testing.T) {
 			name: "exactly the slice limit is sized",
 			tweak: func(a *par2.Assessment) {
 				a.ID.Files = slices.Clone(a.ID.Files)
-				a.ID.Files[0].Desc.FileSize = 4 * maxPar2Slices
+				a.ID.Files[0].Desc.FileSize = 4 * job.MaxPar2Slices
 			},
 			// The rows cover 4065 of the 131072 bytes, so every slice from
 			// the one holding byte 4065 (slice 1016) to the last is damaged
 			// as well as the ten around the lost article.
-			want: job.NeedBlocks(fixtureSliceDamage + maxPar2Slices - 1016), wantCalls: 1,
+			want: job.NeedBlocks(fixtureSliceDamage + job.MaxPar2Slices - 1016), wantCalls: 1,
 		},
 		{
 			name: "a file size beyond int64 is unsized",
@@ -451,8 +454,15 @@ func TestMaybeReleaseRecoveryVolumes_SizedRelease(t *testing.T) {
 			t.Errorf("reason = %q: a sized release must not say it released everything", reason)
 		}
 
-		// The released volumes arrive intact (nothing marks them failed), so
-		// their 12 blocks cover the 10 damaged slices.
+		// The released volumes arrive intact (complete, nothing marks them
+		// failed), so their 12 blocks cover the 10 damaged slices.
+		for subject, p := range want {
+			if p == job.FetchAlways {
+				if err := j.MarkFileComplete(fileIdxBySubject(t, j, subject)); err != nil {
+					t.Fatalf("MarkFileComplete(%s): %v", subject, err)
+				}
+			}
+		}
 		if application.maybeReleaseRecoveryVolumes(t.Context(), j) {
 			t.Error("a second call = true, want false: the deficit is covered")
 		}

@@ -43,7 +43,7 @@ file internal/app/par2_release.go
 [the slice cap is not enforced, so rows are read for an oversized set]
 file internal/app/par2_release.go
 --- anchor
-		if total > maxPar2Slices {
+		if total > job.MaxPar2Slices {
 --- replace
 		if false {
 --- end
@@ -51,9 +51,9 @@ file internal/app/par2_release.go
 [the slice cap excludes the limit itself]
 file internal/app/par2_release.go
 --- anchor
-		if total > maxPar2Slices {
+		if total > job.MaxPar2Slices {
 --- replace
-		if total >= maxPar2Slices {
+		if total >= job.MaxPar2Slices {
 --- end
 
 [an entry with no delivered file is no longer refused]
@@ -74,26 +74,10 @@ file internal/app/par2_release.go
 	if false && err != nil {
 --- end
 
-[a held volume counts toward the blocks already fetched]
-file internal/app/par2_release.go
---- anchor
-		if !m.FileIsPar2Recovery(fi) || p.FileFetchPolicy(fi) != job.FetchAlways || p.FileFailedBytes(fi) > 0 {
---- replace
-		if !m.FileIsPar2Recovery(fi) || p.FileFailedBytes(fi) > 0 {
---- end
-
-[a fetched volume with a failed article counts toward the blocks already fetched]
-file internal/app/par2_release.go
---- anchor
-		if !m.FileIsPar2Recovery(fi) || p.FileFetchPolicy(fi) != job.FetchAlways || p.FileFailedBytes(fi) > 0 {
---- replace
-		if !m.FileIsPar2Recovery(fi) || p.FileFetchPolicy(fi) != job.FetchAlways || false {
---- end
-
 [the blocks already fetched are not subtracted]
 file internal/app/par2_release.go
 --- anchor
-	return job.NeedBlocks(damaged - available), ""
+	return job.NeedBlocks(damaged - p.FetchedRecoveryBlocks(m)), ""
 --- replace
 	return job.NeedBlocks(damaged), ""
 --- end

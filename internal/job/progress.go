@@ -849,6 +849,27 @@ func (p *JobProgress) RecoveryReleased(m RecoveryClassifier) (fetched, held, tot
 	return fetched, held, total
 }
 
+// FetchedRecoveryBlocks sums the recovery blocks, as m's names declare them, of
+// the volumes that are released, fully assembled and free of failed articles.
+// A volume that is held, incomplete or has a failed article counts nothing: how
+// many of its blocks are usable is not known.
+func (p *JobProgress) FetchedRecoveryBlocks(m *Manifest) int {
+	if p == nil {
+		return 0
+	}
+	var n int
+	for fi := range p.files {
+		f := &p.files[fi]
+		if !m.FileIsPar2Recovery(fi) || f.Fetch != FetchAlways || !f.Complete || f.FailedBytes != 0 {
+			continue
+		}
+		if b, ok := RecoveryVolumeBlocks(m.FileSubject(fi)); ok {
+			n += b
+		}
+	}
+	return n
+}
+
 // HasPar2Verdict reports whether the on-demand par2 verdict has already been
 // reached for this job, using the reason string as the marker.
 //

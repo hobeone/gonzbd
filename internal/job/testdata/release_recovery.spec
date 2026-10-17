@@ -136,3 +136,35 @@ file internal/job/verified.go
 --- replace
 	sliceSize = max(sliceSize, 1)
 --- end
+
+[a block count is not capped at need, so the totals overflow]
+file internal/job/cover.go
+--- anchor
+		blocks[i] = min(max(b, 0), need)
+--- replace
+		blocks[i] = max(b, 0)
+--- end
+
+[a need above MaxPar2Slices still runs the cover]
+file internal/job/release.go
+--- anchor
+		if s.need <= MaxPar2Slices && len(idxs)*(s.need+1) <= maxCoverCells {
+--- replace
+		if len(idxs)*(s.need+1) <= maxCoverCells {
+--- end
+
+[the need limit excludes MaxPar2Slices itself]
+file internal/job/release.go
+--- anchor
+		if s.need <= MaxPar2Slices && len(idxs)*(s.need+1) <= maxCoverCells {
+--- replace
+		if s.need < MaxPar2Slices && len(idxs)*(s.need+1) <= maxCoverCells {
+--- end
+
+[an oversized cover table still runs the cover]
+file internal/job/release.go
+--- anchor
+		if s.need <= MaxPar2Slices && len(idxs)*(s.need+1) <= maxCoverCells {
+--- replace
+		if s.need <= MaxPar2Slices {
+--- end

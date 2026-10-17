@@ -1807,10 +1807,7 @@ func (app *Application) reportDownloadComplete(j *job.Job, rep reporter) (bool, 
 
 // maybeReleaseRecoveryVolumes gives j's on-demand par2 verdict, acts on it on
 // j alone, not on whatever instance holds j's ID by then, and reports whether
-// it released at least one recovery volume to fetch. On outcomeRepair the
-// release is sized to the damage (recoveryDeficit) and may leave volumes held;
-// a second Assessing re-runs this and releases more only while a deficit
-// remains, so a job that returns true here is assessed again.
+// it released at least one recovery volume to fetch.
 func (app *Application) maybeReleaseRecoveryVolumes(ctx context.Context, j *job.Job) bool {
 	if ctx.Err() != nil {
 		return false

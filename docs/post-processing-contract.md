@@ -782,16 +782,22 @@ in one extra Fetching and Assessing round. On `outcomeRepair`,
 `recoveryDeficit` (`internal/app/par2_release.go`) counts the par2 slices the
 identified files are missing — the gaps in each file's written rows
 (`job.DamagedSlices`), at the post's par2 slice size — and subtracts the
-`+MM` blocks of recovery volumes that are already `FetchAlways` and have no
-failed article. `Job.ReleaseRecovery` then frees the held volumes that cover
-that need at the fewest bytes (a 0/1 knapsack, `internal/job/cover.go`),
-choosing among volumes whose names carry a block count; it frees every held
-volume when those cannot reach the need.
+`+MM` blocks of recovery volumes that are complete, `FetchAlways` and have no
+failed article (`JobProgress.FetchedRecoveryBlocks`). `Job.ReleaseRecovery`
+then frees the held volumes that cover that need at the fewest bytes (a 0/1
+knapsack, `internal/job/cover.go`), choosing among volumes whose names carry a
+block count of at most 65535 (the PAR2 per-volume limit; a larger count is
+treated as no count); it frees every held volume when those cannot reach the
+need, when the need exceeds `job.MaxPar2Slices`, or when the cover table would
+exceed `maxCoverCells`. Two copies of one par2 set under different names
+(same SetID) are collected once, so the second does not leave its entries
+unaccounted.
 
 - **Unsized, every held volume released**: a CRC mismatch; an unverified
   entry (this includes a file with a lost tail article or a truncated,
   undelivered or length-mismatched file); no single par2 set or slice size;
-  unreadable written rows or no durability store; more than 32768 slices; a
+  unreadable written rows or no durability store; more than `job.MaxPar2Slices`
+  (32768) slices; a
   file size above `MaxInt64`. The reason string says which.
 - **Nothing released**: a job beyond repair (`RepairStateFrom` reports
   `Hopeless`), which fails at Assessing; and a zero deficit, which goes on as

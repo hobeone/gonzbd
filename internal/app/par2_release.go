@@ -10,9 +10,6 @@ import (
 	"github.com/hobeone/gonzbd/internal/par2"
 )
 
-// maxPar2Slices is the PAR2 limit on the input slices of one recovery set.
-const maxPar2Slices = 32768
-
 // recoveryDeficit sizes the release an outcomeRepair verdict makes: the par2
 // slices the identified files are missing, less the recovery blocks already
 // fetched intact. When the assessment cannot size it, it returns
@@ -21,8 +18,9 @@ const maxPar2Slices = 32768
 // The slice size and file sizes are read from the post's par2 index, so they
 // are bounded before any arithmetic: a file size above math.MaxInt64 is
 // refused (job.DamagedSlices works in int64), and the slice total is capped at
-// maxPar2Slices, which bounds the need and so the cover
-// job.Job.ReleaseRecovery computes from it.
+// job.MaxPar2Slices, so the damaged count stays within it. Block counts come
+// from names, which job.RecoveryVolumeBlocks bounds; job.Job.ReleaseRecovery
+// enforces its own bound on the need and the cover's size.
 //
 // loadRows is called at most once, and only when the rest of the assessment
 // allows sizing.
@@ -46,8 +44,8 @@ func recoveryDeficit(m *job.Manifest, p *job.JobProgress, a par2.Assessment, loa
 		if f.Desc.FileSize%sliceSize != 0 {
 			total++
 		}
-		if total > maxPar2Slices {
-			return job.Unsized(), fmt.Sprintf("the par2 set has more than %d slices", maxPar2Slices)
+		if total > job.MaxPar2Slices {
+			return job.Unsized(), fmt.Sprintf("the par2 set has more than %d slices", job.MaxPar2Slices)
 		}
 	}
 	pos := a.DeliveredIndices()
@@ -63,16 +61,6 @@ func recoveryDeficit(m *job.Manifest, p *job.JobProgress, a par2.Assessment, loa
 	for i, f := range a.ID.Files {
 		damaged += job.DamagedSlices(byFile[pos[i]], f.Desc.FileSize, sliceSize)
 	}
-	// A volume with a failed article is counted as contributing nothing,
-	// since how many of its blocks survived is not known here.
-	var available int
-	for fi := range m.NumFiles() {
-		if !m.FileIsPar2Recovery(fi) || p.FileFetchPolicy(fi) != job.FetchAlways || p.FileFailedBytes(fi) > 0 {
-			continue
-		}
-		if n, ok := job.RecoveryVolumeBlocks(m.FileSubject(fi)); ok {
-			available += n
-		}
-	}
-	return job.NeedBlocks(damaged - available), ""
+	// A volume with a failed article or not yet complete counts nothing.
+	return job.NeedBlocks(damaged - p.FetchedRecoveryBlocks(m)), ""
 }

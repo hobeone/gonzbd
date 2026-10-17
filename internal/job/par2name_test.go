@@ -27,6 +27,8 @@ func TestIsRecoveryVolume(t *testing.T) {
 		{"movie.vol000+100.par2", true},
 		// In the - form the second number is a volume number, not a block count.
 		{"movie.vol00-00.par2", true},
+		// An out-of-range count is still a volume, with no usable count.
+		{"movie.vol00+70000.par2", true},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -50,6 +52,11 @@ func TestRecoveryVolumeBlocks(t *testing.T) {
 		{`[3/12] - "movie.vol31+32.par2" yEnc (1/97)`, 32, true},
 		// The - form names a volume number, not a block count.
 		{"movie.vol03-07.par2", 0, false},
+		// PAR2 recovery exponents are 16-bit, so a larger count is untrusted.
+		{"movie.vol00+65535.par2", 65535, true},
+		{"movie.vol00+65536.par2", 0, false},
+		{"movie.vol00+9223372036854775807.par2", 0, false},
+		{"movie.vol00+99999999999999999999.par2", 0, false},
 		// Not recovery volumes at all.
 		{"movie.vol000+00.par2", 0, false},
 		{"movie.par2", 0, false},

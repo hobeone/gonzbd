@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"slices"
 )
 
 // Rename records a file relocation ApplyRenames performed.
@@ -49,6 +50,16 @@ func collectManifestsWithOptions(sets []Set, log *slog.Logger, opts ParseOptions
 		if err != nil {
 			log.Warn("quickcheck: failed to parse par2 file",
 				"file", filepath.Base(parFile), "err", err)
+			continue
+		}
+		// One SetID is one set of File Description packets; collecting it twice
+		// would leave the copies' entries Unaccounted in Identify. A SetID
+		// repeated with a different slice size is kept, so SliceSize refuses it.
+		if slices.ContainsFunc(infos, func(i parsedSetInfo) bool {
+			return i.id == parsed.SetID && i.sliceSize == parsed.SliceSize
+		}) {
+			log.Info("par2 set already parsed under another name; skipping",
+				"file", filepath.Base(parFile))
 			continue
 		}
 		descs := parsed.Files

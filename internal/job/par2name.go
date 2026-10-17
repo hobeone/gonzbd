@@ -27,19 +27,26 @@ func IsRecoveryVolume(filename string) bool {
 	return recoveryVolumePattern.MatchString(filename)
 }
 
+// MaxVolumeBlocks is the PAR2 limit on the recovery blocks of one volume:
+// recovery exponents are 16-bit. A name declaring more is untrusted input, not
+// a count.
+const MaxVolumeBlocks = 65535
+
 // RecoveryVolumeBlocks returns the recovery block count a volume's name
 // declares, the MM of ".volNN+MM.par2". ok is false for a name that is not a
-// recovery volume and for the "-NN" form, whose second number is a volume
-// number rather than a count. The name is the only source of a held volume's
-// count, since a held volume has not been downloaded.
+// recovery volume, for the "-NN" form, whose second number is a volume number
+// rather than a count, and for a count above MaxVolumeBlocks. The name is the
+// only source of a held volume's count, since a held volume has not been
+// downloaded.
 func RecoveryVolumeBlocks(filename string) (blocks int, ok bool) {
 	m := recoveryVolumePattern.FindStringSubmatch(filename)
 	if m == nil {
 		return 0, false
 	}
-	// The "-" form leaves the group empty, which Atoi rejects.
+	// The "-" form leaves the group empty, which Atoi rejects, as it does a
+	// count too large for an int.
 	n, err := strconv.Atoi(m[1])
-	if err != nil {
+	if err != nil || n > MaxVolumeBlocks {
 		return 0, false
 	}
 	return n, true
