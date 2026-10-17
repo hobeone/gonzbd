@@ -1171,22 +1171,29 @@ open file checks nothing that turn. Two distinct timeouts bound it:
   `statfs` for this long before launching a new probe. The two values match today
   but serve independent purposes.
 
-**The cached reading is reduced by the assembler's own writes.** A reading up to
-`DefaultDiskProbeTTL` old does not see what has been written since, and at disk
-speed that is gigabytes (#987). `routeOutcome` calls `DiskProbe.NoteWritten` with
-the length of every article it reports written, and `FreeBytes` returns the
-reading less the bytes noted since its probe was launched, floored at zero. The
-estimate can only err low:
+**The assembler's probe reduces its cached reading by the assembler's own
+writes.** A reading up to `DefaultDiskProbeTTL` old does not see what has been
+written since, and at disk speed that is gigabytes (#987). `routeOutcome` calls
+`DiskProbe.NoteWritten` with the length of every article it reports written, and
+`FreeBytes` returns the reading less the bytes noted since its probe was
+launched, floored at zero. The application's own `DiskProbe` (auto-resume,
+`DownloadDirFreeBytes`) is never told of writes and reports the raw reading.
+
+Every counted write errs low; two kinds of write are not counted and err high
+until the next probe:
 
 - Every successful article write counts, so a file that `fallocate` already
   sized (`preallocate_linux.go`) is counted again as it fills, and an overwrite
   of bytes already on disk is counted as new. Both make the estimate
-  pessimistic and cost at most an early pause, which the next reading corrects.
+  pessimistic and can pause early, which the app's unadjusted auto-resume
+  reading then lifts.
 - Bytes written while a `statfs` is in flight stay counted, though the reading
   may already include them.
-- A write that faults is not counted, although part of it may have landed; the
-  next probe sees it.
+- A write that faults is not counted, although part of it may have landed, and
+  neither are writes by other processes or by par2 and unpack.
 - A fresh probe replaces the estimate with its own reading.
+- The counter is per directory string: two job directories on one filesystem do
+  not reduce each other's estimate.
 
 `NoteWritten` takes only the probe's own mutexes and performs no I/O.
 
@@ -1195,7 +1202,8 @@ repeated calls against a stuck mount return the cached result or the timeout
 error rather than accumulating goroutines. Stale entries are evicted after 10
 minutes (`diskProbeEvictAfter`).
 
-When free space drops below `MinFreeBytes` the `OnLowDisk` callback fires. **The
+While the estimate is below `MinFreeBytes` the `OnLowDisk` callback fires at every
+check; `handleLowDisk` warns only on the first call after a resume. **The
 assembler does not pause itself** — the callback owns that decision — and it
 continues processing requests in the channel. The callback,
 `Application.handleLowDisk`, applies the queue-wide pause and pauses the

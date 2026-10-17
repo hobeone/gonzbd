@@ -95,7 +95,9 @@ func NewDiskProbe(ttl time.Duration) *DiskProbe {
 // NoteWritten records that n bytes were written under dir, so that FreeBytes
 // can report less than the cached reading until the next probe. Without it a
 // cached reading is blind to the caller's own writes, and at disk speeds the
-// floor is overshot by write rate times ttl (#987).
+// floor is overshot by write rate times ttl (#987). Writes it is not told of
+// (faulted writes, other processes) are not subtracted; see
+// docs/durability-contract.md § "Disk-space pre-flight".
 //
 // It does nothing when dir has no probeState: with no reading there is nothing
 // to adjust, and the first probe will see these bytes itself. It performs no
