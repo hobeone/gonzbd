@@ -117,6 +117,7 @@ To save bandwidth, PAR2 **recovery volumes** (`*.volNNN+MM.par2`) are downloaded
 - **Bounded Reading**: Response lines are capped at 2KB and article bodies at 10MB to prevent OOM from malicious servers.
 - **Pipelining**: The system supports NNTP pipelining (multiple in-flight requests per socket) to maximize throughput over high-latency connections. Responses are paired with requests by FIFO position, but that pairing is not trusted: each in-flight command remembers the Message-ID it asked for, and the reader compares it against the one the server echoes on the success line. A disagreement kills the connection rather than failing one article, because it proves the queue is desynced and every response after it is mis-paired too — see `docs/nntp-downloader-contract.md` § `nntp.Conn` pipelining contract.
 - **Error Classification**: NNTP status codes are mapped to Go sentinel errors (`ErrNoArticle`, `ErrAuthRejected`, etc.), allowing for robust retry and penalty logic.
+- **Server Priority**: Servers form strict priority tiers. An article reaches a lower-priority server only after every higher-priority one has tried it or is out of service; a busy higher-priority server makes it wait rather than overflow to a backup — see `docs/nntp-downloader-contract.md`, invariant 8.
 - **Dispatch Optimization**: The dispatch loop uses cached server configs per pass and 2-case selects to minimize overhead at ~330 articles/second throughput.
 
 ### Decoder & Assembler (`internal/decoder`, `internal/assembler`)

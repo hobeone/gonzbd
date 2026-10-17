@@ -102,7 +102,7 @@ func TestTryDispatch_SuccessfulSend(t *testing.T) {
 	a := fakeArticle("msg1@h")
 	opts := defaultOpts(d.servers)
 
-	handled, exReq := d.tryDispatch(context.Background(), a, opts)
+	handled, exReq, _ := d.tryDispatch(context.Background(), a, opts)
 
 	if !handled {
 		t.Fatal("handled: got false, want true")
@@ -151,7 +151,7 @@ func TestTryDispatch_TwoJobsSharingAMessageIDAreTrackedSeparately(t *testing.T) 
 	b := fakeArticle("shared@h")
 	b.Job = bareJob("jobB")
 
-	handled, exReq := d.tryDispatch(context.Background(), a, opts)
+	handled, exReq, _ := d.tryDispatch(context.Background(), a, opts)
 	if !handled || exReq != nil {
 		t.Fatalf("first dispatch: handled=%v exReq=%v, want true and nil", handled, exReq)
 	}
@@ -161,7 +161,7 @@ func TestTryDispatch_TwoJobsSharingAMessageIDAreTrackedSeparately(t *testing.T) 
 	// dispatch for an unrelated reason and the test would pass either way.
 	<-d.workCh["s1"]
 
-	handled, exReq = d.tryDispatch(context.Background(), b, opts)
+	handled, exReq, _ = d.tryDispatch(context.Background(), b, opts)
 	if !handled || exReq != nil {
 		t.Fatalf("second job's article was not dispatched (handled=%v exReq=%v); it "+
 			"shares a Message-ID with the first and was treated as the same article",
@@ -190,7 +190,7 @@ func TestTryDispatch_AlreadyInFlight(t *testing.T) {
 	d.tracker.Unlock()
 	opts := defaultOpts(d.servers)
 
-	handled, exReq := d.tryDispatch(context.Background(), a, opts)
+	handled, exReq, _ := d.tryDispatch(context.Background(), a, opts)
 
 	if handled {
 		t.Error("handled: got true, want false (article already in flight)")
@@ -212,7 +212,7 @@ func TestTryDispatch_CancelledContext(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel() // already cancelled
 
-	handled, exReq := d.tryDispatch(ctx, a, opts)
+	handled, exReq, _ := d.tryDispatch(ctx, a, opts)
 
 	if handled {
 		t.Error("handled: got true, want false for cancelled context")
@@ -238,7 +238,7 @@ func TestTryDispatch_MaxArtTriesExhausted(t *testing.T) {
 	opts := defaultOpts(d.servers)
 	opts.maxArtTries = 1 // cap at 1 try
 
-	handled, exReq := d.tryDispatch(context.Background(), a, opts)
+	handled, exReq, _ := d.tryDispatch(context.Background(), a, opts)
 
 	if !handled {
 		t.Error("handled: got false, want true (exhausted)")
@@ -266,7 +266,7 @@ func TestTryDispatch_AllServersTriedExhausted(t *testing.T) {
 	d.tracker.Unlock()
 	opts := defaultOpts(d.servers)
 
-	handled, exReq := d.tryDispatch(context.Background(), a, opts)
+	handled, exReq, _ := d.tryDispatch(context.Background(), a, opts)
 
 	if !handled {
 		t.Error("handled: got false, want true (all servers tried)")
@@ -286,7 +286,7 @@ func TestTryDispatch_PenalizedServerWaits(t *testing.T) {
 	a := fakeArticle("msg1@h")
 	opts := defaultOpts(d.servers)
 
-	handled, exReq := d.tryDispatch(context.Background(), a, opts)
+	handled, exReq, _ := d.tryDispatch(context.Background(), a, opts)
 
 	// Article should not be dispatched OR exhausted — it must wait for penalty expiry.
 	if handled {
@@ -308,7 +308,7 @@ func TestTryDispatch_TopOnlySkipsBackup(t *testing.T) {
 	opts := defaultOpts(d.servers)
 	opts.topOnly = true
 
-	handled, exReq := d.tryDispatch(context.Background(), a, opts)
+	handled, exReq, _ := d.tryDispatch(context.Background(), a, opts)
 
 	if !handled {
 		t.Error("handled: got false, want true")
@@ -345,7 +345,7 @@ func TestTryDispatch_WorkChFullSkipsToNextServer(t *testing.T) {
 	a := fakeArticle("msg1@h")
 	opts := defaultOpts(d.servers)
 
-	handled, exReq := d.tryDispatch(context.Background(), a, opts)
+	handled, exReq, _ := d.tryDispatch(context.Background(), a, opts)
 
 	if !handled {
 		t.Error("handled: got false, want true (should dispatch to s2)")
@@ -374,7 +374,7 @@ func TestTryDispatch_DisabledServerExhausts(t *testing.T) {
 	a := fakeArticle("msg1@h")
 	opts := defaultOpts(d.servers)
 
-	handled, exReq := d.tryDispatch(context.Background(), a, opts)
+	handled, exReq, _ := d.tryDispatch(context.Background(), a, opts)
 
 	// Disabled server is not a candidate. allTried stays true because
 	// there are no enabled servers — article is immediately exhausted.
@@ -682,7 +682,7 @@ func TestTryDispatch_TopOnlySkipsBackupWhenPrimaryFull(t *testing.T) {
 	opts := defaultOpts(d.servers)
 	opts.topOnly = true
 
-	handled, exReq := d.tryDispatch(context.Background(), a, opts)
+	handled, exReq, _ := d.tryDispatch(context.Background(), a, opts)
 
 	if handled {
 		t.Error("handled: got true, want false (primary full, backup should be skipped under topOnly)")
@@ -743,7 +743,7 @@ func BenchmarkDownloader_Dispatch(b *testing.B) {
 		case <-d.workCh["s1"]:
 		default:
 		}
-		_, _ = d.tryDispatch(ctx, a, opts)
+		_, _, _ = d.tryDispatch(ctx, a, opts)
 	}
 }
 
@@ -915,7 +915,7 @@ func TestTryDispatch_MaxArtTriesExhausted_MultipleServers(t *testing.T) {
 	opts := defaultOpts(d.servers)
 	opts.maxArtTries = 1 // cap at 1 try
 
-	handled, exReq := d.tryDispatch(context.Background(), a, opts)
+	handled, exReq, _ := d.tryDispatch(context.Background(), a, opts)
 
 	if !handled {
 		t.Error("handled: got false, want true (exhausted)")

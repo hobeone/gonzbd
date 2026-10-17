@@ -453,7 +453,11 @@ servers:
   # Each server entry defines an NNTP news server connection.
   # Multiple servers can be configured for redundancy and fill.
   # Articles are dispatched to servers in priority order (lower = higher
-  # priority). If a server fails, the next one is tried automatically.
+  # priority). A lower-priority server gets an article only after every
+  # higher-priority server has tried it (e.g. answered "not found") or is
+  # out of service (penalized or disabled); a merely busy higher-priority
+  # server makes the article wait for it. So a pay-per-GB backup is used
+  # only for what the primary cannot serve.
 
   - # Unique name for this server. Used in logs and penalty tracking.
     name: my-primary-server
@@ -477,7 +481,7 @@ servers:
     # OpenSSL cipher string. Empty uses system defaults.
     ssl_ciphers: ""
     # Dispatch priority. Lower numbers are tried first. Servers with
-    # the same priority are tried in parallel.
+    # the same priority share the load in parallel.
     priority: 0
     # Required servers are never auto-deactivated under penalty.
     required: true

@@ -177,8 +177,8 @@ func (m *dispatchTracker) DropInstances(stale map[weak.Pointer[job.Job]]struct{}
 	}
 }
 
-// Len returns the number of tracked entries.
-// Self-locking, used primarily for tests and assertions.
+// Len returns the number of tracked entries. Self-locking.
+// buildDispatchPlan reads tryListLen to bound its pass.
 func (m *dispatchTracker) Len() (tryListLen, inFlightLen int) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
