@@ -399,8 +399,7 @@ func (j *Job) recordStageFailure(parBefore, unpackBefore bool, err error) {
 	if j.ParError && !parBefore {
 		j.parCause = err.Error()
 		j.shortfall = 0
-		var sf *ShortfallError
-		if errors.As(err, &sf) {
+		if sf, ok := errors.AsType[*ShortfallError](err); ok {
 			j.shortfall = sf.Blocks
 		}
 	}

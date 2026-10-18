@@ -35,8 +35,7 @@ func TestRepairShortfall(t *testing.T) {
 		job, dir := stageJob(t)
 		copyToDir(t, "../../test/fixtures/par2/data.par2", dir)
 		err := runRepairOnce(t, job)
-		var sf *ShortfallError
-		if !errors.As(err, &sf) {
+		if _, ok := errors.AsType[*ShortfallError](err); !ok {
 			t.Fatalf("Run error = %v, want a *ShortfallError", err)
 		}
 		if blocks, ok := job.RepairShortfall(); !ok || blocks != fixtureShortfall {
@@ -59,8 +58,7 @@ func TestRepairShortfall(t *testing.T) {
 		if err == nil || !job.ParError {
 			t.Fatalf("Run error = %v, ParError = %v; want both sets to fail", err, job.ParError)
 		}
-		var sf *ShortfallError
-		if errors.As(err, &sf) {
+		if _, ok := errors.AsType[*ShortfallError](err); ok {
 			t.Errorf("Run error %v is a *ShortfallError: it names one set's shortfall for a job with two", err)
 		}
 		if blocks, ok := job.RepairShortfall(); ok {

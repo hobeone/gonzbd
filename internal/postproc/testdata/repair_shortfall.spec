@@ -28,9 +28,9 @@ file internal/postproc/stage_repair.go
 [a shortfall is never recorded]
 file internal/postproc/stages.go
 --- anchor
-		if errors.As(err, &sf) {
+		if sf, ok := errors.AsType[*ShortfallError](err); ok {
 --- replace
-		if false && errors.As(err, &sf) {
+		if sf, ok := errors.AsType[*ShortfallError](err); ok && false {
 --- end
 
 [an earlier shortfall survives a failure of another kind]
