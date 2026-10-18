@@ -750,6 +750,24 @@ func TestMaybeReleaseRecoveryVolumes_SizedRelease(t *testing.T) {
 		return j, dataIdx
 	}
 
+	// One readable set is enough for the assessment: an unreadable set sorted
+	// before it does not send the job down the no-index path (#1006), and the
+	// unreadable set holds the volumes (#1000).
+	t.Run("an unreadable set beside a readable one is assessed", func(t *testing.T) {
+		t.Parallel()
+		application, jobDir := releaseApp(t, "beside-name")
+		if err := os.WriteFile(filepath.Join(jobDir, "aaa.par2"), make([]byte, 4096), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		j, dataIdx := add(t, application, "beside", types.PPRepair)
+		application.durable = &deficitRowsStore{durabilityStore: application.durable, rows: rowsExcept(t, j, dataIdx, 1)}
+
+		application.maybeReleaseRecoveryVolumes(t.Context(), j)
+		if r := j.Par2ReleaseReason(); strings.Contains(r, "use as the index") || !strings.Contains(r, "describes no file") {
+			t.Errorf("reason = %q, want the assessment's unsized release for an unreadable set, not the no-index fetch", r)
+		}
+	})
+
 	t.Run("fetches the cheapest cover and nothing once the deficit is covered", func(t *testing.T) {
 		t.Parallel()
 		application, _ := releaseApp(t, "sized-name")

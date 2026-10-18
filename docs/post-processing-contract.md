@@ -817,8 +817,10 @@ discarded.
   single byte-cheapest held volume whose name declares a block count is freed
   (every held volume if none declares one). Each volume repeats the Main,
   File Description and IFSC packets. `FindPar2Files` resolves each set's
-  `ParseFile` to the first of its main file and its volumes that describes a
-  file, so a volume is read in place of a main file that describes nothing,
+  `ParseFile` to the first of its main file and its volumes that holds a File
+  Description, else the first whose Main packet alone lists a file. A
+  volume's repeated packets are kept once. So a volume is read in place of a
+  main file that describes nothing, or that was cut short after its Main packet,
   by the verdict, the repair stage and the block-level verify alike, and the
   next Assessing sizes the rest. If that volume still yields no readable set,
   every held volume is released.
