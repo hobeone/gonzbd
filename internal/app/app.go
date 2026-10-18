@@ -1945,7 +1945,7 @@ func (app *Application) maybeReleaseRecoveryVolumes(ctx context.Context, j *job.
 // sizing asks for (job.Job.ReleaseRecovery), so the downloader fetches them,
 // and returns how many it released. It is the release both the Assessing
 // verdict's outcomeRepair and the finalizer's retry of a par2 failure
-// (retryWithHeldVolumes) make; the retry passes job.Unsized().
+// (retryWithHeldVolumes) make; the retry passes the sizing nextRetrySizing chose.
 func (app *Application) releaseRecoveryVolumes(j *job.Job, reason string, sizing job.RecoverySizing) (int, error) {
 	j.SetPar2ReleaseReason(reason)
 	return j.ReleaseRecovery(sizing)
@@ -1984,7 +1984,7 @@ const (
 	//
 	// The damaged case is not repaired from the hold itself. When the job's
 	// post-processing then fails par2 with the volumes still held, the
-	// finalizer retries it with them released (heldVolumesMightRepair,
+	// finalizer retries it to fetch them (heldVolumesMightRepair,
 	// jobFinalizer.retryWithHeldVolumes). A healthy post never fetches them.
 	// What the hold buys here is an honest label — fileState
 	// renders FetchIfNeeded as "held" and FetchNever as "skipped"

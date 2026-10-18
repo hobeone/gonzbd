@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"log/slog"
+	"sync"
 	"time"
 
 	"github.com/hobeone/gonzbd/internal/dispatch"
@@ -28,6 +29,69 @@ import (
 // notifyDispatcher).
 type jobFinalizer struct {
 	app *Application
+
+	// retries is the sizing of the automatic retry last started for a job ID,
+	// until the retried instance finalizes (retryLedger).
+	retries retryLedger
+}
+
+// retryLedger holds, per job ID, the sizing of the automatic retry
+// retryWithHeldVolumes last started for it, so that the finalize of the
+// retried instance can bound the retries: sized, then one Unsized, then the
+// failure is final. It is memory only: the retry runs in-process from finalize,
+// and one a shutdown aborts is accepted (docs/post-processing-contract.md,
+// "Held volumes after a failed repair"). The map is written by record and
+// forget, which retryWithHeldVolumes alone calls, and by take, which finalize
+// alone calls (`git grep -nE 'retries[.](take|record|forget)[(]' -- 'internal/app/*.go' ':!*_test.go'`
+// finds 3 lines).
+type retryLedger struct {
+	mu   sync.Mutex
+	last map[string]job.RecoverySizing
+}
+
+// take removes and returns the sizing of the retry recorded for id, and
+// whether there was one.
+func (l *retryLedger) take(id string) (job.RecoverySizing, bool) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	s, ok := l.last[id]
+	delete(l.last, id)
+	return s, ok
+}
+
+func (l *retryLedger) record(id string, s job.RecoverySizing) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if l.last == nil {
+		l.last = make(map[string]job.RecoverySizing)
+	}
+	l.last[id] = s
+}
+
+func (l *retryLedger) forget(id string) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	delete(l.last, id)
+}
+
+// nextRetrySizing decides the release of the automatic retry of a run that
+// failed par2 with volumes held, given the sizing of the retry that produced
+// the run (prior, when wasRetried). The first retry is sized to the shortfall
+// par2 reported, or unsized when it is unknown; a sized retry that falls short
+// is followed by one unsized retry; an unsized retry is followed by none.
+func nextRetrySizing(ppJob *postproc.Job, prior job.RecoverySizing, wasRetried bool) (sizing job.RecoverySizing, retry bool) {
+	switch {
+	case !heldVolumesMightRepair(ppJob):
+		return job.Unsized(), false
+	case wasRetried && prior == job.Unsized():
+		return job.Unsized(), false
+	case wasRetried:
+		return job.Unsized(), true
+	}
+	if blocks, ok := ppJob.RepairShortfall(); ok {
+		return job.NeedBlocks(blocks), true
+	}
+	return job.Unsized(), true
 }
 
 // finalizeTransitionWait caps how long a finalizer waits for another actor to
@@ -91,7 +155,8 @@ func (f *jobFinalizer) finalize(ppJob *postproc.Job) {
 	notes := app.postProcAdmissions.closeAndTakeNotes(ppJob.Job)
 	// Decided before persistAndCommit tears the job down. A ParError files the
 	// entry Failed (buildHistoryEntry), which is what a retry requires of it.
-	retry := heldVolumesMightRepair(ppJob)
+	prior, wasRetried := f.retries.take(ppJob.Job.ID())
+	sizing, retry := nextRetrySizing(ppJob, prior, wasRetried)
 	var extra []string
 	if retry {
 		extra = append(extra, heldVolumesRetryNote)
@@ -102,7 +167,7 @@ func (f *jobFinalizer) finalize(ppJob *postproc.Job) {
 	}
 	// After persistAndCommit has returned, so its transition lock is released
 	// and the retry it filed the entry for can claim the ID.
-	if !retry || !f.retryWithHeldVolumes(ppJob.Job.ID()) {
+	if !retry || !f.retryWithHeldVolumes(ppJob.Job.ID(), sizing) {
 		select {
 		case app.postProcComplete <- PostProcComplete{JobID: ppJob.Job.ID()}:
 		default:
@@ -143,22 +208,14 @@ func (f *jobFinalizer) finalize(ppJob *postproc.Job) {
 // (recoveryDeficit undercounted, or a second Assessing found no deficit left).
 //
 // ParError also covers failures the volumes cannot fix, such as a containment
-// violation. Those cost one retry. The retry does not trigger another: it
-// releases every volume its rebuilt job holds (job.Unsized(); the job cannot
+// violation. Those cost retries, which are bounded: nextRetrySizing sizes the
+// first retry to the shortfall par2 reported (job.NeedBlocks) or leaves it
+// unsized (job.Unsized()) when none is known, follows a sized retry that falls
+// short with one unsized retry, and follows an unsized retry with none. An
+// unsized retry releases every volume its rebuilt job holds (the job cannot
 // read as beyond repair there, since retryHistoryJob's ResetForRetry has
-// cleared every failed article before the prepare runs) before seeding
-// job_files, which hydration restores the policy from, and nothing else sets a
-// volume to FetchIfNeeded. The policy field is written in one place
-// (`git grep -nE '\.Fetch\s*=[^=]' -- '*.go' ':!*_test.go'` returns 1 line),
-// JobProgress.setFileFetchPolicy; construction leaves every file at the
-// FetchAlways zero. Its callers
-// (`git grep -nE '[sS]etFileFetchPolicy\(' -- '*.go' ':!*_test.go'` returns
-// 7 lines: the two declarations, Job.SetFileFetchPolicy's call, and four
-// calls) are ingest, with FetchIfNeeded, through Job.SetFileFetchPolicy; the
-// release, with FetchAlways; the discard, with FetchNever; and hydration,
-// with the recorded policy, which is FetchAlways for a volume the retry
-// released. So its failure is filed as final. A user's retry of that entry is
-// rebuilt by ingest again, and so gets one automatic retry of its own.
+// cleared every failed article before the prepare runs). A user's retry of a
+// final failure is rebuilt by ingest again, and so gets the retries of its own.
 func heldVolumesMightRepair(ppJob *postproc.Job) bool {
 	return ppJob.ParError && ppJob.Job.HasDeferredPar2()
 }
@@ -179,25 +236,30 @@ func heldVolumesMightRepair(ppJob *postproc.Job) bool {
 const heldVolumesRetryNote = "par2 repair failed while the recovery volumes were held back; " +
 	"a retry of this job fetches them"
 
-// retryWithHeldVolumes retries the job filed Failed under jobID with every
-// recovery volume the rebuilt job holds released, and reports whether the
-// retry was queued. One that could not be is logged with the reason, and the
-// failure stands as filed.
-func (f *jobFinalizer) retryWithHeldVolumes(jobID string) bool {
+// retryWithHeldVolumes retries the job filed Failed under jobID with the
+// recovery volumes the rebuilt job holds released as sizing says, and reports
+// whether the retry was queued. One that could not be is logged with the
+// reason, and the failure stands as filed.
+//
+// The sizing is recorded before the retry registers, since the retried
+// instance can finalize before this returns.
+func (f *jobFinalizer) retryWithHeldVolumes(jobID string, sizing job.RecoverySizing) bool {
 	app := f.app
+	f.retries.record(jobID, sizing)
 	err := app.retryHistoryJob(app.ctx, jobID, false, func(j *job.Job) error {
 		_, err := app.releaseRecoveryVolumes(j,
-			"post-processing failed par2 repair while the recovery volumes were held back", job.Unsized())
+			"post-processing failed par2 repair while the recovery volumes were held back", sizing)
 		return err
 	})
 	if err != nil {
+		f.retries.forget(jobID)
 		app.log.Warn("finalize: par2 repair failed and could not retry the job with its held recovery volumes; "+
 			"it stays failed, and you can retry it to fetch its recovery volumes",
 			"job", jobID, "err", err)
 		return false
 	}
 	app.log.Info("finalize: par2 repair failed while recovery volumes were held back; retrying the job to fetch them",
-		"job", jobID)
+		"job", jobID, "sized", sizing != job.Unsized())
 	return true
 }
 

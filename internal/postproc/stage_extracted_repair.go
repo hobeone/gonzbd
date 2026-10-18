@@ -16,7 +16,8 @@ import (
 // passes damage through. It repairs with whatever recovery volumes are on
 // disk, and a set it cannot verify or repair sets ParError, which fails the
 // run. When the job held its recovery volumes back through download, the
-// app's finalizer then retries it once with them released (#651).
+// app's finalizer then retries it to fetch them (#651), sized to the
+// shortfall the stage reports (Job.RepairShortfall).
 //
 // It uses Repair's configuration and its per-set repair, so the two stages
 // cannot run par2 differently.

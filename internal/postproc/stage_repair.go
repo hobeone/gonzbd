@@ -398,7 +398,7 @@ func dispatchRepairTool(
 // falls back, because a parse failure is ambiguous: the mature external par2
 // may read a par2 file go_par2 could not, and if it also fails,
 // handleRepairResult sets ParError. The job is then filed Failed, unless it
-// still held recovery volumes back, in which case the app retries it once to
+// still held recovery volumes back, in which case the app retries it to
 // fetch them (jobFinalizer.retryWithHeldVolumes in internal/app).
 func shouldFallbackToExternal(res par2.RepairResult, err error) bool {
 	if err != nil {
