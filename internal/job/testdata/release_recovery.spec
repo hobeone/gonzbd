@@ -168,3 +168,52 @@ file internal/job/release.go
 --- replace
 		if s.need <= MaxPar2Slices {
 --- end
+
+[no held volume is treated as already on disk]
+file internal/job/release.go
+--- anchor
+		if f := &j.progress.files[i]; f.Complete && f.FailedBytes == 0 {
+--- replace
+		if f := &j.progress.files[i]; false && f.Complete && f.FailedBytes == 0 {
+--- end
+
+[a volume with a failed article is treated as on disk]
+file internal/job/release.go
+--- anchor
+		if f := &j.progress.files[i]; f.Complete && f.FailedBytes == 0 {
+--- replace
+		if f := &j.progress.files[i]; f.Complete {
+--- end
+
+[an incomplete volume is treated as on disk]
+file internal/job/release.go
+--- anchor
+		if f := &j.progress.files[i]; f.Complete && f.FailedBytes == 0 {
+--- replace
+		if f := &j.progress.files[i]; f.FailedBytes == 0 {
+--- end
+
+[the volumes on disk are not freed]
+file internal/job/release.go
+--- anchor
+	j.undeferRecovery(onDisk)
+--- replace
+	_ = onDisk
+--- end
+
+[the volumes on disk stay candidates of the cover]
+file internal/job/release.go
+--- anchor
+			onDisk = append(onDisk, i)
+--- replace
+			onDisk = append(onDisk, i)
+			held = append(held, i)
+--- end
+
+[the volumes on disk are counted as still to fetch]
+file internal/job/release.go
+--- anchor
+	return len(held), nil
+--- replace
+	return len(held) + len(onDisk), nil
+--- end

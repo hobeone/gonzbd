@@ -24,10 +24,16 @@ const MaxPar2Slices = 32768
 const maxCoverCells = 1 << 25
 
 // ReleaseRecovery frees held recovery volumes (FetchIfNeeded to FetchAlways)
-// and returns how many it freed. A job already beyond repair releases nothing.
+// and returns how many of them still have to be fetched. A job already beyond
+// repair releases nothing.
 //
-// Sized, it frees the cheapest-by-bytes subset of the volumes whose names
-// carry a block count that reaches the need, or every held volume when they
+// A held volume that is complete with no failed article is already on disk, as
+// a retried job re-holds the volumes its first run fetched. It is freed
+// whatever the sizing, so that FetchedRecoveryBlocks counts it afterwards, and
+// it is left out of the cover and of the returned count.
+//
+// Sized, it frees the cheapest-by-bytes subset of the remaining volumes whose
+// names carry a block count that reaches the need, or all of them when they
 // cannot reach it, when the need exceeds MaxPar2Slices, or when the cover
 // would exceed maxCoverCells. Unsized, or without a resident manifest to read
 // names and sizes from, it frees every held volume.
@@ -41,7 +47,15 @@ func (j *Job) ReleaseRecovery(s RecoverySizing) (released int, err error) {
 	if RepairStateFrom(j.progress.ContentFailedBytes(), j.recoveryBytes, j.progress.HasPar2Files()).Hopeless() {
 		return 0, nil
 	}
-	held := j.progress.DeferredRecoveryIndices()
+	var onDisk, held []int
+	for _, i := range j.progress.DeferredRecoveryIndices() {
+		if f := &j.progress.files[i]; f.Complete && f.FailedBytes == 0 {
+			onDisk = append(onDisk, i)
+		} else {
+			held = append(held, i)
+		}
+	}
+	j.undeferRecovery(onDisk)
 	if s.sized && j.manifest != nil {
 		var idxs, blocks []int
 		var bytes []int64

@@ -251,6 +251,47 @@ func TestFetchedRecoveryBlocks(t *testing.T) {
 	})
 }
 
+// TestReleaseRecovery_FreesVolumesAlreadyOnDisk pins that a held volume that is
+// complete and unfailed is freed whatever the sizing, and is neither a
+// candidate of the cover nor counted among the volumes still to fetch.
+func TestReleaseRecovery_FreesVolumesAlreadyOnDisk(t *testing.T) {
+	// standardVols: files 1..5 carry 1, 2, 4, 8 and 16 blocks.
+	tests := []struct {
+		name         string
+		sizing       RecoverySizing
+		onDisk       []int
+		failed       []int // complete volumes that also have a failed article
+		wantReleased []int
+		wantToFetch  int
+	}{
+		{"the volume on disk is not a candidate of the cover", NeedBlocks(9), []int{4}, nil, []int{4, 5}, 1},
+		{"a volume with a failed article is a candidate", NeedBlocks(9), []int{4}, []int{4}, []int{1, 4}, 2},
+		{"a sized zero need frees only what is on disk", NeedBlocks(0), []int{2, 3}, nil, []int{2, 3}, 0},
+		{"unsized frees all, counting only the volumes to fetch", Unsized(), []int{2}, nil, []int{1, 2, 3, 4, 5}, 4},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			j := releaseJob(t, standardVols())
+			for _, i := range tc.onDisk {
+				j.progress.files[i].Complete = true
+			}
+			for _, i := range tc.failed {
+				j.progress.files[i].FailedBytes = 1
+			}
+			got, err := j.ReleaseRecovery(tc.sizing)
+			if err != nil {
+				t.Fatalf("ReleaseRecovery: %v", err)
+			}
+			if set := releasedSet(j, 5); !slices.Equal(set, tc.wantReleased) {
+				t.Errorf("released files %v, want %v", set, tc.wantReleased)
+			}
+			if got != tc.wantToFetch {
+				t.Errorf("returned %d, want %d", got, tc.wantToFetch)
+			}
+		})
+	}
+}
+
 func TestReleaseRecovery_NotResident(t *testing.T) {
 	j := New("unattached", "x", Policy{})
 	if _, err := j.ReleaseRecovery(Unsized()); !errors.Is(err, ErrNotResident) {
