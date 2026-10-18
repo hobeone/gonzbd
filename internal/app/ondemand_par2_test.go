@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -160,7 +161,7 @@ func buildPar2Job(t *testing.T, specs []par2FileSpec) *job.Job {
 func assessVerdict(t *testing.T, dir string, qjob *job.Job, log *slog.Logger) (par2Outcome, string) {
 	t.Helper()
 	sets, err := par2.FindPar2Files(dir, par2.DefaultParseOptions())
-	if err != nil || len(sets) == 0 {
+	if err != nil || !slices.ContainsFunc(sets, par2.Set.Readable) {
 		// The caller's own fallback: no index to verify against means fetch.
 		return outcomeRepair, "no usable par2 index found to verify against"
 	}
@@ -428,17 +429,16 @@ func TestPar2Verdict_UnreadableSetIsNotACleanVerdict(t *testing.T) {
 		}
 	}
 
+	// The only set describes nothing, so it is no index at all: the verdict
+	// fetches a volume to serve as one (#1006;
+	// TestMaybeReleaseRecoveryVolumes_VolumeAsIndex pins the release).
 	t.Run("a zero-filled index beside a delivered file", func(t *testing.T) {
 		dir := t.TempDir()
 		zeros(t, filepath.Join(dir, "data.par2"))
 		copyFixturePayload(t, dir, "data.bin")
 		qjob := buildPar2Job(t, []par2FileSpec{{subject: "data.bin", crc: 0xDEADBEEF, bytes: 100}, deferredVol})
-		got, reason := assessVerdict(t, dir, qjob, log)
-		if got != outcomeUnknown {
-			t.Fatalf("outcome = %s (reason %q), want %s", got, reason, outcomeUnknown)
-		}
-		if !strings.Contains(reason, "data") {
-			t.Errorf("reason %q does not name the unreadable set", reason)
+		if got, reason := assessVerdict(t, dir, qjob, log); got != outcomeRepair {
+			t.Fatalf("outcome = %s (reason %q), want %s", got, reason, outcomeRepair)
 		}
 	})
 

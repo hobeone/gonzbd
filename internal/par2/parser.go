@@ -158,6 +158,13 @@ func ParsePar2Set(path string, opts ...ParseOptions) (*ParsedSet, error) {
 // ParsePar2SetWithOptions reads path (a .par2 file) using caller-specified ParseOptions bounds.
 // It returns a *ParsedSet or an error if packet allocations exceed opts.MaxPacketBodySize or I/O fails.
 func ParsePar2SetWithOptions(path string, opts ParseOptions) (*ParsedSet, error) {
+	return parsePar2Set(path, opts, false)
+}
+
+// parsePar2Set is ParsePar2SetWithOptions. With untilDescribed it stops at
+// the first File Description, so a caller asking only whether the file
+// describes anything does not read the recovery data after it.
+func parsePar2Set(path string, opts ParseOptions, untilDescribed bool) (*ParsedSet, error) {
 	if opts.MaxJunkScanBytes < constants.MinPar2JunkScanBytes {
 		opts.MaxJunkScanBytes = defaultMaxJunkScan
 	}
@@ -191,12 +198,8 @@ func ParsePar2SetWithOptions(path string, opts ParseOptions) (*ParsedSet, error)
 	// for rename/CRC purposes. Spec §4.5.
 	const earlyExitThreshold = 10 * 1024 * 1024 // 10 MiB
 
-	var (
-		expectedFiles int // -1 = unknown (Main not yet parsed), 0+ = from Main body
-		seenFileDescs int
-		seenIFSC      int
-	)
-	expectedFiles = -1
+	expectedFiles := -1 // -1 = unknown (Main not yet parsed), 0+ = from Main body
+	seen := packetsSeen{descs: make(map[[16]byte]bool), ifsc: make(map[[16]byte]bool)}
 
 	header := make([]byte, 64)
 	validPackets := 0
@@ -210,13 +213,16 @@ func ParsePar2SetWithOptions(path string, opts ParseOptions) (*ParsedSet, error)
 		}
 		validPackets++
 
-		handlePacket(set, &ifscPackets, packetType, header, body, &expectedFiles, &seenFileDescs, &seenIFSC)
+		handlePacket(set, &ifscPackets, packetType, header, body, &expectedFiles, &seen)
+		if untilDescribed && len(set.Files) > 0 {
+			break
+		}
 
 		// Scan optimization (spec §4.5): for large par2 files, stop once
 		// all FileDesc + IFSC packets have been seen. Recovery blocks are
 		// huge and irrelevant for rename/CRC purposes.
 		if expectedFiles > 0 && fileSize > earlyExitThreshold &&
-			seenFileDescs >= expectedFiles && seenIFSC >= expectedFiles {
+			len(seen.descs) >= expectedFiles && len(seen.ifsc) >= expectedFiles {
 			break
 		}
 	}
@@ -369,6 +375,13 @@ func readNextPacketWithOptions(f *os.File, fileSize uint64, header []byte, opts 
 	}
 }
 
+// packetsSeen is the FileIDs whose File Description and IFSC packets a parse
+// has taken. A recovery volume repeats both once per recovery block it holds,
+// and the repeats are dropped.
+type packetsSeen struct {
+	descs, ifsc map[[16]byte]bool
+}
+
 // handlePacket parses the content of a single packet based on its type.
 func handlePacket(
 	set *ParsedSet,
@@ -376,7 +389,8 @@ func handlePacket(
 	packetType [16]byte,
 	header []byte,
 	body []byte,
-	expectedFiles, seenFileDescs, seenIFSC *int,
+	expectedFiles *int,
+	seen *packetsSeen,
 ) {
 	switch packetType {
 	case typeMain:
@@ -395,17 +409,17 @@ func handlePacket(
 
 	case typeFileDesc:
 		fd := parseFileDescBody(body)
-		if fd == nil {
+		if fd == nil || seen.descs[fd.FileID] {
 			return
 		}
+		seen.descs[fd.FileID] = true
 		set.Files = append(set.Files, *fd)
-		*seenFileDescs++
 
 	case typeIFSC:
 		idata := parseIFSCBody(body)
-		if idata != nil {
+		if idata != nil && !seen.ifsc[idata.fileID] {
+			seen.ifsc[idata.fileID] = true
 			*ifscPackets = append(*ifscPackets, *idata)
-			*seenIFSC++
 		}
 
 	case typeRecovery:

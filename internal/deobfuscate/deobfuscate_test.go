@@ -628,6 +628,14 @@ func writeTestPar2FileWithDescs(t *testing.T, dir, parFileName string, descs []t
 		binary.LittleEndian.PutUint64(buf[8:16], packetLen)
 		copy(buf[32:48], setID[:])
 		copy(buf[48:64], []byte{'P', 'A', 'R', ' ', '2', '.', '0', '\x00', 'F', 'i', 'l', 'e', 'D', 'e', 's', 'c'})
+		// The FileID hashes the 16k hash, size and name, as PAR2 2.0
+		// defines it, so distinct descriptors carry distinct FileIDs; a repeated
+		// FileID is a repeated packet, which the parser keeps once.
+		idHash := md5.New() //nolint:gosec // MD5 is PAR2 spec; not used for security
+		idHash.Write(d.hash16k[:])
+		_ = binary.Write(idHash, binary.LittleEndian, d.fileSize)
+		idHash.Write([]byte(d.fileName))
+		copy(buf[64:80], idHash.Sum(nil))
 		copy(buf[64+16+16:64+32+16], d.hash16k[:])
 		binary.LittleEndian.PutUint64(buf[64+48:64+56], d.fileSize)
 		copy(buf[64+56:], fileNameBytes)
