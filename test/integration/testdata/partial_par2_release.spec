@@ -1,6 +1,6 @@
 pkg ./test/integration/
 tags integration
-run ^TestOnDemandPar2_PartialRelease_FetchesOnlyTheCoveringVolumes$
+run ^(TestOnDemandPar2_PartialRelease_FetchesOnlyTheCoveringVolumes|TestOnDemandPar2_NoIndex_FetchesOneVolumeAsTheIndex)$
 
 # One missing interior article of a data file, a par2 set with 1-, 2-, 4- and
 # 8-block volumes. The job must fetch the +1 and +2 volumes only, and repair.
@@ -20,6 +20,14 @@ file internal/job/release.go
 		if cover, ok := cheapestCover(blocks, bytes, s.need); ok {
 --- replace
 		if cover, ok := cheapestCover(blocks, bytes, s.need); ok && false {
+--- end
+
+[with no index on disk every volume is fetched instead of one]
+file internal/app/app.go
+--- anchor
+				sizing = job.NeedBlocks(1)
+--- replace
+				sizing = job.Unsized()
 --- end
 
 [the damaged slices of a file are not counted]

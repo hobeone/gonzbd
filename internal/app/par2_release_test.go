@@ -440,6 +440,63 @@ func policies(t *testing.T, j *job.Job) map[string]job.FetchPolicy {
 	return out
 }
 
+// With no par2 file on disk, the first release is the one byte-cheapest
+// volume, to serve as the index; a second call that still finds no set
+// releases every remaining held volume.
+func TestMaybeReleaseRecoveryVolumes_VolumeAsIndex(t *testing.T) {
+	t.Parallel()
+	vols := []sizedVol{
+		{"data.vol000+01.par2", 2000},
+		{"data.vol001+02.par2", 1000},
+		{"data.vol003+04.par2", 4000},
+	}
+	application := newTestApplication(t)
+	dir := t.TempDir()
+	application.config.With(func(c *config.Config) {
+		c.General.DownloadDir = dir
+		c.Downloads.OnDemandPar2 = true
+	})
+	application.log = slog.New(slog.DiscardHandler)
+	if err := os.MkdirAll(filepath.Join(dir, "vai-name"), 0o750); err != nil {
+		t.Fatal(err)
+	}
+	j, hdr := newSizedJob(t, "vai", "vai-name", types.PPRepair, []int{4065}, vols)
+	if err := application.Dispatcher().Add(context.Background(), j, hdr); err != nil {
+		t.Fatalf("Add: %v", err)
+	}
+
+	if !application.maybeReleaseRecoveryVolumes(t.Context(), j) {
+		t.Fatal("first call = false, want true: a volume is fetched to use as the index")
+	}
+	want := map[string]job.FetchPolicy{
+		"data.vol000+01.par2": job.FetchIfNeeded,
+		"data.vol001+02.par2": job.FetchAlways,
+		"data.vol003+04.par2": job.FetchIfNeeded,
+	}
+	if got := policies(t, j); !mapsEqual(got, want) {
+		t.Errorf("policies = %v, want %v: only the byte-cheapest volume is released", got, want)
+	}
+	if r := j.Par2ReleaseReason(); !strings.Contains(r, "use as the index") {
+		t.Errorf("reason = %q, want it to say the volume is fetched to use as the index", r)
+	}
+
+	// The volume arrives but no par2 file parses from the directory.
+	if err := j.MarkFileComplete(fileIdxBySubject(t, j, "data.vol001+02.par2")); err != nil {
+		t.Fatalf("MarkFileComplete: %v", err)
+	}
+	if !application.maybeReleaseRecoveryVolumes(t.Context(), j) {
+		t.Fatal("second call = false, want true: the remaining volumes are released")
+	}
+	for name, p := range policies(t, j) {
+		if p != job.FetchAlways {
+			t.Errorf("%s policy = %v, want FetchAlways after the index volume did not parse", name, p)
+		}
+	}
+	if r := j.Par2ReleaseReason(); !strings.Contains(r, "did not parse") {
+		t.Errorf("reason = %q, want it to say the fetched volume did not parse", r)
+	}
+}
+
 func TestMaybeReleaseRecoveryVolumes_SizedRelease(t *testing.T) {
 	t.Parallel()
 	arts := []int{artHead, artMid, artTail}

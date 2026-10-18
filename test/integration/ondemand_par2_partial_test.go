@@ -235,6 +235,60 @@ func TestOnDemandPar2_PartialRelease_FetchesOnlyTheCoveringVolumes(t *testing.T)
 	}
 
 	gap := damaged.firstVolume.Sub(damaged.lastContent)
+	logGap(t, damaged, control, gap)
+}
+
+// TestOnDemandPar2_NoIndex_FetchesOneVolumeAsTheIndex posts the same set
+// without its index file. The Assessing verdict finds no par2 file on disk
+// and fetches the single cheapest volume (+1) to serve as the index; the next
+// Assessing sizes the rest from it. With one article (3 blocks) missing the
+// deficit is 3, the +1 volume covers 1, so the +2 volume is released as well
+// and +4 and +8 stay unfetched. With nothing missing, +1 alone is fetched.
+func TestOnDemandPar2_NoIndex_FetchesOneVolumeAsTheIndex(t *testing.T) {
+	requireTool(t, "par2")
+
+	fixtureDir := t.TempDir()
+	payload, vol := writePar2Fixture(t, fixtureDir)
+	wantSHA := sha256.Sum256(payload)
+	if err := os.Remove(filepath.Join(fixtureDir, "data.par2")); err != nil {
+		t.Fatalf("remove index: %v", err)
+	}
+
+	check := func(t *testing.T, run onDemandRun, fetched, held []int) {
+		t.Helper()
+		if n := run.served["data.par2"]; n != 0 {
+			t.Errorf("data.par2: %d articles fetched, want none (not in the NZB)", n)
+		}
+		for _, blocks := range fetched {
+			if run.served[vol[blocks]] == 0 {
+				t.Errorf("%s was not fetched", vol[blocks])
+			}
+		}
+		for _, blocks := range held {
+			if n := run.served[vol[blocks]]; n != 0 {
+				t.Errorf("%s: %d articles fetched, want none", vol[blocks], n)
+			}
+		}
+	}
+
+	t.Run("damaged", func(t *testing.T) {
+		// The release is right (+1 as the index, then +2), but repair of a
+		// volume-only set loads only its first volume's blocks (#1001).
+		t.Skip("#1001: a volume-only set repairs from its first volume only")
+		run := runOnDemandPar2(t, fixtureDir, wantSHA, "data.bin:5")
+		if got, want := run.served["data.bin"], 12; got != want {
+			t.Errorf("data.bin articles served = %d, want %d", got, want)
+		}
+		check(t, run, []int{1, 2}, []int{4, 8})
+	})
+	t.Run("clean", func(t *testing.T) {
+		run := runOnDemandPar2(t, fixtureDir, wantSHA)
+		check(t, run, []int{1}, []int{2, 4, 8})
+	})
+}
+
+func logGap(t *testing.T, damaged, control onDemandRun, gap time.Duration) {
+	t.Helper()
 	t.Logf("extra round, gap from last data.bin BODY to first recovery-volume BODY: %v", gap)
 	t.Logf("recovery volumes fetched over %v (first to last BODY request)", damaged.lastVolume.Sub(damaged.firstVolume))
 	t.Logf("job wall clock AddJob to PostProcComplete: damaged %v, control %v (excess %v includes volume fetch and par2 repair)",
