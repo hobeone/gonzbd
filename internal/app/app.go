@@ -2116,6 +2116,16 @@ func par2Verdict(a par2.Assessment, log *slog.Logger) (outcome par2Outcome, reas
 	}
 
 	if r.Mismatched+r.NoCRC+r.Unverified == 0 {
+		// A set on disk that contributed no entry protects files nothing here
+		// checked, so the job is not shown clean. The volumes are held rather
+		// than discarded: a par2 failure in post-processing then retries the
+		// job with them (heldVolumesMightRepair).
+		if len(id.Unreadable) > 0 {
+			log.Info("on-demand par2: a par2 set on disk describes no file; holding the recovery volumes",
+				"sets", id.Unreadable)
+			return outcomeUnknown, fmt.Sprintf("par2 set(s) on disk describe no file (%s)",
+				strings.Join(id.Unreadable, ", "))
+		}
 		return outcomeClean, ""
 	}
 

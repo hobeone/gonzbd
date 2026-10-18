@@ -79,7 +79,7 @@ file internal/par2/identify.go
 [an undescribed file is dropped when nothing is described]
 file internal/par2/identify.go
 --- anchor
-		return Identification{Unaccounted: c.undescribed, sets: infos}, nil
+		return Identification{Unaccounted: c.undescribed, Unreadable: c.unreadable, sets: infos}, nil
 --- replace
-		return Identification{sets: infos}, nil
+		return Identification{Unreadable: c.unreadable, sets: infos}, nil
 --- end

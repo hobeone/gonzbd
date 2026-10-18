@@ -414,6 +414,50 @@ func TestPar2Verdict_NothingIdentifiedIsNotACleanVerdict(t *testing.T) {
 	}
 }
 
+// A par2 set on disk that yields no entry says nothing about the files it
+// protects, so it must not read as clean and discard the volumes, which would
+// also stop the finalizer's retry with them after a failed repair (#1000).
+func TestPar2Verdict_UnreadableSetIsNotACleanVerdict(t *testing.T) {
+	t.Parallel()
+	log := slog.New(slog.DiscardHandler)
+	deferredVol := par2FileSpec{subject: "data.vol000+01.par2", bytes: 1}
+	zeros := func(t *testing.T, path string) {
+		t.Helper()
+		if err := os.WriteFile(path, make([]byte, 4096), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	t.Run("a zero-filled index beside a delivered file", func(t *testing.T) {
+		dir := t.TempDir()
+		zeros(t, filepath.Join(dir, "data.par2"))
+		copyFixturePayload(t, dir, "data.bin")
+		qjob := buildPar2Job(t, []par2FileSpec{{subject: "data.bin", crc: 0xDEADBEEF, bytes: 100}, deferredVol})
+		got, reason := assessVerdict(t, dir, qjob, log)
+		if got != outcomeUnknown {
+			t.Fatalf("outcome = %s (reason %q), want %s", got, reason, outcomeUnknown)
+		}
+		if !strings.Contains(reason, "data") {
+			t.Errorf("reason %q does not name the unreadable set", reason)
+		}
+	})
+
+	t.Run("an unreadable set beside a clean one", func(t *testing.T) {
+		dir := t.TempDir()
+		copyFixturePar2(t, dir)
+		copyFixturePayload(t, dir, "data.bin")
+		zeros(t, filepath.Join(dir, "other.par2"))
+		qjob := buildPar2Job(t, []par2FileSpec{{subject: "data.bin", crc: 0x1068AFA6, bytes: 100}, deferredVol})
+		got, reason := assessVerdict(t, dir, qjob, log)
+		if got != outcomeUnknown {
+			t.Fatalf("outcome = %s (reason %q), want %s", got, reason, outcomeUnknown)
+		}
+		if !strings.Contains(reason, "other") {
+			t.Errorf("reason %q does not name the unreadable set", reason)
+		}
+	})
+}
+
 // A single-file post whose one file is present under its par2 name at the
 // wrong length is damage to a file par2 protects, so the volumes are fetched
 // (outcomeRepair). It must not read as "nothing identified" (outcomeUnknown,

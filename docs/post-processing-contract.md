@@ -757,9 +757,9 @@ three outcomes:
 
 | Outcome | Meaning | Action |
 |---|---|---|
-| `outcomeClean` | Every par2-tracked file was identified and its assembled CRC matched. | Recovery volumes discarded (`DiscardDeferredPar2`); job finalizes without them. |
+| `outcomeClean` | Every par2-tracked file was identified and its assembled CRC matched, and every par2 set on disk contributed an entry. | Recovery volumes discarded (`DiscardDeferredPar2`); job finalizes without them. |
 | `outcomeRepair` | At least one par2-tracked file is corrupt, has no CRC to check, could not be verified, or a par2 entry matched no delivered file while others in the same set did. | If the job's `Policy.Repair` is true: the release is sized (see the "release is sized to the damage" paragraph below) and `Job.ReleaseRecovery` frees the held volumes that cover it (`FetchIfNeeded` to `FetchAlways`); job re-enters download if it freed at least one, and goes on to `Repairing` if it freed none. If `Policy.Repair` is false (PP=0): the volumes are held, like `outcomeUnknown`, and the release reason is still recorded. |
-| `outcomeUnknown` | Nothing delivered matched any par2 entry, by name or by content. | Volumes are held, neither fetched nor discarded; job goes on to post-processing without them. If that fails par2, the finalizer retries the job with them released. |
+| `outcomeUnknown` | Nothing delivered matched any par2 entry, by name or by content; or the job would otherwise be clean, but a par2 set on disk contributed no entry (`par2.Identification.Unreadable`: its parse failed, or it holds neither a File Description nor a file its Main packet lists), so what it protects is unchecked. | Volumes are held, neither fetched nor discarded; job goes on to post-processing without them. If that fails par2, the finalizer retries the job with them released. |
 
 **The verdict and the fetch decision are separate questions (#653).**
 `par2Verdict` answers only "is repair possible" from the assessment; it does
@@ -805,7 +805,11 @@ unaccounted, and a damaged copy that lost some File Description packets does
 not hide the files only the other copy describes. A file the set's Main packet
 lists in its recovery set that no copy describes is unaccounted, so the
 verdict is not `outcomeClean`: `outcomeRepair` with every held volume released
-when another file was identified, `outcomeUnknown` when none was.
+when another file was identified, `outcomeUnknown` when none was. A copy that
+contributes no entry at all cannot be told from a separate set that protects
+unchecked files, so it is reported in `par2.Identification.Unreadable` and the
+otherwise clean verdict is `outcomeUnknown`: the volumes are held, not
+discarded.
 
 - **One volume as the index**: no par2 set on disk and no recovery volume
   released yet. The release is `job.NeedBlocks(1)`, so the single
@@ -824,7 +828,9 @@ when another file was identified, `outcomeUnknown` when none was.
   they do not or an identified entry has no delivered file. A mismatch the
   recovery on disk covers is `job.NeedBlocks(0)`, which releases nothing.
 - **Unsized, every held volume released**: more than one par2 set on disk, or
-  no single set or slice size; a file the set's Main packet lists that no copy
+  no single set or slice size; a par2 set on disk that contributed no entry
+  (`par2.Identification.Unreadable`), whose volumes the cover would count by
+  name toward a need they cannot serve; a file the set's Main packet lists that no copy
   describes (`FileDesc.Undescribed`); a failed verify; a verify whose
   `DataBlocks` is not the sum of `ceil(size / slice size)` over the
   assessment's identified files and unaccounted entries (an engine that

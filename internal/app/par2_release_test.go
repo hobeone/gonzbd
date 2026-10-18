@@ -266,6 +266,15 @@ func TestRecoveryDeficit(t *testing.T) {
 			},
 			want: job.Unsized(), wantWhy: "no delivered file", wantCalls: 0,
 		},
+		{
+			name: "a second set that reads as nothing is unsized without reading rows",
+			prep: func(t *testing.T, _ *job.Job, dir string) {
+				if err := os.WriteFile(filepath.Join(dir, "other.par2"), make([]byte, 4096), 0o600); err != nil {
+					t.Fatal(err)
+				}
+			},
+			want: job.Unsized(), wantWhy: "describes no file", wantCalls: 0,
+		},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
