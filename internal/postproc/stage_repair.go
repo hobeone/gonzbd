@@ -177,7 +177,7 @@ func (s *RepairStage) repairSets(ctx context.Context, log *slog.Logger, job *Job
 	// their names (obfuscated or renamed files): the non-par2 files in the
 	// download directory less the ones recorded for deletion. This is the one
 	// list both engines are handed, by dispatchRepairTool.
-	dataFiles, scanErr := listNonPar2Files(job.DownloadDir)
+	dataFiles, scanErr := par2.CandidateFiles(job.DownloadDir)
 	if scanErr != nil {
 		job.ParError = true
 		return 0, fmt.Errorf("repair: scan data files: %w", scanErr)
@@ -544,25 +544,4 @@ func cleanupPar2Backups(dir string, beforeRepair, repairedTargets map[string]str
 		removed = append(removed, name)
 	}
 	return removed
-}
-
-// listNonPar2Files returns the absolute paths of all non-directory,
-// non-par2 files in dir. These paths are passed to par2 as extra data
-// files for checksum matching.
-func listNonPar2Files(dir string) ([]string, error) {
-	entries, err := os.ReadDir(dir)
-	if err != nil {
-		return nil, err
-	}
-	var result []string
-	for _, e := range entries {
-		if e.IsDir() {
-			continue
-		}
-		if strings.EqualFold(filepath.Ext(e.Name()), ".par2") {
-			continue
-		}
-		result = append(result, filepath.Join(dir, e.Name()))
-	}
-	return result, nil
 }

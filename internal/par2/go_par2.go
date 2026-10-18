@@ -124,6 +124,8 @@ func GoVerify(ctx context.Context, log *slog.Logger, parfile string, candidates 
 		}
 
 		counts := d.ShardCounts()
+		res.BlocksNeeded = counts.BlocksNeeded()
+		res.DataBlocks = counts.UsableDataShardCount + counts.UnusableDataShardCount
 		res.CommandLine = fmt.Sprintf("go_par2 verify %s", parfile)
 		res.Stdout = fmt.Sprintf("usable_data=%d unusable_data=%d usable_parity=%d files_to_rebuild=%d files_to_rename=%d",
 			counts.UsableDataShardCount, counts.UnusableDataShardCount, counts.UsableParityShardCount,
@@ -312,6 +314,24 @@ func protectedFilesIntact(parfile string) string {
 		return ""
 	}
 	return fmt.Sprintf("%d protected file(s) are not intact: %s", len(bad), strings.Join(bad, ", "))
+}
+
+// CandidateFiles returns the absolute paths of the non-directory, non-par2
+// files at the top of dir: the list a verify or repair hands the engine as
+// candidates, so that every caller scans the same files.
+func CandidateFiles(dir string) ([]string, error) {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return nil, err
+	}
+	var result []string
+	for _, e := range entries {
+		if e.IsDir() || strings.EqualFold(filepath.Ext(e.Name()), ".par2") {
+			continue
+		}
+		result = append(result, filepath.Join(dir, e.Name()))
+	}
+	return result, nil
 }
 
 // addCandidateFiles registers each of candidates with the decoder via
