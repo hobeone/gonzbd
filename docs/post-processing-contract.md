@@ -799,6 +799,13 @@ lists in its recovery set that no copy describes is unaccounted, so the
 verdict is not `outcomeClean`: `outcomeRepair` with every held volume released
 when another file was identified, `outcomeUnknown` when none was.
 
+- **One volume as the index**: no par2 set on disk and no recovery volume
+  released yet. The release is `job.NeedBlocks(1)`, so the single
+  byte-cheapest held volume whose name declares a block count is freed
+  (every held volume if none declares one). Each volume repeats the Main,
+  File Description and IFSC packets, so `FindPar2Files` treats it as a set
+  and the next Assessing sizes the rest. If that volume still yields no set,
+  every held volume is released.
 - **Unsized, every held volume released**: a CRC mismatch; an unverified
   entry (this includes a file with a lost tail article or a truncated,
   undelivered or length-mismatched file, and a file the set's Main packet

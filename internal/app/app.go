@@ -1841,12 +1841,24 @@ func (app *Application) maybeReleaseRecoveryVolumes(ctx context.Context, j *job.
 		switch {
 		case sErr != nil || len(sets) == 0:
 			outcome = outcomeRepair
-			reason = "no usable par2 index found to verify against"
-			if sErr != nil {
+			// With no set on disk and nothing released yet, one recovery
+			// volume is fetched to serve as the index: each volume repeats
+			// the Main, File Description and IFSC packets, and the
+			// post-fetch assessment sizes the rest. If that volume did not
+			// parse, or the directory could not be read, every held volume
+			// is released.
+			fetched, _, _ := prog.RecoveryReleased(m)
+			switch {
+			case sErr != nil:
 				reason = fmt.Sprintf("no usable par2 index found (err: %v)", sErr)
+			case fetched == 0:
+				reason = "no par2 index on disk; fetching the smallest recovery volume to use as the index"
+				sizing = job.NeedBlocks(1)
+			default:
+				reason = "no par2 index on disk, and the recovery volume fetched as one did not parse; fetching every recovery volume"
 			}
-			app.log.Info("on-demand par2: no usable par2 index to verify against; fetching recovery volumes",
-				"job", jobID, "dir", dir, "err", sErr)
+			app.log.Info("on-demand par2: no usable par2 index to verify against",
+				"job", jobID, "dir", dir, "err", sErr, "reason", reason)
 		default:
 			a, aErr := par2.AssessWithOptions(dir, sets, assembledFiles(m, prog), app.log, parseOpts)
 			if aErr != nil {
@@ -2017,8 +2029,9 @@ func (o par2Outcome) String() string {
 //
 // Repair is needed when any par2-tracked file is corrupt (Mismatched), has no
 // recorded CRC to check against (NoCRC), or could not be checked at all
-// (Unverified). A job with no usable par2 index never reaches here — the
-// caller fetches the volumes instead, which is the safe fallback.
+// (Unverified). A job with no usable par2 set never reaches here —
+// maybeReleaseRecoveryVolumes fetches a recovery volume to serve as the
+// index, or every volume if that already happened.
 func par2Verdict(a par2.Assessment, log *slog.Logger) (outcome par2Outcome, reason string) {
 	id, r := a.ID, a.CRC
 
