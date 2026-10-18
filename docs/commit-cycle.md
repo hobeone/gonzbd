@@ -85,6 +85,22 @@ the line is enough to cause it. `internal/job/testdata/postproc_stamp.spec` is
 the same mutation kept as a committed spec, so a moved anchor fails a run rather
 than waiting to mislead a reader.
 
+### Mutate to the sibling
+
+A fix replaced a yield by job ID with `YieldedJob(j)`, which checks the
+instance, so that a cancelled assessment cannot park a later job registered
+under the same ID. Its spec had three mutations (act on the verdict, advance
+the job, hand over its deferred reasons), and all three died. None of them
+put `Yielded(id)` back, which is the mutation that undoes the fix, and the
+test could not have told the two apart: the test recorder's `YieldedJob`
+called its own `Yielded`, so both recorded the same thing. A review found
+it. The recorder now keeps the instances it is given, and the spec has the
+substitution, which is killed.
+
+Neutering tests that the call matters. Substituting the sibling tests that
+the choice between the two matters, and that choice is often what the fix
+was.
+
 ## The sweep — worked examples
 
 `AGENTS.md` § "Step 4 in practice" gives the rules. Each was written after a
@@ -118,6 +134,22 @@ The remedy is to sweep for the **literal** — the status code, the duration, th
 threshold, the field name — rather than for the concept you were editing. A
 grep for the status code finds every row in one command; no search for "the
 Message-ID check" finds any of them.
+
+### A list of a set never names the member just added
+
+A change added `YieldedJob` to the runner's `reporter` interface, beside
+`FinishedJob`, `Yielded` and `AdvanceFrom`, and updated the doc paragraph for
+the branch that calls it. The summary sentence of the same doc comment still
+said "every branch must end in exactly one FinishedJob, Yielded or
+AdvanceFrom", and a contract test's comment listed two of the members. Both
+were found by review, a round later.
+
+No search for the new member finds these sentences, because they do not
+contain it. A search for two old members together does: on the commit before
+the fix, `git grep -n -E 'FinishedJob.*Yielded|Yielded.*FinishedJob'`
+returned both stale lines among its eight. The other six included a third
+list, the comment on `unlessGone`, which was stale for other reasons. Repeat
+with each pair, since a list may name only some of the members.
 
 ### Narrowing a referent, then broadening a scope
 

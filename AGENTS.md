@@ -375,12 +375,16 @@ spec, and runs `TestMarkDownloadFinished_FirstWins`.
 `scripts/mutate/testdata/self.spec` is the tool's own red check, and running it
 is how you verify a change to the tool.
 
-Two judgments the tool cannot make for you:
+Three judgments the tool cannot make for you:
 
 - **Revert each half separately.** A fix with two call sites needs two reverts;
   one half being pinned says nothing about the other.
 - **Prefer neutering a condition to deleting a block.** A compile error does not
   demonstrate the test would have caught the behaviour.
+- **Where the fix chose one of two sibling calls, mutate to the other one.**
+  A test double that forwards one to the other passes both, so make it record
+  which was called. `docs/commit-cycle.md` § "Mutate to the sibling" has the
+  case.
 
 **Never `git stash`** — the stash stack is shared with any other session in this
 repo and a pop can take their work. Restore from your own copy rather than
@@ -407,7 +411,7 @@ git grep -n 'bytes that reached disk'   # tracked files only, so no ui/dist or n
 `git grep` rather than a path list, because the copies turn up in `cmd/`,
 `test/`, `ui/`, and this file.
 
-Three things grep does not cover, each of which has shipped drift here
+Four things grep does not cover, each of which has shipped drift here
 (`docs/commit-cycle.md` § "The sweep" has the worked cases):
 
 - **`git grep` is blind to paraphrase, and the docs are where paraphrase
@@ -420,6 +424,11 @@ Three things grep does not cover, each of which has shipped drift here
   thinking about.** When a change alters a status code, a duration, a
   threshold, a limit or a field name, sweep for that literal from the root:
   `git grep -n '222'`, not a search for "the Message-ID check".
+- **A list of a set's members never contains the member you just added.** When
+  a change adds a method to an interface, a variant to an enum or a state to
+  a machine, the sentences it falsified name only the old members. Grep for
+  any two existing members together:
+  `git grep -n -E 'FinishedJob.*Yielded|Yielded.*FinishedJob'`.
 
 So when a change alters what a doc *describes* — a layer's responsibility, an
 enforced invariant, a security property, a data-flow direction — **read

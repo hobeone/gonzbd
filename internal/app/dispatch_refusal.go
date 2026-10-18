@@ -13,11 +13,12 @@ import (
 // in normal operation. Any other refusal from the dispatcher (a failed Park
 // or Settle, a latched cancel intent) is returned.
 //
-// dispatch.ErrStaleReport is not dropped here. Its one return is in
-// Dispatcher.handoff, the body of AdvanceFrom and YieldedFrom, and PauseJob's
-// yieldPaused drops it itself; so the Yielded, FinishedJob, PauseJob,
-// ResumeJob and Cancel results routed here cannot carry it. AdvanceFrom's
-// refusals are classified by appRunner.logAdvance.
+// dispatch.ErrStaleReport is not dropped here, because no result routed here
+// carries it. It is built once, in Dispatcher.handoff, the body of
+// AdvanceFrom and YieldedFrom: `git grep -n -E 'Errorf\(.*ErrStaleReport' --
+// '*.go' ':!*_test.go'` returns 1 line. AdvanceFrom's refusals are classified
+// by appRunner.logAdvance instead, and YieldedFrom's one caller, the
+// dispatcher's yieldPaused, drops it itself.
 func unlessGone(err error) error {
 	if errors.Is(err, dispatch.ErrNotFound) {
 		return nil
