@@ -540,6 +540,15 @@ Both par2 engines are handed one candidate list, which `RepairStage.repairSets` 
    Every other outcome runs `repair`: `Damaged`, `Inconclusive` (quickcheck
    was attempted and could not complete, e.g. the job's manifest was
    unreadable), and `NotRun` (the stage was disabled or found no par2 sets).
+   A par2 set that reads as nothing (`par2.Identification.Unreadable`) and
+   owns a recovery volume the job still holds leaves the job `Inconclusive`
+   whatever the other sets show, ahead of both bypasses above: the files it
+   protects were never checked, and the failed repair is what the finalizer
+   retries to fetch the volume, which `FindPar2Files` then reads in place of
+   the index. A held volume is matched to its set by `par2.SetName` of its NZB
+   subject, so one posted under an unrelated name is not seen. A set with no
+   held volume is left out of the verdict: nothing could make it readable, and
+   repair would fail the job for one bad par2 file (#1008).
    A DirectUnpack success does not bypass it. It shows only that the RAR sets
    DirectUnpack extracted are intact, and says nothing of a loose file beside
    them — a payload `.mkv`, a sample, a `.zip` — or of an archive set

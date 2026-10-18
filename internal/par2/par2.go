@@ -227,12 +227,12 @@ var volPattern = regexp.MustCompile(`(?i)\.vol\d+[-+]\d+$`)
 // recovery blocks" message. Spec §7.3.
 var needMoreBlocksRE = regexp.MustCompile(`You need (\d+) more recovery block`)
 
-// setName derives the set name from a par2 filename (without directory).
-// Examples:
+// SetName derives the set name from a par2 filename (without directory): the
+// Set.Name FindPar2Files groups the file under. Examples:
 //
 //	"movie.par2"           → "movie"
 //	"movie.vol000+01.par2" → "movie"
-func setName(base string) string {
+func SetName(base string) string {
 	// Strip the final ".par2" extension (case-insensitive handled by ToLower on ext).
 	ext := filepath.Ext(base)
 	if !strings.EqualFold(ext, ".par2") {
@@ -279,7 +279,7 @@ func FindPar2Files(dir string, opts ...ParseOptions) ([]Set, error) {
 
 	for _, path := range entries {
 		base := filepath.Base(path)
-		name := setName(base)
+		name := SetName(base)
 
 		s, ok := byName[name]
 		if !ok {

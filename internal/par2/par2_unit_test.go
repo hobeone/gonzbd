@@ -218,41 +218,41 @@ func TestNeedMoreBlocksRE(t *testing.T) {
 
 func TestSetName_MainFile(t *testing.T) {
 	t.Parallel()
-	got := setName("movie.par2")
+	got := SetName("movie.par2")
 	if got != "movie" {
-		t.Errorf("setName(%q) = %q, want %q", "movie.par2", got, "movie")
+		t.Errorf("SetName(%q) = %q, want %q", "movie.par2", got, "movie")
 	}
 }
 
 func TestSetName_VolumeFile(t *testing.T) {
 	t.Parallel()
-	got := setName("movie.vol000+01.par2")
+	got := SetName("movie.vol000+01.par2")
 	if got != "movie" {
-		t.Errorf("setName(%q) = %q, want %q", "movie.vol000+01.par2", got, "movie")
+		t.Errorf("SetName(%q) = %q, want %q", "movie.vol000+01.par2", got, "movie")
 	}
 }
 
 func TestSetName_LargeVolume(t *testing.T) {
 	t.Parallel()
-	got := setName("data.vol015+16.par2")
+	got := SetName("data.vol015+16.par2")
 	if got != "data" {
-		t.Errorf("setName(%q) = %q, want %q", "data.vol015+16.par2", got, "data")
+		t.Errorf("SetName(%q) = %q, want %q", "data.vol015+16.par2", got, "data")
 	}
 }
 
 func TestSetName_NotPar2(t *testing.T) {
 	t.Parallel()
-	got := setName("movie.rar")
+	got := SetName("movie.rar")
 	if got != "movie.rar" {
-		t.Errorf("setName(%q) = %q, want %q", "movie.rar", got, "movie.rar")
+		t.Errorf("SetName(%q) = %q, want %q", "movie.rar", got, "movie.rar")
 	}
 }
 
 func TestSetName_CaseInsensitive(t *testing.T) {
 	t.Parallel()
-	got := setName("movie.PAR2")
+	got := SetName("movie.PAR2")
 	if got != "movie" {
-		t.Errorf("setName(%q) = %q, want %q", "movie.PAR2", got, "movie")
+		t.Errorf("SetName(%q) = %q, want %q", "movie.PAR2", got, "movie")
 	}
 }
 
@@ -424,17 +424,17 @@ func TestFindPar2Files_CaseInsensitive(t *testing.T) {
 // L15 follow-up: Ensure all-uppercase .PAR2 extension is recognized by setName.
 func TestSetName_UppercasePAR2(t *testing.T) {
 	t.Parallel()
-	got := setName("data.PAR2")
+	got := SetName("data.PAR2")
 	if got != "data" {
-		t.Errorf("setName(%q) = %q, want %q", "data.PAR2", got, "data")
+		t.Errorf("SetName(%q) = %q, want %q", "data.PAR2", got, "data")
 	}
 }
 
 func TestSetName_MixedCaseVolume(t *testing.T) {
 	t.Parallel()
-	got := setName("data.Vol015+16.Par2")
+	got := SetName("data.Vol015+16.Par2")
 	if got != "data" {
-		t.Errorf("setName(%q) = %q, want %q", "data.Vol015+16.Par2", got, "data")
+		t.Errorf("SetName(%q) = %q, want %q", "data.Vol015+16.Par2", got, "data")
 	}
 }
 
