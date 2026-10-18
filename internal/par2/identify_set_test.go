@@ -80,3 +80,61 @@ func TestAssessment_CRCExcluding(t *testing.T) {
 		t.Errorf("CRCExcluding(extras) = %+v, want withnfo's mismatch and unaccounted entry", got)
 	}
 }
+
+// A set on disk that contributes no entry is reported as Unreadable, beside
+// the sets that did, whether it holds no packet at all or a truncated one.
+func TestIdentify_ReportsUnreadableSets(t *testing.T) {
+	t.Parallel()
+
+	for name, junk := range map[string][]byte{
+		"zero-filled":      make([]byte, 4096),
+		"truncated header": []byte("PAR2\x00PKT\x40\x00"),
+		// ParsePar2SetWithOptions reaches EOF before any packet and returns an
+		// empty set without an error.
+		"empty": {},
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			dir := t.TempDir()
+			for _, f := range []string{"extras.par2", "extras.txt"} {
+				data, err := os.ReadFile(filepath.Join("..", "..", "test", "fixtures", "par2", "layout_b_mixed", f))
+				if err != nil {
+					t.Fatal(err)
+				}
+				writeFile(t, dir, f, data)
+			}
+			writeFile(t, dir, "junk.par2", junk)
+			sets, err := FindPar2Files(dir)
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			id := identifyIn(t, dir, sets)
+
+			if len(id.Unreadable) != 1 || id.Unreadable[0] != "junk" {
+				t.Errorf("Unreadable = %q, want [junk]", id.Unreadable)
+			}
+			if _, ok := byOnDisk(id, "extras.txt"); !ok {
+				t.Error("extras.txt was not identified from the readable set")
+			}
+			if _, ok := id.SliceSize(); !ok {
+				t.Error("SliceSize refused: the unreadable set must not count as a second set")
+			}
+		})
+	}
+
+	t.Run("alone", func(t *testing.T) {
+		t.Parallel()
+		dir := t.TempDir()
+		writeFile(t, dir, "data.par2", make([]byte, 4096))
+		writeFile(t, dir, "data.bin", []byte("payload"))
+		sets, err := FindPar2Files(dir)
+		if err != nil {
+			t.Fatal(err)
+		}
+		id := identifyIn(t, dir, sets)
+		if len(id.Files) != 0 || len(id.Unaccounted) != 0 || len(id.Unreadable) != 1 || id.Unreadable[0] != "data" {
+			t.Errorf("identification = %+v, want only Unreadable [data]", id)
+		}
+	})
+}

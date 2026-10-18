@@ -35,6 +35,11 @@ func recoveryDeficit(
 	loadRows func() ([]durability.WrittenRow, error),
 	verify func() (par2.VerifyResult, error),
 ) (sizing job.RecoverySizing, why string) {
+	if len(a.ID.Unreadable) > 0 {
+		// The cover picks volumes by name, and those of a set that read as
+		// nothing count toward a need they cannot serve.
+		return job.Unsized(), "a par2 set on disk describes no file"
+	}
 	verified := a.CRC.Mismatched > 0 || a.CRC.Unverified > 0
 	sliceSize, ok := a.ID.SliceSize()
 	if !ok {

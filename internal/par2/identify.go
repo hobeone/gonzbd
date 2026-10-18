@@ -98,6 +98,10 @@ type Identification struct {
 	// Ignored is the delivered files that were not considered, because par2
 	// does not protect its own sidecars. See ignoredExtensions.
 	Ignored []string
+	// Unreadable is the name of each par2 set on disk that contributed no
+	// entry to Files or Unaccounted: what it protects is unknown, so nothing
+	// here shows those files intact.
+	Unreadable []string
 
 	// sets is one entry per par2 set that parsed, set by IdentifyWithOptions
 	// and copied unchanged by Assessment.CRCExcluding (`git grep -n 'sets: [ai]'
@@ -214,7 +218,7 @@ func IdentifyWithOptions(dir string, sets []Set, log *slog.Logger, opts ParseOpt
 	if len(manifest) == 0 {
 		log.Info("identify: no file descriptions found in any par2 set",
 			"undescribed", len(c.undescribed))
-		return Identification{Unaccounted: c.undescribed, sets: infos}, nil
+		return Identification{Unaccounted: c.undescribed, Unreadable: c.unreadable, sets: infos}, nil
 	}
 
 	flatFiles, err := scanFlatFiles(dir, log)
@@ -239,7 +243,7 @@ func IdentifyWithOptions(dir string, sets []Set, log *slog.Logger, opts ParseOpt
 
 	claimedFile := make(map[string]bool, len(candidates))
 	claimedEntry := make(map[int]bool, len(manifest))
-	id := Identification{Ignored: ignored, sets: infos}
+	id := Identification{Ignored: ignored, Unreadable: c.unreadable, sets: infos}
 
 	// Pass 0 — an entry whose par2 path already names a file on disk is that
 	// file, and nothing below can see it.

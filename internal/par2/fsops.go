@@ -37,6 +37,10 @@ type collected struct {
 	undescribed []FileDesc
 	// sets is one parsedSetInfo per distinct set that parsed.
 	sets []parsedSetInfo
+	// unreadable is the name of each set on disk that contributed no entry:
+	// it has no file to parse, its parse failed, or it parsed to neither a
+	// File Description nor a file its Main packet lists.
+	unreadable []string
 }
 
 // fileKey is one file of one set.
@@ -64,6 +68,7 @@ func collectManifestsWithOptions(sets []Set, log *slog.Logger, opts ParseOptions
 		if parFile == "" {
 			log.Info("quickcheck: skipping par2 set with no main file",
 				"set", set.Name)
+			c.unreadable = append(c.unreadable, set.Name)
 			continue
 		}
 		log.Info("quickcheck: parsing par2 manifest",
@@ -72,6 +77,13 @@ func collectManifestsWithOptions(sets []Set, log *slog.Logger, opts ParseOptions
 		if err != nil {
 			log.Warn("quickcheck: failed to parse par2 file",
 				"file", filepath.Base(parFile), "err", err)
+			c.unreadable = append(c.unreadable, set.Name)
+			continue
+		}
+		if len(parsed.Files) == 0 && len(parsed.RecoveryFileIDs) == 0 {
+			log.Warn("quickcheck: par2 file describes no file",
+				"file", filepath.Base(parFile))
+			c.unreadable = append(c.unreadable, set.Name)
 			continue
 		}
 		// A SetID repeated with a different slice size is a different key, so
