@@ -784,11 +784,19 @@ in one extra Fetching and Assessing round. On `outcomeRepair`,
 identified files are missing — the gaps in each file's written rows
 (`job.DamagedSlices`), at the post's par2 slice size — and subtracts the
 `+MM` blocks of recovery volumes that are complete, `FetchAlways` and have no
-failed article (`JobProgress.FetchedRecoveryBlocks`). `Job.ReleaseRecovery`
-then frees the held volumes that cover that need at the fewest bytes (a 0/1
+failed article (`JobProgress.FetchedRecoveryBlocks`). Damage the rows do not
+show (a CRC mismatch, or an entry that could not be checked) is sized by a
+block-level verify instead (`par2.GoVerify`, whose `VerifyResult.BlocksNeeded`
+is unusable data blocks less the usable recovery blocks on disk, so it is
+already net of the volumes fetched and nothing is subtracted from it); when
+both are available the larger need wins. `Job.ReleaseRecovery`
+first frees every held volume that is already complete with no failed
+article — a retried job re-holds the volumes its first run fetched, and a
+cover that picked one would fetch nothing new — and then frees the held
+volumes that cover the need at the fewest bytes (a 0/1
 knapsack, `internal/job/cover.go`), choosing among volumes whose names carry a
 block count of at most 65535 (the PAR2 per-volume limit; a larger count is
-treated as no count); it frees every held volume when those cannot reach the
+treated as no count); it frees every such held volume when those cannot reach the
 need, when the need exceeds `job.MaxPar2Slices`, or when the cover table would
 exceed `maxCoverCells`. Two copies of one par2 set under different names
 (same SetID and slice size) are merged by FileID (`collectManifestsWithOptions`
@@ -806,20 +814,31 @@ when another file was identified, `outcomeUnknown` when none was.
   File Description and IFSC packets, so `FindPar2Files` treats it as a set
   and the next Assessing sizes the rest. If that volume still yields no set,
   every held volume is released.
-- **Unsized, every held volume released**: a CRC mismatch; an unverified
-  entry (this includes a file with a lost tail article or a truncated,
-  undelivered or length-mismatched file, and a file the set's Main packet
-  lists but no copy describes); no single par2 set or slice size;
-  unreadable written rows or no durability store; more than `job.MaxPar2Slices`
-  (32768) slices; a
-  file size above `MaxInt64`. The reason string says which.
+- **Sized by a block-level verify**: a CRC mismatch, or an unverified entry
+  (a truncated, undelivered or length-mismatched file, or a file the set's
+  Main packet lists and a File Description describes but no delivered file
+  matched). `recoveryDeficit` runs the verify lazily, on the Assessing worker
+  and only for these, over the one par2 set on disk and the candidate list
+  `par2.CandidateFiles` that `repair` also hands its engine. The need is
+  `max(verify, gaps)` when the written rows load, and the verify alone when
+  they do not or an identified entry has no delivered file. A mismatch the
+  recovery on disk covers is `job.NeedBlocks(0)`, which releases nothing.
+- **Unsized, every held volume released**: more than one par2 set on disk, or
+  no single set or slice size; a file the set's Main packet lists that no copy
+  describes (`FileDesc.Undescribed`); a failed verify; a verify whose
+  `DataBlocks` is not the sum of `ceil(size / slice size)` over the
+  assessment's identified files and unaccounted entries (an engine that
+  missed File Description packets would undercount); for damage the rows show,
+  unreadable written rows or no durability store, or an entry with no
+  delivered file; more than `job.MaxPar2Slices` (32768) slices; a file size
+  above `MaxInt64`. The reason string says which.
 - **Nothing released**: a job beyond repair (`RepairStateFrom` reports
   `Hopeless`), which fails at Assessing; and a zero deficit, which goes on as
   `runAssess`'s `RepairState` decides — `Repairing` when content failed (the
   volumes already fetched cover it), `Extracting` when none did. If repair then
   falls short, par2 fails with volumes held and
-  `heldVolumesMightRepair` retries the job with everything released, so an
-  undercount costs a full retry rather than a failed job.
+  `heldVolumesMightRepair` retries the job, sized to the shortfall par2
+  reported, so an undercount costs a retry rather than a failed job.
 - **Loop bound**: a second Assessing after a partial release re-runs the
   verdict, and releases more only while a deficit remains. Each Assessing
   releases at least one volume or proceeds, so the number of Assessing rounds
@@ -858,8 +877,9 @@ volumes (`Job.HasDeferredPar2`) is retried with them released.
 `persistAndCommit` has returned calls `retryWithHeldVolumes`. That runs
 `RetryHistoryJob`'s own body (`retryHistoryJob`) with one addition: after
 `ResetForRetry`, and before job_files is seeded and the job registered, it
-releases every volume the rebuilt job holds through `releaseRecoveryVolumes`,
-the release the Assessing verdict's `outcomeRepair` makes. The retry then
+releases the volumes the retry's sizing asks for through
+`releaseRecoveryVolumes`, the release the Assessing verdict's `outcomeRepair`
+makes. The retry then
 resumes the job from its retained progress, fetches only the volumes, and
 reaches post-processing through Assessing, where `repair` or
 `extracted_repair` has them on disk. Post-processing is not handed a job
@@ -890,9 +910,29 @@ instance (`postProcAdmissions`) both hold.
   through `BuildIngestJob`, which holds the volumes back again while
   `downloads.on_demand_par2` is on (`internal/app/ingest.go:146`), so its
   par2 failure is retried automatically with them released.
-- **Retry bound**: the retry releases every volume it holds (`job.Unsized()`)
-  before job_files, which hydration restores the policy from, is seeded; and only ingest sets
-  a volume to `FetchIfNeeded`. The policy field has one writer
+- **Shortfall**: `postproc.Job.RepairShortfall` is the recovery blocks the
+  failed repair lacked, net of those on disk (par2engine's
+  `ShardCounts.BlocksNeeded`). `handleRepairResult` returns a typed
+  `*ShortfallError` for a set that needs more blocks, and
+  `Job.recordStageFailure` is its one writer: it records the blocks when the
+  stage that newly set `ParError` returned one, and clears them for any other
+  cause. `repairSets` strips the type from a job with more than one par2 set
+  in the directory, since one set's shortfall says nothing of the others.
+  Unknown is `ok == false`, never a shortfall of 0, and the finalizer sizes
+  an unknown shortfall `job.Unsized()`.
+- **Retry bound**: at most two automatic retries of a job. `nextRetrySizing`
+  sizes the first retry to the shortfall (`job.NeedBlocks`) when it is known
+  and leaves it `job.Unsized()` otherwise; a sized retry still holds the
+  volumes its cover left out, so if it too fails par2 the finalizer retries
+  once more, `job.Unsized()` whatever the second failure reports; an unsized
+  retry is final. The sizing of the last retry is kept per job ID in memory
+  (`jobFinalizer.retries`, a `retryLedger`: `record` before the retry
+  registers, `take` at the finalize of the retried instance, `forget` when the
+  retry could not start); nothing is persisted, and a shutdown that aborts the
+  retry is accepted as above. An unsized retry releases every volume its
+  rebuilt job holds before job_files, which hydration restores the policy
+  from, is seeded; and only ingest sets a volume to `FetchIfNeeded`. The
+  policy field has one writer
   (`git grep -nE '\.Fetch\s*=[^=]' -- '*.go' ':!*_test.go'` returns 1
   line), `JobProgress.setFileFetchPolicy`. Construction writes
   nothing: every file starts at the zero value, `FetchAlways`. The writer's
@@ -901,11 +941,11 @@ instance (`postProcAdmissions`) both hold.
   and four calls) are ingest, passing `FetchIfNeeded` through
   `Job.SetFileFetchPolicy`; the release, passing `FetchAlways`; the discard,
   passing `FetchNever`; and hydration, passing the recorded policy, which is
-  `FetchAlways` for a volume the retry released. So the retried instance does
-  not satisfy `HasDeferredPar2` and its own failure is final
-  (`TestFinalize_RetriedJobIsNotRetriedAgain`). A retry the user starts is
-  rebuilt by ingest and holds the volumes again, so it gets one automatic
-  retry of its own.
+  `FetchAlways` for a volume a retry released
+  (`TestFinalize_RetriedJobIsNotRetriedAgain`,
+  `TestFinalize_SizedRetryThatFallsShortRetriesOnceUnsized`). A retry the user
+  starts is rebuilt by ingest and holds the volumes again, so it gets
+  retries of its own.
 - **Scope**: the trigger is any `ParError` with held volumes, not only
   `extracted_repair`'s. It also rescues an obfuscated single-file post
   damaged inside its first 16 KB, which `repair` failed for want of volumes;
@@ -1002,8 +1042,9 @@ recorded entirely through the fetch-policy discard, not through this field.
   in its own log line rather than on `Job` — `unpack` reads `ParError` to skip
   extraction (`internal/postproc/stage_unpack.go:130`). Downstream stages
   continue running so the job still reaches a deterministic finished state.
-  A job that held recovery volumes back is then retried once with them
-  released (see "Held volumes after a failed repair (#651)").
+  A job that held recovery volumes back is then retried, sized to this
+  shortfall when the job has one par2 set (see "Held volumes after a failed
+  repair (#651)").
 - **Finalize Move Failure (`FailMsg = "finalize: ..."`)**: When `finalize`
   cannot move the job's files into `FinalDir` (`FinalDir` unset, destination
   parent creation or rename error, or a file-by-file fallback error),
@@ -1028,18 +1069,15 @@ recorded entirely through the fetch-policy discard, not through this field.
 - Complete 13-stage pipeline with strict stage self-gating and cumulative PP-level enforcement (`shouldSkipForPP`).
 - `QuickCheckOutcome` (`NotRun`/`Clean`/`Damaged`/`Inconclusive`/`Unidentified`) bypass logic; a DirectUnpack success never bypasses `repair` (#953).
 - Per-set deferral of Layout B par2 sets (`deferredPar2Sets`) and their par2 verify+repair after unpack (`extracted_repair`).
-- A par2 failure with recovery volumes held back retries the job once with them released (`jobFinalizer.retryWithHeldVolumes`, #651).
-- An `outcomeRepair` verdict releases the byte-minimal covering recovery volumes for the damage it measures (`recoveryDeficit`, `Job.ReleaseRecovery`).
+- A par2 failure with recovery volumes held back retries the job to fetch them (`jobFinalizer.retryWithHeldVolumes`, #651): sized to the repair's block shortfall, then once unsized, then final (#990).
+- An `outcomeRepair` verdict releases the byte-minimal covering recovery volumes for the damage it measures, from the written rows or, for a CRC mismatch or an unchecked entry, from a block-level verify (`recoveryDeficit`, `Job.ReleaseRecovery`, #990).
 - Per-job `DownloadDir` isolation across cleanup stages (`Dispatcher.admitNameLocked`, `ReserveName`).
 - Python-compatible 8-arg positional and `SAB_*` environment contract for user scripts with 512 KiB log caps, `RedactSecrets`, and `ScriptCanFail` runtime toggleability (a non-zero script exit when `ScriptCanFail == true` sets `job.FailMsg`, pinned by `TestScriptStage_CanFailTrue_SetsFailMsg`).
 - Native Go engine dispatch (`go_par2`, `go_rar`, `go_7z`, `go_tar`, `filejoin`) with external CLI fallbacks.
 - Synthetic `download`, `direct unpack`, and `summary` StageLog cards for history UI rendering.
 
 ### Open Gaps (Target Invariants Not Yet Built)
-- **Sized release from the repair shortfall (`internal/app`)**: the Assessing
-  verdict sizes its release from the written rows ("The release is sized to
-  the damage"), but the finalizer's retry of a failed `repair` or
-  `extracted_repair` releases every held volume (`job.Unsized()`), whatever
-  block shortfall par2 reported. Target: pass the shortfall to
-  `Job.ReleaseRecovery` as `job.NeedBlocks` so the retry fetches only the
-  volumes it needs.
+- **Sized release for a job with several par2 sets (`internal/app`)**: a
+  verdict that needs the block-level verify, and a failed repair of such a
+  job, stay `job.Unsized()`: the verify takes one set, and one set's shortfall
+  says nothing of the others.

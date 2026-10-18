@@ -6,7 +6,7 @@ file internal/postproc/stage_repair.go
 --- anchor
 	res, err := par2.GoRepair(ctx, log, main, dataFiles, func(line string) {
 --- replace
-	allFiles, _ := listNonPar2Files(job.DownloadDir)
+	allFiles, _ := par2.CandidateFiles(job.DownloadDir)
 	res, err := par2.GoRepair(ctx, log, main, allFiles, func(line string) {
 --- end
 

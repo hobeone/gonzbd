@@ -1,9 +1,11 @@
 pkg ./test/integration/
 tags integration
-run ^(TestOnDemandPar2_PartialRelease_FetchesOnlyTheCoveringVolumes|TestOnDemandPar2_NoIndex_FetchesOneVolumeAsTheIndex)$
+run ^(TestOnDemandPar2_PartialRelease_FetchesOnlyTheCoveringVolumes|TestOnDemandPar2_NoIndex_FetchesOneVolumeAsTheIndex|TestOnDemandPar2_CRCMismatch_FetchesOnlyTheCoveringVolumes|TestOnDemandPar2_LostTailArticle_FetchesOnlyTheCoveringVolumes)$
 
 # One missing interior article of a data file, a par2 set with 1-, 2-, 4- and
 # 8-block volumes. The job must fetch the +1 and +2 volumes only, and repair.
+# A whole-file CRC mismatch and a lost tail article are sized by a block-level
+# verify instead.
 
 [the verdict releases every held volume instead of a sized cover]
 file internal/app/app.go
@@ -33,7 +35,31 @@ file internal/app/app.go
 [the damaged slices of a file are not counted]
 file internal/app/par2_release.go
 --- anchor
-		damaged += job.DamagedSlices(byFile[pos[i]], f.Desc.FileSize, sliceSize)
+			damaged += job.DamagedSlices(byFile[pos[i]], f.Desc.FileSize, sliceSize)
 --- replace
-		damaged += 0 * job.DamagedSlices(byFile[pos[i]], f.Desc.FileSize, sliceSize)
+			damaged += 0 * job.DamagedSlices(byFile[pos[i]], f.Desc.FileSize, sliceSize)
+--- end
+
+[a CRC mismatch or an unchecked entry is sized from the written rows alone]
+file internal/app/par2_release.go
+--- anchor
+	verified := a.CRC.Mismatched > 0 || a.CRC.Unverified > 0
+--- replace
+	verified := false
+--- end
+
+[the block-level verify releases more than it needs]
+file internal/app/par2_release.go
+--- anchor
+		verifiedNeed = res.BlocksNeeded
+--- replace
+		verifiedNeed = job.MaxPar2Slices + 1
+--- end
+
+[a CRC mismatch is sized from the written rows alone]
+file internal/app/par2_release.go
+--- anchor
+	verified := a.CRC.Mismatched > 0 || a.CRC.Unverified > 0
+--- replace
+	verified := a.CRC.Unverified > 0
 --- end

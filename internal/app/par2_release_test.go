@@ -142,6 +142,26 @@ func (s *rowSource) load() ([]durability.WrittenRow, error) {
 	return s.rows, s.err
 }
 
+// verifySource is a verify func that counts its calls.
+type verifySource struct {
+	res   par2.VerifyResult
+	err   error
+	calls int
+}
+
+func (v *verifySource) run() (par2.VerifyResult, error) {
+	v.calls++
+	return v.res, v.err
+}
+
+// noVerify is a verify func for a case that must not reach one.
+func noVerify() (par2.VerifyResult, error) {
+	return par2.VerifyResult{}, errors.New("verify must not run")
+}
+
+// fixtureDataBlocks is data.bin's block count at the fixture's 4-byte slices.
+const fixtureDataBlocks = (4065 + 3) / 4
+
 func TestRecoveryDeficit(t *testing.T) {
 	t.Parallel()
 
@@ -262,7 +282,11 @@ func TestRecoveryDeficit(t *testing.T) {
 			if tc.src != nil {
 				src = tc.src(t, j, dataIdx)
 			}
-			got, why := recoveryDeficit(mustManifest(t, j), j.Progress(), a, src.load)
+			ver := &verifySource{err: errors.New("verify must not run on the gap path")}
+			got, why := recoveryDeficit(mustManifest(t, j), j.Progress(), a, src.load, ver.run)
+			if ver.calls != 0 {
+				t.Errorf("verify called %d times, want 0: nothing in the assessment needs a block-level check", ver.calls)
+			}
 			if got != tc.want {
 				t.Errorf("sizing = %+v, want %+v (why %q)", got, tc.want, why)
 			}
@@ -275,45 +299,228 @@ func TestRecoveryDeficit(t *testing.T) {
 		})
 	}
 
-	t.Run("a CRC mismatch is unsized", func(t *testing.T) {
-		t.Parallel()
-		j, _ := newSizedJob(t, "mismatch", "mismatch", types.PPRepair, []int{4065}, sizedVols)
-		dir := t.TempDir()
-		copyFixturePar2(t, dir)
-		copyFixturePayload(t, dir, "data.bin")
-		dataIdx := fileIdxBySubject(t, j, "data.bin")
+	// Damage the written rows do not show: a file whose assembled CRC differs
+	// from par2's, or an entry that could not be checked, is sized by a
+	// block-level verify.
+	mismatchJob := func(t *testing.T) (*job.Job, string, int) {
+		t.Helper()
+		j, dir, dataIdx := build(t)
 		seedFileCRC(t, j, dataIdx, 0xDEADBEEF)
-		a := assessDir(t, dir, j)
-		if a.CRC.Mismatched == 0 {
-			t.Fatalf("fixture guard: the assessment found no mismatch: %+v", a.CRC)
-		}
-		src := &rowSource{rows: rowsExcept(t, j, dataIdx)}
-		got, why := recoveryDeficit(mustManifest(t, j), j.Progress(), a, src.load)
-		if got != job.Unsized() || !strings.Contains(why, "checksum") {
-			t.Errorf("sizing = %+v, %q; want Unsized because a file fails its checksum", got, why)
-		}
-		if src.calls != 0 {
-			t.Errorf("loadRows called %d times, want 0", src.calls)
-		}
-	})
-
-	t.Run("an unverified entry is unsized", func(t *testing.T) {
-		t.Parallel()
+		return j, dir, dataIdx
+	}
+	unverifiedJob := func(t *testing.T) (*job.Job, string, int) {
+		t.Helper()
 		j, dir, dataIdx := build(t)
 		if err := os.Remove(filepath.Join(dir, "data.bin")); err != nil {
 			t.Fatal(err)
 		}
+		return j, dir, dataIdx
+	}
+	verifiedTests := []struct {
+		name      string
+		mk        func(t *testing.T) (*job.Job, string, int)
+		prep      func(t *testing.T, j *job.Job)
+		tweak     func(a *par2.Assessment)
+		ver       par2.VerifyResult
+		verErr    error
+		rows      func(t *testing.T, j *job.Job, dataIdx int) *rowSource
+		want      job.RecoverySizing
+		wantWhy   string
+		wantVerif int
+	}{
+		{
+			name: "a mismatch the recovery on disk covers needs nothing",
+			mk:   mismatchJob, ver: par2.VerifyResult{DataBlocks: fixtureDataBlocks, BlocksNeeded: 0},
+			want: job.NeedBlocks(0), wantVerif: 1,
+		},
+		{
+			name: "a mismatch needing one block",
+			mk:   mismatchJob, ver: par2.VerifyResult{DataBlocks: fixtureDataBlocks, BlocksNeeded: 1},
+			want: job.NeedBlocks(1), wantVerif: 1,
+		},
+		{
+			name: "a mismatch needing seven blocks",
+			mk:   mismatchJob, ver: par2.VerifyResult{DataBlocks: fixtureDataBlocks, BlocksNeeded: 7},
+			want: job.NeedBlocks(7), wantVerif: 1,
+		},
+		{
+			name: "an unchecked entry is sized by the verify",
+			mk:   unverifiedJob, ver: par2.VerifyResult{DataBlocks: fixtureDataBlocks, BlocksNeeded: fixtureDataBlocks},
+			want: job.NeedBlocks(fixtureDataBlocks), wantVerif: 1,
+		},
+		{
+			name: "the gaps in the written rows win over a smaller verify",
+			mk:   mismatchJob, ver: par2.VerifyResult{DataBlocks: fixtureDataBlocks, BlocksNeeded: 3},
+			rows: func(t *testing.T, j *job.Job, dataIdx int) *rowSource {
+				return &rowSource{rows: rowsExcept(t, j, dataIdx, 1)}
+			},
+			want: job.NeedBlocks(fixtureSliceDamage), wantVerif: 1,
+		},
+		{
+			name: "the verify is already net of a volume fetched intact, which is not subtracted again",
+			mk:   mismatchJob,
+			prep: func(t *testing.T, j *job.Job) { release(t, j, "data.vol000+04.par2") },
+			ver:  par2.VerifyResult{DataBlocks: fixtureDataBlocks, BlocksNeeded: 7},
+			want: job.NeedBlocks(7), wantVerif: 1,
+		},
+		{
+			name: "a larger verify wins over the gaps in the written rows",
+			mk:   mismatchJob, ver: par2.VerifyResult{DataBlocks: fixtureDataBlocks, BlocksNeeded: 12},
+			rows: func(t *testing.T, j *job.Job, dataIdx int) *rowSource {
+				return &rowSource{rows: rowsExcept(t, j, dataIdx, 1)}
+			},
+			want: job.NeedBlocks(12), wantVerif: 1,
+		},
+		{
+			name: "unreadable written rows leave the verify alone",
+			mk:   mismatchJob, ver: par2.VerifyResult{DataBlocks: fixtureDataBlocks, BlocksNeeded: 5},
+			rows: func(*testing.T, *job.Job, int) *rowSource { return &rowSource{err: errors.New("disk on fire")} },
+			want: job.NeedBlocks(5), wantVerif: 1,
+		},
+		{
+			name: "a verify that counts fewer data blocks than the index describes is unsized",
+			mk:   mismatchJob, ver: par2.VerifyResult{DataBlocks: fixtureDataBlocks - 1, BlocksNeeded: 1},
+			want: job.Unsized(), wantWhy: "data blocks", wantVerif: 1,
+		},
+		{
+			name: "a verify that counts more data blocks than the index describes is unsized",
+			mk:   mismatchJob, ver: par2.VerifyResult{DataBlocks: fixtureDataBlocks + 1, BlocksNeeded: 1},
+			want: job.Unsized(), wantWhy: "data blocks", wantVerif: 1,
+		},
+		{
+			name: "an entry nothing delivered matched is counted among the data blocks",
+			mk:   mismatchJob,
+			tweak: func(a *par2.Assessment) {
+				a.ID.Unaccounted = []par2.FileDesc{{FileName: "gone.bin", FileSize: 40}}
+			},
+			ver:  par2.VerifyResult{DataBlocks: fixtureDataBlocks + 10, BlocksNeeded: 10},
+			want: job.NeedBlocks(10), wantVerif: 1,
+		},
+		{
+			name: "an entry nothing delivered matched is not left out of the data blocks",
+			mk:   mismatchJob,
+			tweak: func(a *par2.Assessment) {
+				a.ID.Unaccounted = []par2.FileDesc{{FileName: "gone.bin", FileSize: 40}}
+			},
+			ver:  par2.VerifyResult{DataBlocks: fixtureDataBlocks, BlocksNeeded: 10},
+			want: job.Unsized(), wantWhy: "data blocks", wantVerif: 1,
+		},
+		{
+			name: "an entry no File Description describes is unsized without a verify",
+			mk:   mismatchJob,
+			tweak: func(a *par2.Assessment) {
+				a.ID.Unaccounted = []par2.FileDesc{{FileName: "lost.bin", Undescribed: true}}
+			},
+			ver:  par2.VerifyResult{DataBlocks: fixtureDataBlocks, BlocksNeeded: 1},
+			want: job.Unsized(), wantWhy: "no file description",
+		},
+		{
+			name: "an identified entry with no delivered file is sized by the verify alone",
+			mk:   mismatchJob,
+			tweak: func(a *par2.Assessment) {
+				a.ID.Files = slices.Clone(a.ID.Files)
+				a.ID.Files[0].OnDisk = "not-delivered.bin"
+			},
+			ver:  par2.VerifyResult{DataBlocks: fixtureDataBlocks, BlocksNeeded: 2},
+			want: job.NeedBlocks(2), wantVerif: 1,
+		},
+		{
+			name: "a failed verify is unsized",
+			mk:   mismatchJob, verErr: errors.New("engine panic"),
+			want: job.Unsized(), wantWhy: "engine panic", wantVerif: 1,
+		},
+		{
+			name: "more slices than a par2 set can hold is unsized without a verify",
+			mk:   mismatchJob,
+			tweak: func(a *par2.Assessment) {
+				a.ID.Files = slices.Clone(a.ID.Files)
+				a.ID.Files[0].Desc.FileSize = 4 * (job.MaxPar2Slices + 1)
+			},
+			want: job.Unsized(), wantWhy: "more than",
+		},
+	}
+	for _, tc := range verifiedTests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			j, dir, dataIdx := tc.mk(t)
+			if tc.prep != nil {
+				tc.prep(t, j)
+			}
+			a := assessDir(t, dir, j)
+			if a.CRC.Mismatched == 0 && a.CRC.Unverified == 0 {
+				t.Fatalf("fixture guard: the assessment shows no damage the rows cannot: %+v", a.CRC)
+			}
+			if tc.tweak != nil {
+				tc.tweak(&a)
+			}
+			src := &rowSource{rows: rowsExcept(t, j, dataIdx)}
+			if tc.rows != nil {
+				src = tc.rows(t, j, dataIdx)
+			}
+			ver := &verifySource{res: tc.ver, err: tc.verErr}
+			got, why := recoveryDeficit(mustManifest(t, j), j.Progress(), a, src.load, ver.run)
+			if got != tc.want {
+				t.Errorf("sizing = %+v, want %+v (why %q)", got, tc.want, why)
+			}
+			if (tc.wantWhy == "") != (why == "") || !strings.Contains(why, tc.wantWhy) {
+				t.Errorf("why = %q, want it to contain %q", why, tc.wantWhy)
+			}
+			if ver.calls != tc.wantVerif {
+				t.Errorf("verify called %d times, want %d", ver.calls, tc.wantVerif)
+			}
+		})
+	}
+
+	// The same damage, sized by the real engine.
+	realVerify := func(dir string) func() (par2.VerifyResult, error) {
+		return func() (par2.VerifyResult, error) {
+			sets, err := par2.FindPar2Files(dir, par2.DefaultParseOptions())
+			if err != nil || len(sets) != 1 {
+				return par2.VerifyResult{}, fmt.Errorf("sets %d: %w", len(sets), err)
+			}
+			cands, err := par2.CandidateFiles(dir)
+			if err != nil {
+				return par2.VerifyResult{}, err
+			}
+			return par2.GoVerify(t.Context(), slog.New(slog.DiscardHandler), sets[0].ParseFile(), cands, nil)
+		}
+	}
+	t.Run("a mismatch on a file that is intact on disk needs no block", func(t *testing.T) {
+		t.Parallel()
+		j, dir, dataIdx := mismatchJob(t)
 		a := assessDir(t, dir, j)
-		if a.CRC.Unverified == 0 || a.CRC.Mismatched != 0 {
-			t.Fatalf("fixture guard: want an unverified entry and no mismatch: %+v", a.CRC)
+		src := &rowSource{rows: rowsExcept(t, j, dataIdx)}
+		got, why := recoveryDeficit(mustManifest(t, j), j.Progress(), a, src.load, realVerify(dir))
+		if want := job.NeedBlocks(0); got != want || why != "" {
+			t.Errorf("sizing = %+v, %q; want %+v with no reason", got, why, want)
 		}
-		src := &rowSource{rows: rowsExcept(t, j, dataIdx, 1)}
-		got, why := recoveryDeficit(mustManifest(t, j), j.Progress(), a, src.load)
-		if got != job.Unsized() || !strings.Contains(why, "could not be checked") {
-			t.Errorf("sizing = %+v, %q; want Unsized because an entry could not be checked", got, why)
+	})
+	t.Run("a file missing from disk needs all its blocks", func(t *testing.T) {
+		t.Parallel()
+		j, dir, dataIdx := unverifiedJob(t)
+		a := assessDir(t, dir, j)
+		src := &rowSource{rows: rowsExcept(t, j, dataIdx)}
+		got, why := recoveryDeficit(mustManifest(t, j), j.Progress(), a, src.load, realVerify(dir))
+		if want := job.NeedBlocks(fixtureDataBlocks); got != want || why != "" {
+			t.Errorf("sizing = %+v, %q; want %+v with no reason", got, why, want)
 		}
-		if src.calls != 0 {
-			t.Errorf("loadRows called %d times, want 0", src.calls)
+	})
+	t.Run("a file truncated by a lost tail article needs the blocks it lost", func(t *testing.T) {
+		t.Parallel()
+		j, dir, dataIdx := mismatchJob(t)
+		b, err := os.ReadFile(filepath.Join(dir, "data.bin"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		const kept = artHead + artMid
+		if err := os.WriteFile(filepath.Join(dir, "data.bin"), b[:kept], 0o600); err != nil {
+			t.Fatal(err)
+		}
+		a := assessDir(t, dir, j)
+		src := &rowSource{rows: rowsExcept(t, j, dataIdx, 2)}
+		got, why := recoveryDeficit(mustManifest(t, j), j.Progress(), a, src.load, realVerify(dir))
+		if want := job.NeedBlocks(fixtureDataBlocks - kept/4); got != want || why != "" {
+			t.Errorf("sizing = %+v, %q; want %+v with no reason", got, why, want)
 		}
 	})
 
@@ -334,7 +541,7 @@ func TestRecoveryDeficit(t *testing.T) {
 				padIdx, dataIdx, a.ID.Files)
 		}
 		src := &rowSource{rows: append(rowsExcept(t, j, padIdx), rowsExcept(t, j, dataIdx, 1)...)}
-		got, why := recoveryDeficit(mustManifest(t, j), j.Progress(), a, src.load)
+		got, why := recoveryDeficit(mustManifest(t, j), j.Progress(), a, src.load, noVerify)
 		if want := job.NeedBlocks(fixtureSliceDamage); got != want || why != "" {
 			t.Errorf("sizing = %+v, %q; want %+v with no reason", got, why, want)
 		}
@@ -350,7 +557,7 @@ func TestRecoveryDeficit(t *testing.T) {
 		release(t, j, "data.vol000-07.par2")
 		dataIdx := fileIdxBySubject(t, j, "data.bin")
 		src := &rowSource{rows: rowsExcept(t, j, dataIdx, 1)}
-		got, why := recoveryDeficit(mustManifest(t, j), j.Progress(), assessDir(t, dir, j), src.load)
+		got, why := recoveryDeficit(mustManifest(t, j), j.Progress(), assessDir(t, dir, j), src.load, noVerify)
 		if want := job.NeedBlocks(fixtureSliceDamage); got != want || why != "" {
 			t.Errorf("sizing = %+v, %q; want %+v with no reason: a -NN name declares a volume number, not a block count", got, why, want)
 		}
@@ -386,7 +593,7 @@ func TestRecoveryDeficit(t *testing.T) {
 			t.Fatalf("fixture guard: a finding would be reported before the slice size is read: %+v", a.CRC)
 		}
 		src := &rowSource{rows: rowsExcept(t, j, dataIdx, 1)}
-		got, why := recoveryDeficit(mustManifest(t, j), j.Progress(), a, src.load)
+		got, why := recoveryDeficit(mustManifest(t, j), j.Progress(), a, src.load, noVerify)
 		if got != job.Unsized() || !strings.Contains(why, "slice size") {
 			t.Errorf("sizing = %+v, %q; want Unsized because no single set gives a slice size", got, why)
 		}
@@ -558,14 +765,64 @@ func TestMaybeReleaseRecoveryVolumes_SizedRelease(t *testing.T) {
 		}
 	})
 
-	t.Run("a CRC mismatch releases every volume", func(t *testing.T) {
-		t.Parallel()
-		application, _ := releaseApp(t, "mismatch-name")
-		j, hdr := newSizedJob(t, "mismatch", "mismatch-name", types.PPRepair, []int{4065}, sizedVols)
+	mismatchJob := func(t *testing.T, application *Application, id string) *job.Job {
+		t.Helper()
+		j, hdr := newSizedJob(t, id, id+"-name", types.PPRepair, []int{4065}, sizedVols)
 		seedFileCRC(t, j, fileIdxBySubject(t, j, "data.bin"), 0xDEADBEEF)
 		if err := application.Dispatcher().Add(context.Background(), j, hdr); err != nil {
 			t.Fatalf("Add: %v", err)
 		}
+		return j
+	}
+
+	t.Run("a CRC mismatch is sized by the block-level verify", func(t *testing.T) {
+		t.Parallel()
+		application, jobDir := releaseApp(t, "mismatch-name")
+		corruptPayload(t, jobDir)
+		j := mismatchJob(t, application, "mismatch")
+		if !application.maybeReleaseRecoveryVolumes(t.Context(), j) {
+			t.Fatal("maybeReleaseRecoveryVolumes = false, want true")
+		}
+		want := map[string]job.FetchPolicy{
+			"data.vol000+04.par2": job.FetchAlways,
+			"data.vol004+08.par2": job.FetchIfNeeded,
+			"data.vol012+16.par2": job.FetchIfNeeded,
+		}
+		if got := policies(t, j); !mapsEqual(got, want) {
+			t.Errorf("policies = %v, want %v: one damaged block needs the cheapest volume only", got, want)
+		}
+		if reason := j.Par2ReleaseReason(); strings.Contains(reason, "releasing every recovery volume") {
+			t.Errorf("reason = %q: a sized release must not say it released everything", reason)
+		}
+	})
+
+	t.Run("a CRC mismatch on a file that is intact on disk releases nothing", func(t *testing.T) {
+		t.Parallel()
+		application, _ := releaseApp(t, "intact-name")
+		j := mismatchJob(t, application, "intact")
+		if application.maybeReleaseRecoveryVolumes(t.Context(), j) {
+			t.Error("maybeReleaseRecoveryVolumes = true, want false: no recovery block is needed")
+		}
+		for name, p := range policies(t, j) {
+			if p != job.FetchIfNeeded {
+				t.Errorf("%s policy = %v, want FetchIfNeeded", name, p)
+			}
+		}
+	})
+
+	t.Run("two par2 sets on disk release every volume", func(t *testing.T) {
+		t.Parallel()
+		application, jobDir := releaseApp(t, "twin-name")
+		corruptPayload(t, jobDir)
+		// The same set under another name: one SetID and slice size, two sets.
+		b, err := os.ReadFile(filepath.Join(jobDir, "data.par2"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(jobDir, "twin.par2"), b, 0o600); err != nil {
+			t.Fatal(err)
+		}
+		j := mismatchJob(t, application, "twin")
 		if !application.maybeReleaseRecoveryVolumes(t.Context(), j) {
 			t.Fatal("maybeReleaseRecoveryVolumes = false, want true")
 		}

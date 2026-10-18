@@ -89,6 +89,13 @@ type VerifyResult struct {
 	Stdout string
 	// Stderr is the raw standard error captured from par2.
 	Stderr string
+	// BlocksNeeded and DataBlocks are set by GoVerify alone; the external
+	// par2's verify leaves both zero. BlocksNeeded is the recovery blocks a
+	// repair still lacks: unusable data blocks less the usable recovery blocks
+	// already on disk, floored at 0. DataBlocks is every data block the engine
+	// counts across the set's described files, usable or not.
+	BlocksNeeded int
+	DataBlocks   int
 }
 
 // RepairResult holds the output of a par2 repair run.

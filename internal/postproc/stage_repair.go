@@ -2,6 +2,7 @@ package postproc
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"os"
@@ -14,6 +15,14 @@ import (
 	"github.com/hobeone/gonzbd/internal/fsutil"
 	"github.com/hobeone/gonzbd/internal/par2"
 )
+
+// ShortfallError is the error of a par2 set that lacks Blocks recovery blocks
+// to repair, net of the ones on disk. Job.recordStageFailure reads it.
+type ShortfallError struct{ Blocks int }
+
+func (e *ShortfallError) Error() string {
+	return fmt.Sprintf("need %d more recovery blocks", e.Blocks)
+}
 
 // RepairStage verifies and repairs the downloaded files using par2 recovery
 // data, before unpack. The sets quickcheck deferred are left to
@@ -177,7 +186,7 @@ func (s *RepairStage) repairSets(ctx context.Context, log *slog.Logger, job *Job
 	// their names (obfuscated or renamed files): the non-par2 files in the
 	// download directory less the ones recorded for deletion. This is the one
 	// list both engines are handed, by dispatchRepairTool.
-	dataFiles, scanErr := listNonPar2Files(job.DownloadDir)
+	dataFiles, scanErr := par2.CandidateFiles(job.DownloadDir)
 	if scanErr != nil {
 		job.ParError = true
 		return 0, fmt.Errorf("repair: scan data files: %w", scanErr)
@@ -196,6 +205,11 @@ func (s *RepairStage) repairSets(ctx context.Context, log *slog.Logger, job *Job
 		}
 	}
 
+	if len(found) != 1 && firstErr != nil {
+		// The shortfall of one set says nothing of the others, so the error
+		// keeps its text and loses its type (see Job.RepairShortfall).
+		firstErr = errors.New(firstErr.Error())
+	}
 	return len(sets), firstErr
 }
 
@@ -298,7 +312,7 @@ func (s *RepairStage) handleRepairResult(
 			logf(ctx, log, job, slog.LevelWarn,
 				"Par2 repair %q needs %d more blocks — repair not possible with current data",
 				set.Name, res.BlocksNeeded)
-			return fmt.Errorf("repair %q: need %d more recovery blocks", set.Name, res.BlocksNeeded)
+			return fmt.Errorf("repair %q: %w", set.Name, &ShortfallError{Blocks: res.BlocksNeeded})
 		}
 
 		// I4: Main par2 file corrupt/missing
@@ -384,7 +398,7 @@ func dispatchRepairTool(
 // falls back, because a parse failure is ambiguous: the mature external par2
 // may read a par2 file go_par2 could not, and if it also fails,
 // handleRepairResult sets ParError. The job is then filed Failed, unless it
-// still held recovery volumes back, in which case the app retries it once to
+// still held recovery volumes back, in which case the app retries it to
 // fetch them (jobFinalizer.retryWithHeldVolumes in internal/app).
 func shouldFallbackToExternal(res par2.RepairResult, err error) bool {
 	if err != nil {
@@ -544,25 +558,4 @@ func cleanupPar2Backups(dir string, beforeRepair, repairedTargets map[string]str
 		removed = append(removed, name)
 	}
 	return removed
-}
-
-// listNonPar2Files returns the absolute paths of all non-directory,
-// non-par2 files in dir. These paths are passed to par2 as extra data
-// files for checksum matching.
-func listNonPar2Files(dir string) ([]string, error) {
-	entries, err := os.ReadDir(dir)
-	if err != nil {
-		return nil, err
-	}
-	var result []string
-	for _, e := range entries {
-		if e.IsDir() {
-			continue
-		}
-		if strings.EqualFold(filepath.Ext(e.Name()), ".par2") {
-			continue
-		}
-		result = append(result, filepath.Join(dir, e.Name()))
-	}
-	return result, nil
 }

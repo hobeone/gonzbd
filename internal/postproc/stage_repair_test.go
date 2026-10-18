@@ -208,54 +208,6 @@ func TestRepairStage_GoRepairDoesNotDuplicateEngineLogLines(t *testing.T) {
 	}
 }
 
-// ---------- listNonPar2Files helper ----------
-
-func TestListNonPar2Files_Basic(t *testing.T) {
-	t.Parallel()
-
-	dir := t.TempDir()
-	want := make([]string, 0, 2)
-	for _, name := range []string{"data.bin", "movie.mkv"} {
-		p := filepath.Join(dir, name)
-		os.WriteFile(p, []byte("x"), 0o644) //nolint:errcheck
-		want = append(want, p)
-	}
-	// These should be excluded.
-	os.WriteFile(filepath.Join(dir, "data.par2"), []byte("x"), 0o644)           //nolint:errcheck
-	os.WriteFile(filepath.Join(dir, "data.vol001+10.PAR2"), []byte("x"), 0o644) //nolint:errcheck
-
-	got, err := listNonPar2Files(dir)
-	if err != nil {
-		t.Fatalf("listNonPar2Files: %v", err)
-	}
-	if len(got) != len(want) {
-		t.Errorf("got %d files, want %d: %v", len(got), len(want), got)
-	}
-	for _, p := range want {
-		found := false
-		for _, g := range got {
-			if g == p {
-				found = true
-			}
-		}
-		if !found {
-			t.Errorf("expected %s in result, not found", filepath.Base(p))
-		}
-	}
-}
-
-func TestListNonPar2Files_EmptyDir(t *testing.T) {
-	t.Parallel()
-
-	got, err := listNonPar2Files(t.TempDir())
-	if err != nil {
-		t.Fatalf("listNonPar2Files on empty dir: %v", err)
-	}
-	if len(got) != 0 {
-		t.Errorf("got %d files, want 0", len(got))
-	}
-}
-
 // ---------- cleanupPar2Backups helper ----------
 
 func TestCleanupPar2Backups_RemovesBackupsWithOriginal(t *testing.T) {

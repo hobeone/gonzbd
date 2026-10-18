@@ -8,9 +8,11 @@ import (
 	"io/fs"
 	"log/slog"
 	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/hobeone/gonzbd/internal/history"
 	"github.com/hobeone/gonzbd/internal/job"
@@ -26,14 +28,14 @@ var heldRecoveryFiles = []string{"release.rar", "release.vol000+01.par2"}
 
 // heldRecoveryNZB renders heldRecoveryFiles as an NZB of one article each, the
 // shape a retry rebuilds the job from.
-func heldRecoveryNZB() []byte {
+func heldRecoveryNZB(files []string) []byte {
 	var b strings.Builder
 	b.WriteString(`<?xml version="1.0" encoding="iso-8859-1" ?>` + "\n")
 	b.WriteString(`<nzb xmlns="http://www.newzbin.com/DTD/2003/nzb">` + "\n")
-	for i, name := range heldRecoveryFiles {
+	for i, name := range files {
 		fmt.Fprintf(&b, `<file poster="p@t" date="1700000000" subject="&quot;%s&quot; yEnc (1/1)">`+"\n", name)
 		b.WriteString("<groups><group>alt.bin.test</group></groups>\n<segments>\n")
-		fmt.Fprintf(&b, `<segment bytes="1024" number="1">h%d@t</segment>`+"\n", i)
+		fmt.Fprintf(&b, `<segment bytes="%d" number="1">h%d@t</segment>`+"\n", 1024+100*i, i)
 		b.WriteString("</segments>\n</file>\n")
 	}
 	b.WriteString("</nzb>\n")
@@ -99,6 +101,18 @@ type heldRecoveryApp struct {
 
 func newHeldRecoveryApp(t *testing.T, id string) heldRecoveryApp {
 	t.Helper()
+	return newHeldRecoveryAppWith(t, id, heldRecoveryFiles)
+}
+
+// sizedRetryFiles is an archive and four held recovery volumes of 1, 2, 4 and 8
+// blocks, each a little larger than the one before, so a cover of 3 blocks is
+// the 4-block volume alone.
+var sizedRetryFiles = []string{
+	"release.rar", "release.vol000+01.par2", "release.vol001+02.par2", "release.vol003+04.par2", "release.vol007+08.par2",
+}
+
+func newHeldRecoveryAppWith(t *testing.T, id string, files []string) heldRecoveryApp {
+	t.Helper()
 	application, repo, adminDir := newLifecycleTestApp(t)
 	if !application.config.Snapshot().Downloads.OnDemandPar2 {
 		t.Fatal("fixture guard: on-demand par2 is off by default, so nothing is held")
@@ -110,7 +124,7 @@ func newHeldRecoveryApp(t *testing.T, id string) heldRecoveryApp {
 	d.Register(notes)
 	application.SetNotifier(d)
 
-	raw := heldRecoveryNZB()
+	raw := heldRecoveryNZB(files)
 	backup := id + ".nzb.gz"
 	writeRetryNZBBackup(t, adminDir, backup, raw)
 	parsed, err := nzb.Parse(bytes.NewReader(raw))
@@ -401,8 +415,11 @@ func TestReleaseRecoveryVolumes(t *testing.T) {
 func TestRetryWithHeldVolumes_NoEntry(t *testing.T) {
 	t.Parallel()
 	application, _, _ := newLifecycleTestApp(t)
-	if application.finalizer.retryWithHeldVolumes("feedface0651a00a") {
+	if application.finalizer.retryWithHeldVolumes("feedface0651a00a", job.Unsized()) {
 		t.Error("retryWithHeldVolumes = true for a job with no history entry")
+	}
+	if _, ok := application.finalizer.retries.take("feedface0651a00a"); ok {
+		t.Error("a retry that could not start left its sizing in the ledger")
 	}
 }
 
@@ -459,5 +476,165 @@ func TestRebuildJobFromNZB_PreservesURL(t *testing.T) {
 	}
 	if hdr.URL != testURL {
 		t.Errorf("hdr.URL = %q, want %q", hdr.URL, testURL)
+	}
+}
+
+// shortfallRun is a post-processing run of j that failed par2 the way a
+// single-set repair does when it lacks blocks recovery blocks: through a real
+// PostProcessor, which is what records the shortfall on the job.
+func (h heldRecoveryApp) shortfallRun(t *testing.T, j *job.Job, blocks int) *postproc.Job {
+	t.Helper()
+	done := make(chan *postproc.Job, 1)
+	pp := postproc.New(postproc.Options{
+		Stages: []postproc.Stage{failingStage{
+			name: "repair",
+			set:  func(pj *postproc.Job) { pj.ParError = true },
+			err:  fmt.Errorf("repair %q: %w", "release", &postproc.ShortfallError{Blocks: blocks}),
+		}},
+		OnJobDone: func(pj *postproc.Job) { done <- pj },
+		Logger:    slog.New(slog.DiscardHandler),
+	})
+	if err := pp.Start(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = pp.Stop() })
+	// The job's own directory under download_dir, which a retry resumes in, and
+	// not empty, or the pre-check fails the job before any stage runs.
+	dir := filepath.Join(h.app.config.Snapshot().General.DownloadDir, j.Name())
+	if err := os.MkdirAll(dir, 0o750); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "a.bin"), []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	pp.Process(&postproc.Job{Job: j, Filename: j.ID() + ".nzb", NZBBackup: h.backup, DownloadDir: dir, PP: types.PPDelete})
+	select {
+	case got := <-done:
+		if blocks, ok := got.RepairShortfall(); !ok || blocks == 0 {
+			t.Fatalf("fixture guard: the run recorded no shortfall (%d, %v)", blocks, ok)
+		}
+		return got
+	case <-time.After(10 * time.Second):
+		t.Fatal("post-processing did not finish")
+		return nil
+	}
+}
+
+// A par2 failure that reports its block shortfall retries the job with the
+// volumes that cover it released, and the rest still held.
+func TestFinalize_KnownShortfallRetriesSized(t *testing.T) {
+	t.Parallel()
+	const id = "feedface0990a001"
+	h := newHeldRecoveryAppWith(t, id, sizedRetryFiles)
+
+	h.app.finalizer.finalize(h.shortfallRun(t, h.job, 3))
+
+	retried, held := h.app.dispatcher.Job(id)
+	if !held || retried == h.job {
+		t.Fatalf("the job was not retried; log:\n%s", h.logged.String())
+	}
+	want := map[string]job.FetchPolicy{
+		"release.vol000+01.par2": job.FetchIfNeeded,
+		"release.vol001+02.par2": job.FetchIfNeeded,
+		"release.vol003+04.par2": job.FetchAlways,
+		"release.vol007+08.par2": job.FetchIfNeeded,
+	}
+	if got := policies(t, retried); !mapsEqual(got, want) {
+		t.Errorf("the retry's policies = %v, want %v: 3 blocks are covered by the 4-block volume alone", got, want)
+	}
+}
+
+// A failure whose shortfall is unknown releases every volume, as it always did.
+func TestFinalize_UnknownShortfallRetriesUnsized(t *testing.T) {
+	t.Parallel()
+	const id = "feedface0990a002"
+	h := newHeldRecoveryAppWith(t, id, sizedRetryFiles)
+
+	h.app.finalizer.finalize(h.failedPar2Run(h.job))
+
+	retried, held := h.app.dispatcher.Job(id)
+	if !held || retried == h.job {
+		t.Fatalf("the job was not retried; log:\n%s", h.logged.String())
+	}
+	for name, p := range policies(t, retried) {
+		if p != job.FetchAlways {
+			t.Errorf("%s policy = %v, want FetchAlways: an unknown shortfall releases every volume", name, p)
+		}
+	}
+}
+
+// A sized retry that falls short is followed by one unsized retry, whatever
+// shortfall the second failure reports; that retry's failure is final.
+func TestFinalize_SizedRetryThatFallsShortRetriesOnceUnsized(t *testing.T) {
+	t.Parallel()
+	const id = "feedface0990a003"
+	h := newHeldRecoveryAppWith(t, id, sizedRetryFiles)
+	h.app.finalizer.finalize(h.shortfallRun(t, h.job, 3))
+	second, held := h.app.dispatcher.Job(id)
+	if !held || second == h.job || !second.HasDeferredPar2() {
+		t.Fatalf("fixture guard: the sized retry is missing or holds nothing (registered=%v); log:\n%s", held, h.logged.String())
+	}
+
+	h.app.finalizer.finalize(h.shortfallRun(t, second, 2))
+
+	third, held := h.app.dispatcher.Job(id)
+	if !held || third == second {
+		t.Fatalf("a sized retry that fell short was not retried again; log:\n%s", h.logged.String())
+	}
+	for name, p := range policies(t, third) {
+		if p != job.FetchAlways {
+			t.Errorf("%s policy = %v, want FetchAlways: the second retry is unsized", name, p)
+		}
+	}
+
+	h.app.finalizer.finalize(h.failedPar2Run(third))
+
+	if _, held := h.app.dispatcher.Job(id); held {
+		t.Fatal("the unsized retry was retried again: its failure must be final")
+	}
+	if entry, err := h.repo.Get(t.Context(), id); err != nil || entry.Status != "Failed" {
+		t.Errorf("history entry = %+v, %v; want Failed", entry, err)
+	}
+	if n := h.notes.count(notifier.PostProcessingFailed); n != 1 {
+		t.Errorf("%d failure notification(s), want 1 for the final failure", n)
+	}
+	if _, ok := h.app.finalizer.retries.take(id); ok {
+		t.Error("the final failure left a retry in the ledger")
+	}
+}
+
+// An unsized retry is not retried again even if it still holds a volume.
+func TestFinalize_UnsizedRetryIsFinalEvenWithAHeldVolume(t *testing.T) {
+	t.Parallel()
+	const id = "feedface0990a004"
+	h := newHeldRecoveryAppWith(t, id, sizedRetryFiles)
+	h.app.finalizer.finalize(h.failedPar2Run(h.job))
+	retried, held := h.app.dispatcher.Job(id)
+	if !held || retried == h.job {
+		t.Fatalf("fixture guard: the first failure was not retried; log:\n%s", h.logged.String())
+	}
+	if err := retried.SetFileFetchPolicy(1, job.FetchIfNeeded); err != nil {
+		t.Fatal(err)
+	}
+
+	h.app.finalizer.finalize(h.failedPar2Run(retried))
+
+	if again, held := h.app.dispatcher.Job(id); held {
+		t.Fatalf("an unsized retry was retried again (same instance=%v)", again == retried)
+	}
+}
+
+// A retry that cannot start leaves no sizing behind for a later one.
+func TestFinalize_RetryThatCannotStartLeavesNoLedgerEntry(t *testing.T) {
+	t.Parallel()
+	const id = "feedface0990a005"
+	h := newHeldRecoveryAppWith(t, id, sizedRetryFiles)
+	run := h.shortfallRun(t, h.job, 3)
+	run.NZBBackup = ""
+
+	h.app.finalizer.finalize(run)
+
+	if _, ok := h.app.finalizer.retries.take(id); ok {
+		t.Error("a retry that could not start left its sizing in the ledger")
 	}
 }
