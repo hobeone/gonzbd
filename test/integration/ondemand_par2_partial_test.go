@@ -358,13 +358,19 @@ func TestOnDemandPar2_NoIndex_FetchesOneVolumeAsTheIndex(t *testing.T) {
 
 	// An index posted but describing nothing is no index either: the volume
 	// fetched as the index is read in its place, and go_par2 repairs from it
-	// and its siblings without the external par2 (#1006).
+	// and its siblings without the external par2 (#1006). Without the +1
+	// volume the one fetched as the index is +2, which repeats each File
+	// Description once per block it holds.
 	for _, tc := range []struct {
-		name  string
-		index []byte // nil: no data.par2 in the post
+		name    string
+		index   []byte // nil: no data.par2 in the post
+		noPlus1 bool   // the +1 volume is not in the post either
+		// The volumes fetched and held, damaged and clean.
+		damagedFetched, damagedHeld, cleanFetched, cleanHeld []int
 	}{
-		{"no index", nil},
-		{"a zero-filled index", make([]byte, 4096)},
+		{"no index", nil, false, []int{1, 2}, []int{4, 8}, []int{1}, []int{2, 4, 8}},
+		{"a zero-filled index", make([]byte, 4096), false, []int{1, 2}, []int{4, 8}, []int{1}, []int{2, 4, 8}},
+		{"no index and no +1 volume", nil, true, []int{2, 4}, []int{8}, []int{2}, []int{4, 8}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			fixtureDir := t.TempDir()
@@ -378,11 +384,19 @@ func TestOnDemandPar2_NoIndex_FetchesOneVolumeAsTheIndex(t *testing.T) {
 			} else if err := os.WriteFile(indexPath, tc.index, 0o600); err != nil {
 				t.Fatalf("overwrite index: %v", err)
 			}
+			if tc.noPlus1 {
+				if err := os.Remove(filepath.Join(fixtureDir, vol[1])); err != nil {
+					t.Fatalf("remove +1 volume: %v", err)
+				}
+			}
 
 			check := func(t *testing.T, run onDemandRun, fetched, held []int) {
 				t.Helper()
 				if n := run.served["data.par2"]; tc.index == nil && n != 0 {
 					t.Errorf("data.par2: %d articles fetched, want none (not in the NZB)", n)
+				}
+				if n := run.served[vol[1]]; tc.noPlus1 && n != 0 {
+					t.Errorf("%s: %d articles fetched, want none (not in the NZB)", vol[1], n)
 				}
 				for _, blocks := range fetched {
 					if run.served[vol[blocks]] == 0 {
@@ -404,11 +418,11 @@ func TestOnDemandPar2_NoIndex_FetchesOneVolumeAsTheIndex(t *testing.T) {
 				if got, want := run.served["data.bin"], 12; got != want {
 					t.Errorf("data.bin articles served = %d, want %d", got, want)
 				}
-				check(t, run, []int{1, 2}, []int{4, 8})
+				check(t, run, tc.damagedFetched, tc.damagedHeld)
 			})
 			t.Run("clean", func(t *testing.T) {
 				run := runOnDemandPar2(t, fixtureDir, wantSHA)
-				check(t, run, []int{1}, []int{2, 4, 8})
+				check(t, run, tc.cleanFetched, tc.cleanHeld)
 			})
 		})
 	}
