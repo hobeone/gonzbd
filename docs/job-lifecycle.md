@@ -506,14 +506,17 @@ sophisticated alternative, and it is rejected: it requires classifying files
 into archive sets *before* extraction, which is a new inference with its own
 failure modes, in service of a case that is uncommon on binary Usenet.
 
-**Block-exact recovery-volume promotion is sized by the Assessing verdict, not
-by the repair stage's shortfall.** The `Assessing → Fetching` edge is driven by
+**Block-exact recovery-volume promotion is sized by the Assessing verdict, and
+a deficit it undercounts is corrected by the repair stage's shortfall.** The
+`Assessing → Fetching` edge is driven by
 `Job.ReleaseRecovery`, which frees the byte-minimal covering subset of held
-volumes for the deficit the verdict measured from the written rows (see the "release is sized to the damage" paragraph of
-`docs/post-processing-contract.md`). A
-deficit it undercounts is not corrected by the shortfall repair reports: the
-retry of a failed par2 repair releases every held volume (see
-`docs/post-processing-contract.md` § *Open Gaps*). Do not price in "repair never fails for insufficiency" — insufficient
+volumes for the deficit the verdict measured, from the written rows or from a
+block-level verify (see the "release is sized to the damage" paragraph of
+`docs/post-processing-contract.md`). The retry of a failed par2 repair releases
+the volumes that cover the shortfall repair reported, and every held volume
+when it reported none or the sized retry fell short (see
+`docs/post-processing-contract.md` § *Held volumes after a failed repair*).
+Do not price in "repair never fails for insufficiency" — insufficient
 blocks set `ParError`, which suppresses unpack, and the count goes in the
 repair stage's log line.
 
@@ -1690,7 +1693,7 @@ Two Assessing verdicts change a job's download intent after ingest:
 clean, and `Job.ReleaseRecovery` moves the held volumes a repair needs to
 `FetchAlways` when it finds damage. Two other paths move `fetch_policy` after
 ingest: the finalizer's retry of a failed par2 repair, which calls
-`Job.ReleaseRecovery` to release every held volume, and the first hydration
+`Job.ReleaseRecovery` to release the volumes its sizing asks for, and the first hydration
 after a restart, which re-applies whatever `job_files` holds through
 `Job.InstallFileVerification` (#329). Those are the callers, outside ingest, of
 the one policy writer: `git grep -n 'setFileFetchPolicy(' -- internal/job/
