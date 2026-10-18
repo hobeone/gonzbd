@@ -540,6 +540,13 @@ Both par2 engines are handed one candidate list, which `RepairStage.repairSets` 
    Every other outcome runs `repair`: `Damaged`, `Inconclusive` (quickcheck
    was attempted and could not complete, e.g. the job's manifest was
    unreadable), and `NotRun` (the stage was disabled or found no par2 sets).
+   A par2 set that reads as nothing (`par2.Identification.Unreadable`) leaves
+   the job `Inconclusive` whatever the other sets show, ahead of both bypasses
+   above: the files it protects were never checked. While the job holds
+   recovery volumes, the failed repair is what the finalizer retries to fetch
+   them, and `FindPar2Files` then reads one in place of the index. A set
+   nothing can make readable, such as a `.par2` posted with no volumes of its
+   name, fails the job (#1008).
    A DirectUnpack success does not bypass it. It shows only that the RAR sets
    DirectUnpack extracted are intact, and says nothing of a loose file beside
    them — a payload `.mkv`, a sample, a `.zip` — or of an archive set
@@ -760,6 +767,14 @@ three outcomes:
 | `outcomeClean` | Every par2-tracked file was identified and its assembled CRC matched, and every par2 set on disk contributed an entry. | Recovery volumes discarded (`DiscardDeferredPar2`); job finalizes without them. |
 | `outcomeRepair` | At least one par2-tracked file is corrupt, has no CRC to check, could not be verified, or a par2 entry matched no delivered file while others in the same set did. | If the job's `Policy.Repair` is true: the release is sized (see the "release is sized to the damage" paragraph below) and `Job.ReleaseRecovery` frees the held volumes that cover it (`FetchIfNeeded` to `FetchAlways`); job re-enters download if it freed at least one, and goes on to `Repairing` if it freed none. If `Policy.Repair` is false (PP=0): the volumes are held, like `outcomeUnknown`, and the release reason is still recorded. |
 | `outcomeUnknown` | Nothing delivered matched any par2 entry, by name or by content; or the job would otherwise be clean, but a par2 set on disk contributed no entry (`par2.Identification.Unreadable`: its parse failed, or it holds neither a File Description nor a file its Main packet lists), so what it protects is unchecked. | Volumes are held, neither fetched nor discarded; job goes on to post-processing without them. If that fails par2, the finalizer retries the job with them released. |
+
+**No verdict is acted on under cancellation.** Shutdown cancels the
+assessment's ctx (first the signal context it derives from, then
+`Dispatcher.Stop`), and a block-level verify or written-rows read it
+cuts short reads as unsizable, which would release every held volume.
+`maybeReleaseRecoveryVolumes` therefore acts on no outcome once ctx is
+cancelled, and `runAssess` yields the job at Assessing instead of advancing
+it, so the next start assesses it again (#1008).
 
 **The verdict and the fetch decision are separate questions (#653).**
 `par2Verdict` answers only "is repair possible" from the assessment; it does

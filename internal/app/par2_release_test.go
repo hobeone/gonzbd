@@ -622,6 +622,18 @@ func (s *deficitRowsStore) WrittenRows(context.Context, string) ([]durability.Wr
 	return s.rows, nil
 }
 
+// cancellingRowsStore cancels the assessment's ctx from inside the rows read,
+// as a shutdown arriving mid-assessment does, and fails the read with it.
+type cancellingRowsStore struct {
+	durabilityStore
+	cancel context.CancelFunc
+}
+
+func (s *cancellingRowsStore) WrittenRows(ctx context.Context, _ string) ([]durability.WrittenRow, error) {
+	s.cancel()
+	return nil, ctx.Err()
+}
+
 // releaseApp returns an application with on-demand par2 on and a download
 // directory, plus the job's directory prepared with the fixture index and
 // payload.
@@ -765,6 +777,29 @@ func TestMaybeReleaseRecoveryVolumes_SizedRelease(t *testing.T) {
 		application.maybeReleaseRecoveryVolumes(t.Context(), j)
 		if r := j.Par2ReleaseReason(); strings.Contains(r, "use as the index") || !strings.Contains(r, "describes no file") {
 			t.Errorf("reason = %q, want the assessment's unsized release for an unreadable set, not the no-index fetch", r)
+		}
+	})
+
+	// A read the cancellation cut short leaves the release unsized, which
+	// would release every held volume (#1008).
+	t.Run("a cancelled assessment releases nothing", func(t *testing.T) {
+		t.Parallel()
+		application, _ := releaseApp(t, "cancel-name")
+		j, _ := add(t, application, "cancel", types.PPRepair)
+		ctx, cancel := context.WithCancel(t.Context())
+		defer cancel()
+		application.durable = &cancellingRowsStore{durabilityStore: application.durable, cancel: cancel}
+
+		if application.maybeReleaseRecoveryVolumes(ctx, j) {
+			t.Error("maybeReleaseRecoveryVolumes = true, want false under cancellation")
+		}
+		for name, p := range policies(t, j) {
+			if p != job.FetchIfNeeded {
+				t.Errorf("%s policy = %v, want FetchIfNeeded: a cancelled assessment releases nothing", name, p)
+			}
+		}
+		if r := j.Par2ReleaseReason(); r != "" {
+			t.Errorf("reason = %q, want none: no verdict was acted on", r)
 		}
 	})
 

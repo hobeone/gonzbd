@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"maps"
 	"slices"
+	"strings"
 
 	"github.com/hobeone/gonzbd/internal/par2"
 	"github.com/hobeone/gonzbd/internal/unpack"
@@ -230,6 +231,14 @@ func (q *QuickCheckStage) recordVerdict(ctx context.Context, log *slog.Logger, j
 	}
 
 	switch {
+	case len(a.ID.Unreadable) > 0:
+		// A set that read as nothing contributes no entry above, so what it
+		// protects was never checked. Repair runs; while the job holds
+		// recovery volumes, its failure is what the finalizer retries to
+		// fetch them, and FindPar2Files reads one in place of the index.
+		logf(ctx, log, job, slog.LevelWarn,
+			"[quickcheck] par2 set(s) %s describe no file — par2 repair will run",
+			strings.Join(a.ID.Unreadable, ", "))
 	case len(deferred) > 0 && len(deferred) == len(setsWithEntries(a.ID)):
 		job.quickCheck = QuickCheckUnidentified
 		logf(ctx, log, job, slog.LevelInfo,

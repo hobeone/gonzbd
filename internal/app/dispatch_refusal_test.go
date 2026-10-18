@@ -43,6 +43,7 @@ type refusingReporter struct{ err error }
 
 func (r refusingReporter) FinishedJob(*job.Job, job.Outcome) error          { return r.err }
 func (r refusingReporter) Yielded(string) error                             { return r.err }
+func (r refusingReporter) YieldedJob(*job.Job) error                        { return r.err }
 func (r refusingReporter) AdvanceFrom(*job.Job, job.State, job.State) error { return r.err }
 
 // TestAppRunner_RefusedReportIsLoggedUnlessGone pins the runner's handling of

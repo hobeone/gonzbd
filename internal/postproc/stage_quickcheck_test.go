@@ -7,6 +7,7 @@ import (
 	"hash/crc32"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -416,5 +417,95 @@ func TestQuickCheckStage_LayoutBRetryWithLeftoverExtractedFileDefersPar2Set(t *t
 	}
 	if len(job.deferredPar2Sets) != 1 || job.deferredPar2Sets[0] != "feature" {
 		t.Errorf("deferredPar2Sets = %v, want [feature]", job.deferredPar2Sets)
+	}
+}
+
+// An unreadable set outranks a deferred one: Unidentified would skip repair,
+// and with it the retry that fetches the set's held volumes (#1008). The job
+// is TestQuickCheckStage_LayoutBRetryWithLeftoverExtractedFileDefersPar2Set's.
+func TestQuickCheckStage_UnreadableSetBesideADeferredOne(t *testing.T) {
+	t.Parallel()
+
+	for name, tc := range map[string]struct {
+		unreadable bool
+		want       QuickCheckOutcome
+	}{
+		"with an unreadable set": {true, QuickCheckInconclusive},
+		"alone":                  {false, QuickCheckUnidentified},
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			job, dir := layoutBJob(t, "release.rar")
+			if err := os.WriteFile(filepath.Join(dir, "feature.bin"), []byte("corrupt leftover extracted member"), 0o644); err != nil {
+				t.Fatalf("write leftover extracted member: %v", err)
+			}
+			if tc.unreadable {
+				if err := os.WriteFile(filepath.Join(dir, "other.par2"), make([]byte, 4096), 0o600); err != nil {
+					t.Fatal(err)
+				}
+			}
+
+			qc, _, _ := layoutStages()
+			if err := qc.Run(t.Context(), job); err != nil {
+				t.Fatalf("quickcheck: %v", err)
+			}
+			if job.quickCheck != tc.want {
+				t.Errorf("quickCheck = %v, want %v", job.quickCheck, tc.want)
+			}
+		})
+	}
+}
+
+// A par2 set that reads as nothing beside an intact one leaves the verdict
+// Inconclusive, not Clean, so repair runs and its failure fetches the set's
+// held volumes (#1008).
+func TestQuickCheckStage_UnreadableSetBesideACleanOne(t *testing.T) {
+	t.Parallel()
+
+	setID := [16]byte{1, 2, 3, 4}
+	fileID := [16]byte{10, 20, 30}
+	content := []byte("intact file protected by the readable set")
+	hash16k := md5.Sum(content)
+	sliceSize := uint64(len(content))
+	par := slices.Concat(
+		buildPacket(setID, typeMain, buildMainBody(sliceSize, fileID)),
+		buildPacket(setID, typeFileDesc, buildFileDescBody(fileID, [16]byte{0xAA}, hash16k, sliceSize, "intact.txt")),
+		buildPacket(setID, typeIFSC, buildIFSCBody(fileID, hash16k, crc32.ChecksumIEEE(content))),
+	)
+
+	for name, tc := range map[string]struct {
+		unreadable bool
+		want       QuickCheckOutcome
+	}{
+		"with an unreadable set": {true, QuickCheckInconclusive},
+		"alone":                  {false, QuickCheckClean},
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			dir := t.TempDir()
+			if err := os.WriteFile(filepath.Join(dir, "intact.par2"), par, 0o600); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(filepath.Join(dir, "intact.txt"), content, 0o600); err != nil {
+				t.Fatal(err)
+			}
+			if tc.unreadable {
+				if err := os.WriteFile(filepath.Join(dir, "other.par2"), make([]byte, 4096), 0o600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			stage := NewQuickCheckStage()
+			stage.SetEnabled(true)
+			job := &Job{
+				Job:         buildQCJob(t, "job-unreadable", "intact.txt", int64(len(content)), crc32.ChecksumIEEE(content)),
+				DownloadDir: dir,
+			}
+			if err := stage.Run(t.Context(), job); err != nil {
+				t.Fatalf("Run: %v", err)
+			}
+			if job.quickCheck != tc.want {
+				t.Errorf("QuickCheck = %s, want %s\n%s", job.quickCheck, tc.want, strings.Join(job.OutputLines, "\n"))
+			}
+		})
 	}
 }

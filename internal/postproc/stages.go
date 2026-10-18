@@ -66,7 +66,9 @@ const (
 	//   - the job's manifest was unreadable or described no files, so there
 	//     were no expected CRCs to compare against;
 	//   - par2 sets were found and no assembled CRC was available for any of
-	//     them, so the comparison had nothing on either side.
+	//     them, so the comparison had nothing on either side;
+	//   - a par2 set read as nothing (par2.Identification.Unreadable), so the
+	//     files it protects were never checked, whatever the other sets show.
 	QuickCheckInconclusive
 
 	// QuickCheckUnidentified is the stage's judgement that every par2 set in
