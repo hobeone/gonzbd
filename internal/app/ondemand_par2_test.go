@@ -668,6 +668,7 @@ func TestMaybeReleaseRecoveryVolumes_RespectsRepairPolicy(t *testing.T) {
 	}
 	copyFixturePar2(t, jobDir)
 	copyFixturePayload(t, jobDir, "data.bin")
+	corruptPayload(t, jobDir)
 
 	if app.maybeReleaseRecoveryVolumes(t.Context(), qjob) {
 		t.Error("maybeReleaseRecoveryVolumes must return false for a PP=0 job even when the data is damaged; " +
