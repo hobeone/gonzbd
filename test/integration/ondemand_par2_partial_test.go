@@ -5,6 +5,8 @@ package integration
 import (
 	"crypto/sha256"
 	"fmt"
+	"io"
+	"log"
 	"math/rand"
 	"os"
 	"os/exec"
@@ -30,6 +32,27 @@ type onDemandRun struct {
 	// volumes. Zero when no volume was requested.
 	lastContent, firstVolume, lastVolume time.Time
 	stageLog                             string
+	// retried is whether the finalizer retried the job after a failed repair
+	// to fetch its held volumes, read from the log the run wrote.
+	retried bool
+}
+
+// lockedBuffer is a log sink the app's goroutines and the test can share.
+type lockedBuffer struct {
+	mu  sync.Mutex
+	buf strings.Builder
+}
+
+func (b *lockedBuffer) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.Write(p)
+}
+
+func (b *lockedBuffer) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.String()
 }
 
 // writePar2Fixture writes a 600 KiB data file and a par2 set for it into dir:
@@ -77,6 +100,12 @@ func writePar2Fixture(t *testing.T, dir string) (payload []byte, volByBlocks map
 // reports what the server saw.
 func runOnDemandPar2(t *testing.T, dir string, wantSHA [sha256.Size]byte, dropArticle ...string) onDemandRun {
 	t.Helper()
+
+	// The app logs through the default logger, which writes via package log.
+	// Not parallel-safe, like the timings: every test here runs serially.
+	logs := &lockedBuffer{}
+	log.SetOutput(io.MultiWriter(os.Stderr, logs))
+	t.Cleanup(func() { log.SetOutput(os.Stderr) })
 
 	const partSize = 48 * 1024 // three 16 KiB par2 blocks per article
 	files := fixtureToTestFiles(t, dir, partSize)
@@ -169,7 +198,19 @@ func runOnDemandPar2(t *testing.T, dir string, wantSHA [sha256.Size]byte, dropAr
 	run.total = total
 	run.served = served
 	run.stageLog = stageLog
+	run.retried = strings.Contains(logs.String(), "retrying the job to fetch them")
 	return run
+}
+
+// requireReleasedAtAssessing fails t if the job reached its volumes through the
+// finalizer's retry of a failed repair rather than through the Assessing
+// verdict: a verdict that undercounted would still end with the right volumes,
+// one failed repair later.
+func requireReleasedAtAssessing(t *testing.T, run onDemandRun) {
+	t.Helper()
+	if run.retried {
+		t.Errorf("the job was retried after a failed repair: the Assessing verdict released too few volumes:\n%s", run.stageLog)
+	}
 }
 
 // TestOnDemandPar2_PartialRelease_FetchesOnlyTheCoveringVolumes posts a data
@@ -220,6 +261,7 @@ func TestOnDemandPar2_PartialRelease_FetchesOnlyTheCoveringVolumes(t *testing.T)
 			t.Errorf("%s: %d articles fetched, want none (not part of the cheapest cover)", vol[blocks], n)
 		}
 	}
+	requireReleasedAtAssessing(t, damaged)
 	if !strings.Contains(damaged.stageLog, "fetched 2 of 4 recovery volume(s)") {
 		t.Errorf("stage log does not report a partial release (want %q):\n%s", "fetched 2 of 4 recovery volume(s)", damaged.stageLog)
 	}
@@ -236,6 +278,73 @@ func TestOnDemandPar2_PartialRelease_FetchesOnlyTheCoveringVolumes(t *testing.T)
 
 	gap := damaged.firstVolume.Sub(damaged.lastContent)
 	logGap(t, damaged, control, gap)
+}
+
+// TestOnDemandPar2_CRCMismatch_FetchesOnlyTheCoveringVolumes posts a data file
+// that arrived with every article but one byte wrong: the articles carry the
+// corrupt bytes with valid yEnc CRCs, so no article fails and the job has no
+// gap, only a whole-file CRC that differs from par2's. A block-level verify
+// finds one damaged block, so only the 1-block volume is released; the repair
+// restores the original payload.
+func TestOnDemandPar2_CRCMismatch_FetchesOnlyTheCoveringVolumes(t *testing.T) {
+	requireTool(t, "par2")
+
+	fixtureDir := t.TempDir()
+	payload, vol := writePar2Fixture(t, fixtureDir)
+	wantSHA := sha256.Sum256(payload)
+
+	corrupt := slices.Clone(payload)
+	corrupt[5*16384+10] ^= 0xFF // inside block 5
+	if err := os.WriteFile(filepath.Join(fixtureDir, "data.bin"), corrupt, 0o600); err != nil {
+		t.Fatalf("write the corrupt data.bin: %v", err)
+	}
+
+	run := runOnDemandPar2(t, fixtureDir, wantSHA)
+
+	if got, want := run.served["data.bin"], 13; got != want {
+		t.Errorf("data.bin articles served = %d, want %d (every article is delivered)", got, want)
+	}
+	if run.served[vol[1]] == 0 {
+		t.Errorf("%s was not fetched; the covering volume for one damaged block is +1", vol[1])
+	}
+	for _, blocks := range []int{2, 4, 8} {
+		if n := run.served[vol[blocks]]; n != 0 {
+			t.Errorf("%s: %d articles fetched, want none (not part of the cheapest cover)", vol[blocks], n)
+		}
+	}
+	requireReleasedAtAssessing(t, run)
+	if !strings.Contains(run.stageLog, "fetched 1 of 4 recovery volume(s)") {
+		t.Errorf("stage log does not report a partial release (want %q):\n%s", "fetched 1 of 4 recovery volume(s)", run.stageLog)
+	}
+}
+
+// TestOnDemandPar2_LostTailArticle_FetchesOnlyTheCoveringVolumes drops the last
+// article of data.bin (24 KiB: the last block and a half). The assembler
+// preallocates the file, so the loss is a hole at its tail and the entry is
+// sized by the written rows, not by a verify: two blocks, which the 2-block
+// volume alone covers. The truncated file a verify sizes is covered by
+// TestRecoveryDeficit.
+func TestOnDemandPar2_LostTailArticle_FetchesOnlyTheCoveringVolumes(t *testing.T) {
+	requireTool(t, "par2")
+
+	fixtureDir := t.TempDir()
+	payload, vol := writePar2Fixture(t, fixtureDir)
+	wantSHA := sha256.Sum256(payload)
+
+	run := runOnDemandPar2(t, fixtureDir, wantSHA, "data.bin:13")
+
+	if got, want := run.served["data.bin"], 12; got != want {
+		t.Errorf("data.bin articles served = %d, want %d (13 minus the dropped one)", got, want)
+	}
+	if run.served[vol[2]] == 0 {
+		t.Errorf("%s was not fetched; the covering volume for two lost blocks is +2", vol[2])
+	}
+	for _, blocks := range []int{1, 4, 8} {
+		if n := run.served[vol[blocks]]; n != 0 {
+			t.Errorf("%s: %d articles fetched, want none (not part of the cheapest cover)", vol[blocks], n)
+		}
+	}
+	requireReleasedAtAssessing(t, run)
 }
 
 // TestOnDemandPar2_NoIndex_FetchesOneVolumeAsTheIndex posts the same set
