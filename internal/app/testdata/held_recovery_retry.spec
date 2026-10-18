@@ -41,18 +41,18 @@ file internal/app/app.go
 file internal/app/job_finalizer.go
 --- anchor
 	app.log.Info("finalize: par2 repair failed while recovery volumes were held back; retrying the job to fetch them",
-		"job", jobID)
+		"job", jobID, "sized", sizing != job.Unsized())
 	return true
 --- replace
 	app.log.Info("finalize: par2 repair failed while recovery volumes were held back; retrying the job to fetch them",
-		"job", jobID)
+		"job", jobID, "sized", sizing != job.Unsized())
 	return false
 --- end
 
 [a queued retry still reports post-processing complete]
 file internal/app/job_finalizer.go
 --- anchor
-	if !retry || !f.retryWithHeldVolumes(ppJob.Job.ID()) {
+	if !retry || !f.retryWithHeldVolumes(ppJob.Job.ID(), sizing) {
 		select {
 		case app.postProcComplete <- PostProcComplete{JobID: ppJob.Job.ID()}:
 		default:
@@ -62,7 +62,7 @@ file internal/app/job_finalizer.go
 	case app.postProcComplete <- PostProcComplete{JobID: ppJob.Job.ID()}:
 	default:
 	}
-	if !retry || !f.retryWithHeldVolumes(ppJob.Job.ID()) {
+	if !retry || !f.retryWithHeldVolumes(ppJob.Job.ID(), sizing) {
 --- end
 
 [a queued retry still emits job_finalized]
