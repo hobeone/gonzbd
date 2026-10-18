@@ -67,10 +67,8 @@ const (
 	//     were no expected CRCs to compare against;
 	//   - par2 sets were found and no assembled CRC was available for any of
 	//     them, so the comparison had nothing on either side;
-	//   - a par2 set that read as nothing (par2.Identification.Unreadable)
-	//     owns a recovery volume the job still holds, so the files it protects were
-	//     never checked, whatever the other sets show. A set with no held
-	//     volume is left out of the verdict, since nothing could read it.
+	//   - a par2 set read as nothing (par2.Identification.Unreadable), so the
+	//     files it protects were never checked, whatever the other sets show.
 	QuickCheckInconclusive
 
 	// QuickCheckUnidentified is the stage's judgement that every par2 set in

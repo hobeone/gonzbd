@@ -8,7 +8,6 @@ import (
 	"slices"
 	"strings"
 
-	"github.com/hobeone/gonzbd/internal/fsutil"
 	"github.com/hobeone/gonzbd/internal/par2"
 	"github.com/hobeone/gonzbd/internal/unpack"
 )
@@ -231,23 +230,15 @@ func (q *QuickCheckStage) recordVerdict(ctx context.Context, log *slog.Logger, j
 		}
 	}
 
-	// A set that read as nothing contributes no entry above, so what it
-	// protects was never checked. Only a recovery volume of its own, still
-	// held, can make it readable, so only such a set is worth a repair: its
-	// failure is what the finalizer retries to fetch the volumes. A set with
-	// none is left out of the verdict, so that it costs the job nothing.
-	held := heldPar2Sets(job)
-	fetchable := slices.DeleteFunc(slices.Clone(a.ID.Unreadable), func(name string) bool { return !held[name] })
-	if n := len(a.ID.Unreadable) - len(fetchable); n > 0 {
-		logf(ctx, log, job, slog.LevelWarn,
-			"[quickcheck] %d par2 set(s) describe no file and hold no recovery volume to read instead; their files are not verified", n)
-	}
-
 	switch {
-	case len(fetchable) > 0:
+	case len(a.ID.Unreadable) > 0:
+		// A set that read as nothing contributes no entry above, so what it
+		// protects was never checked. Repair runs; while the job holds
+		// recovery volumes, its failure is what the finalizer retries to
+		// fetch them, and FindPar2Files reads one in place of the index.
 		logf(ctx, log, job, slog.LevelWarn,
-			"[quickcheck] par2 set(s) %s describe no file — par2 repair will run, and its failure fetches their held recovery volumes",
-			strings.Join(fetchable, ", "))
+			"[quickcheck] par2 set(s) %s describe no file — par2 repair will run",
+			strings.Join(a.ID.Unreadable, ", "))
 	case len(deferred) > 0 && len(deferred) == len(setsWithEntries(a.ID)):
 		job.quickCheck = QuickCheckUnidentified
 		logf(ctx, log, job, slog.LevelInfo,
@@ -272,30 +263,6 @@ func (q *QuickCheckStage) recordVerdict(ctx context.Context, log *slog.Logger, j
 		logf(ctx, log, job, slog.LevelInfo, "[quickcheck] No CRC data available — par2 repair will run")
 	}
 	return nil
-}
-
-// heldPar2Sets returns the names of the par2 sets that own a recovery volume
-// job still holds (FetchIfNeeded), by par2.SetName of the name the volume will
-// be written under: its subject sanitized under job.Sanitize, as
-// app.pipeline.newJobFileLocation names a file on disk. A volume posted under
-// a name unrelated to its set's is not seen.
-func heldPar2Sets(job *Job) map[string]bool {
-	if job.Job == nil {
-		return nil
-	}
-	idx := job.Job.DeferredRecoveryIndices()
-	if len(idx) == 0 {
-		return nil
-	}
-	m, err := job.Manifest()
-	if err != nil {
-		return nil
-	}
-	held := make(map[string]bool, len(idx))
-	for _, fi := range idx {
-		held[par2.SetName(fsutil.SanitizeFilename(m.FileSubject(fi), job.Sanitize))] = true
-	}
-	return held
 }
 
 // deferredSets returns, sorted, the par2 sets whose verification waits for

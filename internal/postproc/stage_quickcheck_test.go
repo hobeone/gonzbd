@@ -11,39 +11,23 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/hobeone/gonzbd/internal/fsutil"
 	"github.com/hobeone/gonzbd/internal/job"
 	"github.com/hobeone/gonzbd/internal/job/jobtest"
 )
 
-// buildQCJob builds a *job.Job whose first file has a resolved filename, byte
-// count, and assembled CRC32 already set — the shape recordVerdict reads via
-// Manifest/Progress accessors. Each of held is a further file, a recovery
-// volume of that subject still held back (FetchIfNeeded).
-func buildQCJob(t *testing.T, id, filename string, bytes int64, crc uint32, held ...string) *job.Job {
+// buildQCJob builds a single-file *job.Job whose file has a resolved
+// filename, byte count, and assembled CRC32 already set — the shape
+// recordVerdict reads via Manifest/Progress accessors.
+func buildQCJob(t *testing.T, id, filename string, bytes int64, crc uint32) *job.Job {
 	t.Helper()
 	j := job.New(id, id+".nzb", job.Policy{})
-	files := make([]job.JobFile, 0, 1+len(held))
-	files = append(files, job.JobFile{
+	m := job.NewManifest([]job.JobFile{{
 		Subject:  "subject.bin",
 		Bytes:    bytes,
 		Articles: []job.JobArticle{{ID: id + "-a@t", Bytes: int(bytes)}},
-	})
-	for i, subject := range held {
-		files = append(files, job.JobFile{
-			Subject:  subject,
-			Bytes:    100,
-			Articles: []job.JobArticle{{ID: fmt.Sprintf("%s-held%d@t", id, i), Bytes: 100}},
-		})
-	}
-	m := job.NewManifest(files)
+	}})
 	if err := j.AttachContent(m); err != nil {
 		t.Fatalf("AttachContent: %v", err)
-	}
-	for i := range held {
-		if err := j.SetFileFetchPolicy(i+1, job.FetchIfNeeded); err != nil {
-			t.Fatalf("SetFileFetchPolicy: %v", err)
-		}
 	}
 	if err := j.RecordFileFilename(0, j.Name(), filename); err != nil {
 		t.Fatalf("RecordFileFilename: %v", err)
@@ -436,20 +420,18 @@ func TestQuickCheckStage_LayoutBRetryWithLeftoverExtractedFileDefersPar2Set(t *t
 	}
 }
 
-// An unreadable set with a held volume of its own outranks a deferred one:
-// Unidentified would skip repair, and with it the retry that fetches the
-// volume. With no held volume it changes nothing, so the job stays
-// Unidentified and extracted_repair still runs. The job is
-// TestQuickCheckStage_LayoutBRetryWithLeftoverExtractedFileDefersPar2Set's.
+// An unreadable set outranks a deferred one: Unidentified would skip repair,
+// and with it the retry that fetches the set's held volumes (#1008). The job
+// is TestQuickCheckStage_LayoutBRetryWithLeftoverExtractedFileDefersPar2Set's.
 func TestQuickCheckStage_UnreadableSetBesideADeferredOne(t *testing.T) {
 	t.Parallel()
 
 	for name, tc := range map[string]struct {
-		held []string
-		want QuickCheckOutcome
+		unreadable bool
+		want       QuickCheckOutcome
 	}{
-		"with a held volume of its own": {[]string{"other.vol00+01.par2"}, QuickCheckInconclusive},
-		"with no held volume":           {nil, QuickCheckUnidentified},
+		"with an unreadable set": {true, QuickCheckInconclusive},
+		"alone":                  {false, QuickCheckUnidentified},
 	} {
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()
@@ -458,12 +440,14 @@ func TestQuickCheckStage_UnreadableSetBesideADeferredOne(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			job.Job = buildQCJob(t, "layout-job", "release.rar", int64(len(payload)), crc32.ChecksumIEEE(payload), tc.held...)
+			job.Job = buildQCJob(t, "layout-job", "release.rar", int64(len(payload)), crc32.ChecksumIEEE(payload))
 			if err := os.WriteFile(filepath.Join(dir, "feature.bin"), []byte("corrupt leftover extracted member"), 0o644); err != nil {
 				t.Fatalf("write leftover extracted member: %v", err)
 			}
-			if err := os.WriteFile(filepath.Join(dir, "other.par2"), make([]byte, 4096), 0o600); err != nil {
-				t.Fatal(err)
+			if tc.unreadable {
+				if err := os.WriteFile(filepath.Join(dir, "other.par2"), make([]byte, 4096), 0o600); err != nil {
+					t.Fatal(err)
+				}
 			}
 
 			qc, _, _ := layoutStages()
@@ -478,9 +462,8 @@ func TestQuickCheckStage_UnreadableSetBesideADeferredOne(t *testing.T) {
 }
 
 // A par2 set that reads as nothing beside an intact one leaves the verdict
-// Inconclusive, not Clean, when it has a held volume of its own, so repair
-// runs and its failure fetches the volume (#1008). With no held volume, or
-// only another set's, nothing could make it readable, and the job is Clean.
+// Inconclusive, not Clean, so repair runs and its failure fetches the set's
+// held volumes (#1008).
 func TestQuickCheckStage_UnreadableSetBesideACleanOne(t *testing.T) {
 	t.Parallel()
 
@@ -495,18 +478,12 @@ func TestQuickCheckStage_UnreadableSetBesideACleanOne(t *testing.T) {
 		buildPacket(setID, typeIFSC, buildIFSCBody(fileID, hash16k, crc32.ChecksumIEEE(content))),
 	)
 
-	underscores := fsutil.SanitizeOptions{ReplaceSpacesWith: "_"}
 	for name, tc := range map[string]struct {
-		unreadable string // the on-disk name of a set that reads as nothing; "" for none
-		sanitize   fsutil.SanitizeOptions
-		held       []string
+		unreadable bool
 		want       QuickCheckOutcome
 	}{
-		"with a held volume of its own": {"other.par2", fsutil.SanitizeOptions{}, []string{"other.vol00+01.par2"}, QuickCheckInconclusive},
-		"with no held volume":           {"other.par2", fsutil.SanitizeOptions{}, nil, QuickCheckClean},
-		"with only another set's held":  {"other.par2", fsutil.SanitizeOptions{}, []string{"intact.vol00+01.par2"}, QuickCheckClean},
-		"named under sanitize options":  {"My_Movie.par2", underscores, []string{"My Movie.vol00+01.par2"}, QuickCheckInconclusive},
-		"alone":                         {"", fsutil.SanitizeOptions{}, nil, QuickCheckClean},
+		"with an unreadable set": {true, QuickCheckInconclusive},
+		"alone":                  {false, QuickCheckClean},
 	} {
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()
@@ -517,17 +494,16 @@ func TestQuickCheckStage_UnreadableSetBesideACleanOne(t *testing.T) {
 			if err := os.WriteFile(filepath.Join(dir, "intact.txt"), content, 0o600); err != nil {
 				t.Fatal(err)
 			}
-			if tc.unreadable != "" {
-				if err := os.WriteFile(filepath.Join(dir, tc.unreadable), make([]byte, 4096), 0o600); err != nil {
+			if tc.unreadable {
+				if err := os.WriteFile(filepath.Join(dir, "other.par2"), make([]byte, 4096), 0o600); err != nil {
 					t.Fatal(err)
 				}
 			}
 			stage := NewQuickCheckStage()
 			stage.SetEnabled(true)
 			job := &Job{
-				Job:         buildQCJob(t, "job-unreadable", "intact.txt", int64(len(content)), crc32.ChecksumIEEE(content), tc.held...),
+				Job:         buildQCJob(t, "job-unreadable", "intact.txt", int64(len(content)), crc32.ChecksumIEEE(content)),
 				DownloadDir: dir,
-				Sanitize:    tc.sanitize,
 			}
 			if err := stage.Run(t.Context(), job); err != nil {
 				t.Fatalf("Run: %v", err)
