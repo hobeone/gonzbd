@@ -656,11 +656,24 @@ func policies(t *testing.T, j *job.Job) map[string]job.FetchPolicy {
 	return out
 }
 
-// With no par2 file on disk, the first release is the one byte-cheapest
-// volume, to serve as the index; a second call that still finds no set
-// releases every remaining held volume.
+// With no readable par2 file on disk, the first release is the one
+// byte-cheapest volume, to serve as the index; a second call that still finds
+// no readable set releases every remaining held volume. An index that
+// describes nothing is no index (#1006).
 func TestMaybeReleaseRecoveryVolumes_VolumeAsIndex(t *testing.T) {
 	t.Parallel()
+	for name, index := range map[string][]byte{
+		"no par2 file on disk": nil,
+		"a zero-filled index":  make([]byte, 4096),
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			testVolumeAsIndex(t, index)
+		})
+	}
+}
+
+func testVolumeAsIndex(t *testing.T, index []byte) {
 	vols := []sizedVol{
 		{"data.vol000+01.par2", 2000},
 		{"data.vol001+02.par2", 1000},
@@ -675,6 +688,11 @@ func TestMaybeReleaseRecoveryVolumes_VolumeAsIndex(t *testing.T) {
 	application.log = slog.New(slog.DiscardHandler)
 	if err := os.MkdirAll(filepath.Join(dir, "vai-name"), 0o750); err != nil {
 		t.Fatal(err)
+	}
+	if index != nil {
+		if err := os.WriteFile(filepath.Join(dir, "vai-name", "data.par2"), index, 0o600); err != nil {
+			t.Fatal(err)
+		}
 	}
 	j, hdr := newSizedJob(t, "vai", "vai-name", types.PPRepair, []int{4065}, vols)
 	if err := application.Dispatcher().Add(context.Background(), j, hdr); err != nil {

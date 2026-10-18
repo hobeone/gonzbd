@@ -63,3 +63,11 @@ file internal/app/par2_release.go
 --- replace
 	verified := a.CRC.Unverified > 0
 --- end
+
+[an index that describes nothing is parsed in place of the volume fetched as one]
+file internal/par2/par2.go
+--- anchor
+	if s.readable != "" {
+--- replace
+	if false {
+--- end

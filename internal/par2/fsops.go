@@ -80,7 +80,7 @@ func collectManifestsWithOptions(sets []Set, log *slog.Logger, opts ParseOptions
 			c.unreadable = append(c.unreadable, set.Name)
 			continue
 		}
-		if len(parsed.Files) == 0 && len(parsed.RecoveryFileIDs) == 0 {
+		if !describesAFile(parsed) {
 			log.Warn("quickcheck: par2 file describes no file",
 				"file", filepath.Base(parFile))
 			c.unreadable = append(c.unreadable, set.Name)

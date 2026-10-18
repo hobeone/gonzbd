@@ -1839,11 +1839,13 @@ func (app *Application) maybeReleaseRecoveryVolumes(ctx context.Context, j *job.
 	} else if prog := j.Progress(); prog != nil {
 		sets, sErr := par2.FindPar2Files(dir, parseOpts)
 		switch {
-		case sErr != nil || len(sets) == 0:
+		case sErr != nil || !slices.ContainsFunc(sets, par2.Set.Readable):
 			outcome = outcomeRepair
-			// With no set on disk and nothing released yet, one recovery
+			// With no readable set on disk (none at all, or only files that
+			// describe nothing) and nothing released yet, one recovery
 			// volume is fetched to serve as the index: each volume repeats
-			// the Main, File Description and IFSC packets, and the
+			// the Main, File Description and IFSC packets, FindPar2Files
+			// reads a volume when the main file describes nothing, and the
 			// post-fetch assessment sizes the rest. If that volume did not
 			// parse, or the directory could not be read, every held volume
 			// is released.
@@ -1852,10 +1854,10 @@ func (app *Application) maybeReleaseRecoveryVolumes(ctx context.Context, j *job.
 			case sErr != nil:
 				reason = fmt.Sprintf("no usable par2 index found (err: %v)", sErr)
 			case fetched == 0:
-				reason = "no par2 index on disk; fetching the smallest recovery volume to use as the index"
+				reason = "no readable par2 index on disk; fetching the smallest recovery volume to use as the index"
 				sizing = job.NeedBlocks(1)
 			default:
-				reason = "no par2 index on disk, and the recovery volume fetched as one did not parse; fetching every recovery volume"
+				reason = "no readable par2 index on disk, and the recovery volume fetched as one did not parse; fetching every recovery volume"
 			}
 			app.log.Info("on-demand par2: no usable par2 index to verify against",
 				"job", jobID, "dir", dir, "err", sErr, "reason", reason)
@@ -2038,7 +2040,8 @@ func (o par2Outcome) String() string {
 //
 // Repair is needed when any par2-tracked file is corrupt (Mismatched), has no
 // recorded CRC to check against (NoCRC), or could not be checked at all
-// (Unverified). A job with no usable par2 set never reaches here —
+// (Unverified). A job with no readable par2 set (par2.Set.Readable) never
+// reaches here —
 // maybeReleaseRecoveryVolumes fetches a recovery volume to serve as the
 // index, or every volume if that already happened.
 func par2Verdict(a par2.Assessment, log *slog.Logger) (outcome par2Outcome, reason string) {

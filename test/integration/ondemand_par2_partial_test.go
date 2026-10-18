@@ -356,41 +356,62 @@ func TestOnDemandPar2_LostTailArticle_FetchesOnlyTheCoveringVolumes(t *testing.T
 func TestOnDemandPar2_NoIndex_FetchesOneVolumeAsTheIndex(t *testing.T) {
 	requireTool(t, "par2")
 
-	fixtureDir := t.TempDir()
-	payload, vol := writePar2Fixture(t, fixtureDir)
-	wantSHA := sha256.Sum256(payload)
-	if err := os.Remove(filepath.Join(fixtureDir, "data.par2")); err != nil {
-		t.Fatalf("remove index: %v", err)
-	}
-
-	check := func(t *testing.T, run onDemandRun, fetched, held []int) {
-		t.Helper()
-		if n := run.served["data.par2"]; n != 0 {
-			t.Errorf("data.par2: %d articles fetched, want none (not in the NZB)", n)
-		}
-		for _, blocks := range fetched {
-			if run.served[vol[blocks]] == 0 {
-				t.Errorf("%s was not fetched", vol[blocks])
+	// An index posted but describing nothing is no index either: the volume
+	// fetched as the index is read in its place, and go_par2 repairs from it
+	// and its siblings without the external par2 (#1006).
+	for _, tc := range []struct {
+		name  string
+		index []byte // nil: no data.par2 in the post
+	}{
+		{"no index", nil},
+		{"a zero-filled index", make([]byte, 4096)},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			fixtureDir := t.TempDir()
+			payload, vol := writePar2Fixture(t, fixtureDir)
+			wantSHA := sha256.Sum256(payload)
+			indexPath := filepath.Join(fixtureDir, "data.par2")
+			if tc.index == nil {
+				if err := os.Remove(indexPath); err != nil {
+					t.Fatalf("remove index: %v", err)
+				}
+			} else if err := os.WriteFile(indexPath, tc.index, 0o600); err != nil {
+				t.Fatalf("overwrite index: %v", err)
 			}
-		}
-		for _, blocks := range held {
-			if n := run.served[vol[blocks]]; n != 0 {
-				t.Errorf("%s: %d articles fetched, want none", vol[blocks], n)
-			}
-		}
-	}
 
-	t.Run("damaged", func(t *testing.T) {
-		run := runOnDemandPar2(t, fixtureDir, wantSHA, "data.bin:5")
-		if got, want := run.served["data.bin"], 12; got != want {
-			t.Errorf("data.bin articles served = %d, want %d", got, want)
-		}
-		check(t, run, []int{1, 2}, []int{4, 8})
-	})
-	t.Run("clean", func(t *testing.T) {
-		run := runOnDemandPar2(t, fixtureDir, wantSHA)
-		check(t, run, []int{1}, []int{2, 4, 8})
-	})
+			check := func(t *testing.T, run onDemandRun, fetched, held []int) {
+				t.Helper()
+				if n := run.served["data.par2"]; tc.index == nil && n != 0 {
+					t.Errorf("data.par2: %d articles fetched, want none (not in the NZB)", n)
+				}
+				for _, blocks := range fetched {
+					if run.served[vol[blocks]] == 0 {
+						t.Errorf("%s was not fetched", vol[blocks])
+					}
+				}
+				for _, blocks := range held {
+					if n := run.served[vol[blocks]]; n != 0 {
+						t.Errorf("%s: %d articles fetched, want none", vol[blocks], n)
+					}
+				}
+				if strings.Contains(run.stageLog, "retrying with external") {
+					t.Errorf("the repair fell back to the external par2:\n%s", run.stageLog)
+				}
+			}
+
+			t.Run("damaged", func(t *testing.T) {
+				run := runOnDemandPar2(t, fixtureDir, wantSHA, "data.bin:5")
+				if got, want := run.served["data.bin"], 12; got != want {
+					t.Errorf("data.bin articles served = %d, want %d", got, want)
+				}
+				check(t, run, []int{1, 2}, []int{4, 8})
+			})
+			t.Run("clean", func(t *testing.T) {
+				run := runOnDemandPar2(t, fixtureDir, wantSHA)
+				check(t, run, []int{1}, []int{2, 4, 8})
+			})
+		})
+	}
 }
 
 func logGap(t *testing.T, damaged, control onDemandRun, gap time.Duration) {

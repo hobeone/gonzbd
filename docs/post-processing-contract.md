@@ -811,12 +811,16 @@ unchecked files, so it is reported in `par2.Identification.Unreadable` and the
 otherwise clean verdict is `outcomeUnknown`: the volumes are held, not
 discarded.
 
-- **One volume as the index**: no par2 set on disk and no recovery volume
-  released yet. The release is `job.NeedBlocks(1)`, so the single
-  byte-cheapest held volume whose name declares a block count is freed
+- **One volume as the index**: no readable par2 set on disk (none at all, or
+  only sets whose files describe nothing: `par2.Set.Readable`) and no
+  recovery volume released yet. The release is `job.NeedBlocks(1)`, so the
+  single byte-cheapest held volume whose name declares a block count is freed
   (every held volume if none declares one). Each volume repeats the Main,
-  File Description and IFSC packets, so `FindPar2Files` treats it as a set
-  and the next Assessing sizes the rest. If that volume still yields no set,
+  File Description and IFSC packets. `FindPar2Files` resolves each set's
+  `ParseFile` to the first of its main file and its volumes that describes a
+  file, so a volume is read in place of a main file that describes nothing,
+  by the verdict, the repair stage and the block-level verify alike, and the
+  next Assessing sizes the rest. If that volume still yields no readable set,
   every held volume is released.
 - **Sized by a block-level verify**: a CRC mismatch, or an unverified entry
   (a truncated, undelivered or length-mismatched file, or a file the set's

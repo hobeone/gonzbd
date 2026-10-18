@@ -138,3 +138,88 @@ func TestIdentify_ReportsUnreadableSets(t *testing.T) {
 		}
 	})
 }
+
+// A set whose main file describes nothing is read from a volume, which repeats
+// the packets the index lost (#1006). Without a readable volume it stays
+// unreadable.
+func TestFindPar2Files_ReadsAVolumeWhenTheIndexDescribesNothing(t *testing.T) {
+	t.Parallel()
+
+	fixture := func(t *testing.T, dir string, names ...string) {
+		t.Helper()
+		for _, f := range names {
+			data, err := os.ReadFile(filepath.Join("..", "..", "test", "fixtures", "par2", "layout_b_mixed", f))
+			if err != nil {
+				t.Fatal(err)
+			}
+			writeFile(t, dir, f, data)
+		}
+	}
+
+	for name, index := range map[string][]byte{
+		"zero-filled": make([]byte, 4096),
+		"empty":       {},
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			dir := t.TempDir()
+			fixture(t, dir, "extras.txt", "extras.vol0+1.par2")
+			writeFile(t, dir, "extras.par2", index)
+
+			sets, err := FindPar2Files(dir)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(sets) != 1 || !sets[0].Readable() || filepath.Base(sets[0].ParseFile()) != "extras.vol0+1.par2" {
+				t.Fatalf("sets = %+v, want one readable set parsed from extras.vol0+1.par2", sets)
+			}
+
+			id := identifyIn(t, dir, sets)
+			if len(id.Unreadable) != 0 {
+				t.Errorf("Unreadable = %q, want none: the volume describes the set", id.Unreadable)
+			}
+			if _, ok := byOnDisk(id, "extras.txt"); !ok {
+				t.Error("extras.txt was not identified from the volume")
+			}
+
+			res, err := GoVerify(t.Context(), discardLogger(), sets[0].ParseFile(), candidatesIn(t, dir), nil)
+			if err != nil {
+				t.Fatalf("GoVerify from the volume: %v", err)
+			}
+			if res.Status != StatusAllFilesOK {
+				t.Errorf("GoVerify status = %v, want all files OK", res.Status)
+			}
+		})
+	}
+
+	t.Run("a readable index is preferred to a volume", func(t *testing.T) {
+		t.Parallel()
+		dir := t.TempDir()
+		fixture(t, dir, "extras.txt", "extras.par2", "extras.vol0+1.par2")
+		sets, err := FindPar2Files(dir)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(sets) != 1 || filepath.Base(sets[0].ParseFile()) != "extras.par2" {
+			t.Fatalf("sets = %+v, want the set parsed from extras.par2", sets)
+		}
+	})
+
+	t.Run("no readable file", func(t *testing.T) {
+		t.Parallel()
+		dir := t.TempDir()
+		fixture(t, dir, "extras.txt")
+		writeFile(t, dir, "extras.par2", make([]byte, 4096))
+		writeFile(t, dir, "extras.vol0+1.par2", make([]byte, 4096))
+		sets, err := FindPar2Files(dir)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(sets) != 1 || sets[0].Readable() || filepath.Base(sets[0].ParseFile()) != "extras.par2" {
+			t.Fatalf("sets = %+v, want one unreadable set that still names its main file", sets)
+		}
+		if id := identifyIn(t, dir, sets); len(id.Unreadable) != 1 {
+			t.Errorf("Unreadable = %q, want [extras]", id.Unreadable)
+		}
+	})
+}

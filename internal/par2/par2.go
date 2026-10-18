@@ -62,14 +62,23 @@ type Set struct {
 	MainFile string
 	// ExtraFiles holds the volume .par2 files (e.g. "movie.vol000+01.par2").
 	ExtraFiles []string
+
+	// readable is the first of MainFile and ExtraFiles, in that order, that
+	// describes a file (describesAFile), or "" when none does. FindPar2Files
+	// sets it; a Set built any other way leaves it "".
+	readable string
 }
 
-// ParseFile returns the par2 file to parse for this set: the main
-// (non-volume) file when present, otherwise the first volume file. It
-// returns "" when the set has no .par2 files at all. Callers that need the
-// set's file descriptions resolve the path through this method so the
-// main-or-first-volume fallback lives in one place.
+// ParseFile returns the par2 file to parse for this set. For a set from
+// FindPar2Files that is the first of the main file and the volumes that
+// describes a file, since each volume repeats the packets an unreadable
+// index lost. Otherwise, and when no file is readable, it is the main
+// (non-volume) file when present, else the first volume file. It returns ""
+// when the set has no .par2 files at all.
 func (s Set) ParseFile() string {
+	if s.readable != "" {
+		return s.readable
+	}
 	if s.MainFile != "" {
 		return s.MainFile
 	}
@@ -77,6 +86,33 @@ func (s Set) ParseFile() string {
 		return s.ExtraFiles[0]
 	}
 	return ""
+}
+
+// Readable reports whether one of the set's files describes a file. Only a
+// set from FindPar2Files can report true.
+func (s Set) Readable() bool { return s.readable != "" }
+
+// resolveReadable sets s.readable to the first of the main file and the
+// volumes, in that order, that parses to a file description or a Main packet
+// listing a file.
+func (s *Set) resolveReadable(opts ParseOptions) {
+	candidates := s.ExtraFiles
+	if s.MainFile != "" {
+		candidates = append([]string{s.MainFile}, s.ExtraFiles...)
+	}
+	for _, path := range candidates {
+		if parsed, err := ParsePar2SetWithOptions(path, opts); err == nil && describesAFile(parsed) {
+			s.readable = path
+			return
+		}
+	}
+}
+
+// describesAFile reports whether a parsed par2 file names at least one file:
+// a File Description, or a file its Main packet lists. A file that does not
+// contributes nothing to a set's identification.
+func describesAFile(p *ParsedSet) bool {
+	return len(p.Files) > 0 || len(p.RecoveryFileIDs) > 0
 }
 
 // VerifyResult holds the output of a par2 verify run.
@@ -216,7 +252,9 @@ func IsPar2Name(name string) bool {
 // FindPar2Files scans dir for .par2 files and groups them into Sets.
 // Files that are not .par2 files are ignored.  Returns an empty slice (not an
 // error) when no par2 files are found.  The returned slice is ordered by set
-// name. Optional ParseOptions can be provided.
+// name. Each set's ParseFile is resolved here, by parsing its main file and,
+// if that describes no file, its volumes in turn, with the optional
+// ParseOptions.
 func FindPar2Files(dir string, opts ...ParseOptions) ([]Set, error) {
 	dirEntries, err := os.ReadDir(dir)
 	if err != nil {
@@ -249,8 +287,13 @@ func FindPar2Files(dir string, opts ...ParseOptions) ([]Set, error) {
 		}
 	}
 
+	parseOpts := DefaultParseOptions()
+	if len(opts) > 0 {
+		parseOpts = opts[0]
+	}
 	result := make([]Set, 0, len(byName))
 	for _, s := range byName {
+		s.resolveReadable(parseOpts)
 		result = append(result, *s)
 	}
 

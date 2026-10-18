@@ -17,7 +17,7 @@ file internal/par2/fsops.go
 [a set that parses to no entry is not reported]
 file internal/par2/fsops.go
 --- anchor
-		if len(parsed.Files) == 0 && len(parsed.RecoveryFileIDs) == 0 {
+		if !describesAFile(parsed) {
 --- replace
 		if false {
 --- end
