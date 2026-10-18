@@ -1876,6 +1876,15 @@ func (app *Application) maybeReleaseRecoveryVolumes(ctx context.Context, j *job.
 						return nil, errors.New("no durability store")
 					}
 					return app.durable.WrittenRows(ctx, jobID)
+				}, func() (par2.VerifyResult, error) {
+					if len(sets) != 1 {
+						return par2.VerifyResult{}, fmt.Errorf("%d par2 sets on disk, block-level verify takes one", len(sets))
+					}
+					candidates, err := par2.CandidateFiles(dir)
+					if err != nil {
+						return par2.VerifyResult{}, err
+					}
+					return par2.GoVerify(ctx, app.log, sets[0].ParseFile(), candidates, nil)
 				})
 				if why != "" {
 					reason += "; releasing every recovery volume: " + why

@@ -65,6 +65,21 @@ func copyFixturePayload(t *testing.T, dir, asName string) {
 	}
 }
 
+// corruptPayload flips one byte of dir's data.bin, the fixture payload, so
+// that a block-level verify finds exactly one damaged block.
+func corruptPayload(t *testing.T, dir string) {
+	t.Helper()
+	path := filepath.Join(dir, "data.bin")
+	b, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	b[20] ^= 0xFF // inside the text header: a block no shifted scan can find elsewhere
+	if err := os.WriteFile(path, b, 0o600); err != nil {
+		t.Fatal(err)
+	}
+}
+
 // seedFileCRC gives one of a job's files an assembled CRC32, through
 // Job.SettleFileCRC with the rows that would earn the value (jobtest.SeedFileCRC).
 // That is the gatekeeper's point — the CRC and its evidence arrive together —
@@ -525,6 +540,7 @@ func TestMaybeReleaseRecoveryVolumes(t *testing.T) {
 		}
 		copyFixturePar2(t, dirCorrupt)
 		copyFixturePayload(t, dirCorrupt, "data.bin")
+		corruptPayload(t, dirCorrupt)
 
 		if !app.maybeReleaseRecoveryVolumes(t.Context(), jobCorrupt) {
 			t.Error("maybeReleaseRecoveryVolumes must return true when verification fails")
@@ -738,6 +754,9 @@ func TestMaybeReleaseRecoveryVolumes_MarksThePolicyForCheckpointing(t *testing.T
 			}
 			copyFixturePar2(t, jobDir)
 			copyFixturePayload(t, jobDir, "data.bin")
+			if tc.crc != 0x1068AFA6 {
+				corruptPayload(t, jobDir)
+			}
 
 			// Adding the job may itself mark it; clear the set so the count
 			// after the verdict is the verdict's own doing.
