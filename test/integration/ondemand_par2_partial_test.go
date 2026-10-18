@@ -272,9 +272,6 @@ func TestOnDemandPar2_NoIndex_FetchesOneVolumeAsTheIndex(t *testing.T) {
 	}
 
 	t.Run("damaged", func(t *testing.T) {
-		// The release is right (+1 as the index, then +2), but repair of a
-		// volume-only set loads only its first volume's blocks (#1001).
-		t.Skip("#1001: a volume-only set repairs from its first volume only")
 		run := runOnDemandPar2(t, fixtureDir, wantSHA, "data.bin:5")
 		if got, want := run.served["data.bin"], 12; got != want {
 			t.Errorf("data.bin articles served = %d, want %d", got, want)
