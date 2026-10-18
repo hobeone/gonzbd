@@ -1894,6 +1894,12 @@ func (app *Application) maybeReleaseRecoveryVolumes(ctx context.Context, j *job.
 			}
 		}
 	}
+	// A cancelled verify or rows read leaves the release unsized, so a verdict
+	// reached under cancellation would release every held volume. None is
+	// acted on; runAssess yields the job at Assessing.
+	if ctx.Err() != nil {
+		return false
+	}
 	switch outcome {
 	case outcomeClean:
 		app.log.Info("on-demand par2: verified clean, skipping recovery volumes", "job", jobID)

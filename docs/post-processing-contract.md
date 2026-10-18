@@ -770,6 +770,14 @@ three outcomes:
 | `outcomeRepair` | At least one par2-tracked file is corrupt, has no CRC to check, could not be verified, or a par2 entry matched no delivered file while others in the same set did. | If the job's `Policy.Repair` is true: the release is sized (see the "release is sized to the damage" paragraph below) and `Job.ReleaseRecovery` frees the held volumes that cover it (`FetchIfNeeded` to `FetchAlways`); job re-enters download if it freed at least one, and goes on to `Repairing` if it freed none. If `Policy.Repair` is false (PP=0): the volumes are held, like `outcomeUnknown`, and the release reason is still recorded. |
 | `outcomeUnknown` | Nothing delivered matched any par2 entry, by name or by content; or the job would otherwise be clean, but a par2 set on disk contributed no entry (`par2.Identification.Unreadable`: its parse failed, or it holds neither a File Description nor a file its Main packet lists), so what it protects is unchecked. | Volumes are held, neither fetched nor discarded; job goes on to post-processing without them. If that fails par2, the finalizer retries the job with them released. |
 
+**No verdict is acted on under cancellation.** Shutdown cancels the
+assessment's ctx (first the signal context it derives from, then
+`Dispatcher.Stop`), and a block-level verify or written-rows read it
+cuts short reads as unsizable, which would release every held volume.
+`maybeReleaseRecoveryVolumes` therefore acts on no outcome once ctx is
+cancelled, and `runAssess` yields the job at Assessing instead of advancing
+it, so the next start assesses it again (#1008).
+
 **The verdict and the fetch decision are separate questions (#653).**
 `par2Verdict` answers only "is repair possible" from the assessment; it does
 not read `Policy`. `maybeReleaseRecoveryVolumes` decides whether to act on it

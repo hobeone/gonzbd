@@ -15,6 +15,7 @@ import (
 type reporter interface {
 	FinishedJob(j *job.Job, o job.Outcome) error
 	Yielded(id string) error
+	YieldedJob(j *job.Job) error
 	AdvanceFrom(j *job.Job, from, next job.State) error
 }
 
@@ -46,7 +47,8 @@ type reporter interface {
 //     item 3 lists.
 //  2. Assessing: discharges directly within runAssess via AdvanceFrom (intact,
 //     repairable, or deferred recovery) or FinishedJob(OutcomeFailed) (hopeless,
-//     or a failure reason left for it by a deferring hand-over, finalizeRegistered).
+//     or a failure reason left for it by a deferring hand-over, finalizeRegistered),
+//     or via Yielded when shutdown cancels the assessment.
 //  3. Repairing/Extracting/Finalizing: hands off to postProcessor.Process
 //     (enqueuePostProc). Post-processing completes and yields via
 //     jobFinalizer.persistAndCommit (`git grep -n 'func (f \*jobFinalizer) persistAndCommit' internal/app/`),
@@ -126,7 +128,8 @@ func (r *appRunner) runFetch(_ context.Context, id string) {
 
 // runAssess executes assessment work synchronously in-goroutine and passes ctx
 // to maybeReleaseRecoveryVolumes(ctx, j). It directly reports completion via
-// FinishedJob or its verdict via AdvanceFrom. It resolves the job once, and
+// FinishedJob or its verdict via AdvanceFrom, and yields a job whose
+// assessment ctx cancelled. It resolves the job once, and
 // every call after that carries the instance it resolved.
 //
 // It is the one place a job at Assessing is handed to post-processing for a
@@ -142,13 +145,28 @@ func (r *appRunner) runAssess(ctx context.Context, id string) {
 		return
 	}
 	visit := r.app.postProcAdmissions.beginAssess(j)
-	defer r.handOverLate(j, visit)
+	handOver := true
+	defer func() {
+		if handOver {
+			r.handOverLate(j, visit)
+		}
+	}()
 	if r.app.assessHook != nil {
 		r.app.assessHook(id)
 	}
 
 	if r.app.maybeReleaseRecoveryVolumes(ctx, j) {
 		r.advance(j, job.Fetching)
+		return
+	}
+	if ctx.Err() != nil {
+		// Shutdown cancels ctx (the signal context, then Dispatcher.Stop), and
+		// maybeReleaseRecoveryVolumes acts on no verdict once it is cancelled.
+		// The job yields at Assessing and is assessed again at the next start.
+		// Its visit is left owned rather than handed to a post-processor that
+		// is stopping, so its deferred reasons are not acted on.
+		handOver = false
+		warnUnlessGone(r.log, "runner: yield failed", id, r.report.YieldedJob(j))
 		return
 	}
 

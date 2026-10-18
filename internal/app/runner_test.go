@@ -17,6 +17,7 @@ type reportRecorder struct {
 	total    int
 	outcomes map[string]job.Outcome
 	advances map[string][2]job.State
+	yields   map[string]int
 }
 
 func (r *reportRecorder) FinishedJob(j *job.Job, o job.Outcome) error {
@@ -36,11 +37,26 @@ func (r *reportRecorder) outcome(id string) job.Outcome {
 	return r.outcomes[id]
 }
 
-func (r *reportRecorder) Yielded(_ string) error {
+func (r *reportRecorder) Yielded(id string) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.total++
+	if r.yields == nil {
+		r.yields = make(map[string]int)
+	}
+	r.yields[id]++
 	return nil
+}
+
+func (r *reportRecorder) YieldedJob(j *job.Job) error {
+	return r.Yielded(j.ID())
+}
+
+// yielded returns how many times id was reported Yielded or YieldedJob.
+func (r *reportRecorder) yielded(id string) int {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.yields[id]
 }
 
 func (r *reportRecorder) AdvanceFrom(j *job.Job, from, next job.State) error {
@@ -299,5 +315,33 @@ func TestAppRunner_RunAssessBranches(t *testing.T) {
 	r.runAssess(context.Background(), jClean.ID())
 	if got, want := rec.advance(jClean.ID()), [2]job.State{job.Assessing, job.Extracting}; got != want {
 		t.Errorf("jClean reported AdvanceFrom %v, want %v", got, want)
+	}
+
+	// 5. A cancelled assessment (shutdown) yields the job at Assessing: no
+	// verdict, no release, and a reason deferred to it stays deferred
+	// rather than being handed to post-processing (#1008).
+	jCancelled := buildRunnerJob(t, app, []failMsgFile{
+		{subject: "movie.rar", bytes: 100},
+		{subject: "movie.vol01+02.par2", bytes: 200},
+	})
+	_ = jCancelled.SetFileFetchPolicy(1, job.FetchIfNeeded)
+	jCancelled.SetPolicy(job.PolicyFromPP(types.PPRepair))
+	if got := app.postProcAdmissions.admitUnlessAssessing(jCancelled, "deferred reason"); got != deferredToAssessing {
+		t.Fatalf("admitUnlessAssessing = %v, want deferredToAssessing", got)
+	}
+	cancelled, cancel := context.WithCancel(context.Background())
+	cancel()
+	r.runAssess(cancelled, jCancelled.ID())
+	if got := rec.advance(jCancelled.ID()); got != ([2]job.State{}) {
+		t.Errorf("jCancelled reported AdvanceFrom %v, want none", got)
+	}
+	if got := rec.yielded(jCancelled.ID()); got != 1 {
+		t.Errorf("jCancelled yielded %d times, want 1", got)
+	}
+	if p := jCancelled.Progress().FileFetchPolicy(1); p != job.FetchIfNeeded {
+		t.Errorf("volume policy = %v, want FetchIfNeeded", p)
+	}
+	if got := app.postProcAdmissions.takeDeferred(jCancelled); len(got) != 1 || got[0] != "deferred reason" {
+		t.Errorf("deferred reasons = %q, want the one deferred before the cancelled visit", got)
 	}
 }
