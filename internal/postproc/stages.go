@@ -225,6 +225,14 @@ type Job struct {
 	parCause    string
 	unpackCause string
 
+	// shortfall is the recovery blocks the one par2 set of the job lacked when
+	// the stage that newly set ParError reported it so (ShortfallError), and
+	// 0 when it is unknown: another cause, or more than one set. It is a
+	// function of the stage error that set ParError, so recordStageFailure
+	// writes it with parCause: `git grep -n 'j[.]shortfall = ' -- '*.go' ':!*_test.go'`
+	// finds 2 lines, both in it. Read through RepairShortfall.
+	shortfall int
+
 	// quickCheck is what the quickcheck stage was able to determine about
 	// this job's file CRCs. See QuickCheckOutcome. QuickCheckStage is its
 	// only writer: `git grep -n '[.]quickCheck =' -- '*.go' ':!*_test.go'`
@@ -390,10 +398,23 @@ func (j *Job) recordStageFailure(parBefore, unpackBefore bool, err error) {
 	}
 	if j.ParError && !parBefore {
 		j.parCause = err.Error()
+		j.shortfall = 0
+		var sf *ShortfallError
+		if errors.As(err, &sf) {
+			j.shortfall = sf.Blocks
+		}
 	}
 	if j.UnpackError && !unpackBefore {
 		j.unpackCause = err.Error()
 	}
+}
+
+// RepairShortfall reports the recovery blocks a failed repair lacked, net of
+// those on disk, for a job whose one par2 set reported them. ok is false when
+// the failure had another cause, the job has several sets, or the shortfall is
+// not known; the caller must not read that as a shortfall of 0.
+func (j *Job) RepairShortfall() (blocks int, ok bool) {
+	return j.shortfall, j.shortfall > 0
 }
 
 // payloadDeleter marks a stage that removes files from DownloadDir as it runs,

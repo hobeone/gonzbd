@@ -2,6 +2,7 @@ package postproc
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"os"
@@ -14,6 +15,14 @@ import (
 	"github.com/hobeone/gonzbd/internal/fsutil"
 	"github.com/hobeone/gonzbd/internal/par2"
 )
+
+// ShortfallError is the error of a par2 set that lacks Blocks recovery blocks
+// to repair, net of the ones on disk. Job.recordStageFailure reads it.
+type ShortfallError struct{ Blocks int }
+
+func (e *ShortfallError) Error() string {
+	return fmt.Sprintf("need %d more recovery blocks", e.Blocks)
+}
 
 // RepairStage verifies and repairs the downloaded files using par2 recovery
 // data, before unpack. The sets quickcheck deferred are left to
@@ -196,6 +205,11 @@ func (s *RepairStage) repairSets(ctx context.Context, log *slog.Logger, job *Job
 		}
 	}
 
+	if len(found) != 1 && firstErr != nil {
+		// The shortfall of one set says nothing of the others, so the error
+		// keeps its text and loses its type (see Job.RepairShortfall).
+		firstErr = errors.New(firstErr.Error())
+	}
 	return len(sets), firstErr
 }
 
@@ -298,7 +312,7 @@ func (s *RepairStage) handleRepairResult(
 			logf(ctx, log, job, slog.LevelWarn,
 				"Par2 repair %q needs %d more blocks — repair not possible with current data",
 				set.Name, res.BlocksNeeded)
-			return fmt.Errorf("repair %q: need %d more recovery blocks", set.Name, res.BlocksNeeded)
+			return fmt.Errorf("repair %q: %w", set.Name, &ShortfallError{Blocks: res.BlocksNeeded})
 		}
 
 		// I4: Main par2 file corrupt/missing
