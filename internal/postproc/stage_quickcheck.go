@@ -5,10 +5,10 @@ import (
 	"fmt"
 	"log/slog"
 	"maps"
-	"path/filepath"
 	"slices"
 	"strings"
 
+	"github.com/hobeone/gonzbd/internal/fsutil"
 	"github.com/hobeone/gonzbd/internal/par2"
 	"github.com/hobeone/gonzbd/internal/unpack"
 )
@@ -275,9 +275,10 @@ func (q *QuickCheckStage) recordVerdict(ctx context.Context, log *slog.Logger, j
 }
 
 // heldPar2Sets returns the names of the par2 sets that own a recovery volume
-// job still holds (FetchIfNeeded), by par2.SetName of the volume's subject,
-// which is the filename the NZB declares for it. A volume posted under a name
-// unrelated to its set's is not seen.
+// job still holds (FetchIfNeeded), by par2.SetName of the name the volume will
+// be written under: its subject sanitized under job.Sanitize, as
+// app.pipeline.newJobFileLocation names a file on disk. A volume posted under
+// a name unrelated to its set's is not seen.
 func heldPar2Sets(job *Job) map[string]bool {
 	if job.Job == nil {
 		return nil
@@ -292,7 +293,7 @@ func heldPar2Sets(job *Job) map[string]bool {
 	}
 	held := make(map[string]bool, len(idx))
 	for _, fi := range idx {
-		held[par2.SetName(filepath.Base(m.FileSubject(fi)))] = true
+		held[par2.SetName(fsutil.SanitizeFilename(m.FileSubject(fi), job.Sanitize))] = true
 	}
 	return held
 }

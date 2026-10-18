@@ -37,3 +37,11 @@ func(name string) bool { return !held[name] })
 --- replace
 func(name string) bool { return len(held) == 0 })
 --- end
+
+[a held volume named under the default sanitize options]
+file internal/postproc/stage_quickcheck.go
+--- anchor
+		held[par2.SetName(fsutil.SanitizeFilename(m.FileSubject(fi), job.Sanitize))] = true
+--- replace
+		held[par2.SetName(fsutil.SanitizeFilename(m.FileSubject(fi), fsutil.SanitizeOptions{}))] = true
+--- end

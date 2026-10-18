@@ -545,8 +545,9 @@ Both par2 engines are handed one candidate list, which `RepairStage.repairSets` 
    whatever the other sets show, ahead of both bypasses above: the files it
    protects were never checked, and the failed repair is what the finalizer
    retries to fetch the volume, which `FindPar2Files` then reads in place of
-   the index. A held volume is matched to its set by `par2.SetName` of its NZB
-   subject, so one posted under an unrelated name is not seen. A set with no
+   the index. A held volume is matched to its set by `par2.SetName` of the
+   name it will be written under (its NZB subject sanitized under the job's
+   options), so one posted under an unrelated name is not seen. A set with no
    held volume is left out of the verdict: nothing could make it readable, and
    repair would fail the job for one bad par2 file (#1008).
    A DirectUnpack success does not bypass it. It shows only that the RAR sets

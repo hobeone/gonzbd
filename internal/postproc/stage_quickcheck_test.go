@@ -11,6 +11,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/hobeone/gonzbd/internal/fsutil"
 	"github.com/hobeone/gonzbd/internal/job"
 	"github.com/hobeone/gonzbd/internal/job/jobtest"
 )
@@ -494,15 +495,18 @@ func TestQuickCheckStage_UnreadableSetBesideACleanOne(t *testing.T) {
 		buildPacket(setID, typeIFSC, buildIFSCBody(fileID, hash16k, crc32.ChecksumIEEE(content))),
 	)
 
+	underscores := fsutil.SanitizeOptions{ReplaceSpacesWith: "_"}
 	for name, tc := range map[string]struct {
-		unreadable bool
+		unreadable string // the on-disk name of a set that reads as nothing; "" for none
+		sanitize   fsutil.SanitizeOptions
 		held       []string
 		want       QuickCheckOutcome
 	}{
-		"with a held volume of its own": {true, []string{"other.vol00+01.par2"}, QuickCheckInconclusive},
-		"with no held volume":           {true, nil, QuickCheckClean},
-		"with only another set's held":  {true, []string{"intact.vol00+01.par2"}, QuickCheckClean},
-		"alone":                         {false, nil, QuickCheckClean},
+		"with a held volume of its own": {"other.par2", fsutil.SanitizeOptions{}, []string{"other.vol00+01.par2"}, QuickCheckInconclusive},
+		"with no held volume":           {"other.par2", fsutil.SanitizeOptions{}, nil, QuickCheckClean},
+		"with only another set's held":  {"other.par2", fsutil.SanitizeOptions{}, []string{"intact.vol00+01.par2"}, QuickCheckClean},
+		"named under sanitize options":  {"My_Movie.par2", underscores, []string{"My Movie.vol00+01.par2"}, QuickCheckInconclusive},
+		"alone":                         {"", fsutil.SanitizeOptions{}, nil, QuickCheckClean},
 	} {
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()
@@ -513,8 +517,8 @@ func TestQuickCheckStage_UnreadableSetBesideACleanOne(t *testing.T) {
 			if err := os.WriteFile(filepath.Join(dir, "intact.txt"), content, 0o600); err != nil {
 				t.Fatal(err)
 			}
-			if tc.unreadable {
-				if err := os.WriteFile(filepath.Join(dir, "other.par2"), make([]byte, 4096), 0o600); err != nil {
+			if tc.unreadable != "" {
+				if err := os.WriteFile(filepath.Join(dir, tc.unreadable), make([]byte, 4096), 0o600); err != nil {
 					t.Fatal(err)
 				}
 			}
@@ -523,6 +527,7 @@ func TestQuickCheckStage_UnreadableSetBesideACleanOne(t *testing.T) {
 			job := &Job{
 				Job:         buildQCJob(t, "job-unreadable", "intact.txt", int64(len(content)), crc32.ChecksumIEEE(content), tc.held...),
 				DownloadDir: dir,
+				Sanitize:    tc.sanitize,
 			}
 			if err := stage.Run(t.Context(), job); err != nil {
 				t.Fatalf("Run: %v", err)
