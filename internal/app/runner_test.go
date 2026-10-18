@@ -3,6 +3,7 @@ package app
 import (
 	"context"
 	"fmt"
+	"slices"
 	"sync"
 	"testing"
 	"time"
@@ -18,6 +19,9 @@ type reportRecorder struct {
 	outcomes map[string]job.Outcome
 	advances map[string][2]job.State
 	yields   map[string]int
+	// yieldedJobs is each instance reported through YieldedJob, which
+	// yields counts too.
+	yieldedJobs []*job.Job
 }
 
 func (r *reportRecorder) FinishedJob(j *job.Job, o job.Outcome) error {
@@ -49,7 +53,17 @@ func (r *reportRecorder) Yielded(id string) error {
 }
 
 func (r *reportRecorder) YieldedJob(j *job.Job) error {
+	r.mu.Lock()
+	r.yieldedJobs = append(r.yieldedJobs, j)
+	r.mu.Unlock()
 	return r.Yielded(j.ID())
+}
+
+// yieldedInstances returns the instances reported through YieldedJob.
+func (r *reportRecorder) yieldedInstances() []*job.Job {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return slices.Clone(r.yieldedJobs)
 }
 
 // yielded returns how many times id was reported Yielded or YieldedJob.
@@ -151,7 +165,8 @@ func TestAppRunner_EveryStateReportsExactlyOnce(t *testing.T) {
 // 1. When the application is stopping, every state yields immediately.
 // 2. For an unregistered job, every state yields immediately.
 // 3. For a registered job:
-//   - Assessing discharges directly via report.Yielded or report.FinishedJob.
+//   - Assessing discharges directly via report.AdvanceFrom, report.FinishedJob
+//     or report.YieldedJob, as appRunner's item 2 lists.
 //   - Default/unhandled states discharge directly via report.Yielded.
 //   - Fetching hands off to downloader (dl.Wake).
 //   - Repairing/Extracting/Finalizing hands off to postProcessor.
@@ -337,6 +352,9 @@ func TestAppRunner_RunAssessBranches(t *testing.T) {
 	}
 	if got := rec.yielded(jCancelled.ID()); got != 1 {
 		t.Errorf("jCancelled yielded %d times, want 1", got)
+	}
+	if got := rec.yieldedInstances(); len(got) != 1 || got[0] != jCancelled {
+		t.Errorf("YieldedJob instances = %v, want only jCancelled, not a yield by ID", got)
 	}
 	if p := jCancelled.Progress().FileFetchPolicy(1); p != job.FetchIfNeeded {
 		t.Errorf("volume policy = %v, want FetchIfNeeded", p)

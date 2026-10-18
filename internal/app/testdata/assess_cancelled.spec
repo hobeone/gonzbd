@@ -34,3 +34,11 @@ file internal/app/runner.go
 --- replace
 		_ = handOver
 --- end
+
+[a cancelled assessment yields by ID, not this instance]
+file internal/app/runner.go
+--- anchor
+r.report.YieldedJob(j))
+--- replace
+r.report.Yielded(id))
+--- end

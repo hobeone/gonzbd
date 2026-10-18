@@ -28,8 +28,8 @@ type reporter interface {
 // and worker drains are owned by their respective Stop methods during
 // Application.Shutdown.
 //
-// Every branch must end in exactly one FinishedJob, Yielded or AdvanceFrom, on
-// some goroutine.
+// Every branch must end in exactly one FinishedJob, Yielded, YieldedJob or
+// AdvanceFrom, on some goroutine.
 // Returning without one strands the job's lease and compute slot: the Queue
 // cannot distinguish "holding and working" from "holding and yielded", so
 // nothing else can return them (ports.go, Runner).

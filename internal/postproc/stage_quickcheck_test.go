@@ -436,11 +436,6 @@ func TestQuickCheckStage_UnreadableSetBesideADeferredOne(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()
 			job, dir := layoutBJob(t, "release.rar")
-			payload, err := os.ReadFile(filepath.Join(dir, "release.rar"))
-			if err != nil {
-				t.Fatal(err)
-			}
-			job.Job = buildQCJob(t, "layout-job", "release.rar", int64(len(payload)), crc32.ChecksumIEEE(payload))
 			if err := os.WriteFile(filepath.Join(dir, "feature.bin"), []byte("corrupt leftover extracted member"), 0o644); err != nil {
 				t.Fatalf("write leftover extracted member: %v", err)
 			}
