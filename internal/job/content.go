@@ -820,8 +820,11 @@ func (j *Job) IsComplete() bool {
 // A job whose failed content fits its par2 recovery capacity (RepairIntact or
 // RepairPossible) is spared, and the latch stays unset so a later failure can
 // still trigger the rule once the figures change. The rate rule therefore
-// applies only when capacity is absent, exceeded or unmeasured (RepairUnknown),
-// the same verdict the downloader's Early Health Gate acts on (#1011).
+// applies only when capacity is absent (RepairNoCapacity), exceeded
+// (RepairBeyondCapacity) or unmeasured (RepairUnknown). For the first two the
+// downloader's Early Health Gate, which acts on Hopeless(), reaches the same
+// verdict, so the rate is redundant there; it decides on its own only for
+// RepairUnknown (#1011).
 func (j *Job) CheckEarlyAbort() bool {
 	j.contentMu.Lock()
 	defer j.contentMu.Unlock()

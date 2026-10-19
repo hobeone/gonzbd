@@ -951,10 +951,10 @@ charged nothing is resolved but not failed for the early-abort rate
 not aborted as hopeless. That rate is itself bounded by par2: `Job.CheckEarlyAbort`
 consults the job's `RepairState` first and spares a job in `RepairIntact` or
 `RepairPossible`, so a post whose failed content bytes fit its recovery volumes
-is not aborted however many of its first articles failed (#1011). The rate
-applies only when capacity is absent, exceeded, or unmeasured
-(`RepairUnknown`); the downloader's Early Health Gate then stops a post by
-bytes alone. Within one open-file episode the writer enforces it;
+is not aborted on the rate (#1011). The rate applies only when capacity is
+absent, exceeded, or unmeasured (`RepairUnknown`). For the first two the
+downloader's Early Health Gate, which acts on `Hopeless()`, reaches the same
+verdict by bytes; only `RepairUnknown` is decided by the rate alone. Within one open-file episode the writer enforces it;
 across a restart `owned` starts with the ranges the resolver supplies in
 `FileInfo.Owned` (the assembler seeds from it at open; see the E3 row). An
 article whose row had not reached SQLite before a crash is Outstanding after

@@ -507,6 +507,47 @@ func TestCheckEarlyAbort_SparesAJobWhoseDamageFitsRecovery(t *testing.T) {
 	}
 }
 
+// TestCheckEarlyAbort_SparingLeavesTheLatchUnset pins that a spared call does
+// not latch: a job spared while its damage fits recovery still aborts on the
+// call after further failures push it beyond capacity.
+func TestCheckEarlyAbort_SparingLeavesTheLatchUnset(t *testing.T) {
+	arts := make([]JobArticle, 20)
+	for i := range arts {
+		arts[i] = JobArticle{ID: fmt.Sprintf("<l%d@x>", i), Bytes: 100, Number: i + 1}
+	}
+	m := NewManifest([]JobFile{
+		{Subject: "data.bin", Bytes: 2000, Articles: arts},
+		{Subject: "data.vol00+10.par2", Bytes: 1500, IsPar2Recovery: true,
+			Articles: []JobArticle{{ID: "<lv@x>", Bytes: 1500, Number: 1}}},
+	})
+	j := New("latch", "latch", PolicyFromPP(3))
+	if err := j.AttachContent(m); err != nil {
+		t.Fatalf("AttachContent: %v", err)
+	}
+	fail := func(lo, hi int) {
+		t.Helper()
+		for i := lo; i < hi; i++ {
+			if err := j.MarkArticleFailed(i, WholeArticle); err != nil {
+				t.Fatalf("MarkArticleFailed(%d): %v", i, err)
+			}
+		}
+	}
+	fail(0, 12)
+	if got := j.RepairState(); got != RepairPossible {
+		t.Fatalf("RepairState = %v after 12 failures, want %v", got, RepairPossible)
+	}
+	if j.CheckEarlyAbort() {
+		t.Fatal("CheckEarlyAbort = true while RepairPossible, want false")
+	}
+	fail(12, 16)
+	if got := j.RepairState(); got != RepairBeyondCapacity {
+		t.Fatalf("RepairState = %v after 16 failures, want %v", got, RepairBeyondCapacity)
+	}
+	if !j.CheckEarlyAbort() {
+		t.Error("CheckEarlyAbort = false once beyond capacity, want true: the spared call must not have latched")
+	}
+}
+
 // seq returns the integers lo up to but excluding hi.
 func seq(lo, hi int) []int {
 	out := make([]int, 0, hi-lo)

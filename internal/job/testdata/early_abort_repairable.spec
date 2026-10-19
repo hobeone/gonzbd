@@ -1,5 +1,5 @@
 pkg ./internal/job/
-run TestCheckEarlyAbort_SparesAJobWhoseDamageFitsRecovery
+run ^(TestCheckEarlyAbort_SparesAJobWhoseDamageFitsRecovery|TestCheckEarlyAbort_SparingLeavesTheLatchUnset)$
 
 [the rate rule ignores the repair state]
 file internal/job/content.go
@@ -23,4 +23,15 @@ file internal/job/content.go
 	if st := j.repairStateLocked(); st == RepairPossible || st == RepairIntact {
 --- replace
 	if st := j.repairStateLocked(); st == RepairIntact {
+--- end
+
+[a spared call latches the rule]
+file internal/job/content.go
+--- anchor
+	if st := j.repairStateLocked(); st == RepairPossible || st == RepairIntact {
+		return false
+--- replace
+	if st := j.repairStateLocked(); st == RepairPossible || st == RepairIntact {
+		j.progress.earlyAborted = true
+		return false
 --- end
