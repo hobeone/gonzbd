@@ -1906,9 +1906,11 @@ func (app *Application) maybeReleaseRecoveryVolumes(ctx context.Context, j *job.
 		_ = j.DiscardDeferredPar2()
 		return false
 	case outcomeUnknown:
+		// The reason says which: nothing identified, or a set that reads as
+		// nothing. A retry of a job that failed with volumes held holds none.
 		j.SetPar2ReleaseReason(reason)
-		app.log.Info("on-demand par2: nothing on disk matched the par2 index; holding the volumes and finalizing",
-			"job", jobID, "reason", reason)
+		app.log.Info("on-demand par2: no verdict; finalizing with the recovery volumes as they are",
+			"job", jobID, "reason", reason, "held_volumes", len(j.DeferredRecoveryIndices()))
 		return false
 	case outcomeRepair:
 		if !j.Policy().Repair {
@@ -1982,13 +1984,15 @@ const (
 	// many).
 	outcomeRepair
 
-	// outcomeUnknown means nothing delivered matched any par2 entry, by name
-	// or by content. That is a Layout B post — par2 protecting the extracted
-	// contents rather than the delivered archives — and it is ALSO an
-	// obfuscated single-file post damaged inside its first 16 KB, which
-	// defeats identification passes 1, 2 and 3 together. The two are
-	// indistinguishable from this value, so it must not be reported as a
-	// clean verdict.
+	// outcomeUnknown means the assessment reached no verdict, for one of two
+	// reasons the release reason tells apart. Either nothing delivered matched
+	// any par2 entry, by name or by content: that is a Layout B post — par2
+	// protecting the extracted contents rather than the delivered archives —
+	// and it is ALSO an obfuscated single-file post damaged inside its first
+	// 16 KB, which defeats identification passes 1, 2 and 3 together, and the
+	// two are indistinguishable from this value. Or a par2 set on disk
+	// describes no file (par2.Identification.Unreadable), so what it protects
+	// was never checked. Neither must be reported as a clean verdict.
 	//
 	// The damaged case is not repaired from the hold itself. When the job's
 	// post-processing then fails par2 with the volumes still held, the
@@ -2126,11 +2130,12 @@ func par2Verdict(a par2.Assessment, log *slog.Logger) (outcome par2Outcome, reas
 
 	if r.Mismatched+r.NoCRC+r.Unverified == 0 {
 		// A set on disk that contributed no entry protects files nothing here
-		// checked, so the job is not shown clean. The volumes are held rather
-		// than discarded: a par2 failure in post-processing then retries the
-		// job with them (heldVolumesMightRepair).
+		// checked, so the job is not shown clean. Any held volume stays held
+		// rather than discarded: a par2 failure in post-processing then
+		// retries the job with it (heldVolumesMightRepair). The caller logs
+		// what is held.
 		if len(id.Unreadable) > 0 {
-			log.Info("on-demand par2: a par2 set on disk describes no file; holding the recovery volumes",
+			log.Info("on-demand par2: a par2 set on disk describes no file; no verdict",
 				"sets", id.Unreadable)
 			return outcomeUnknown, fmt.Sprintf("par2 set(s) on disk describe no file (%s)",
 				strings.Join(id.Unreadable, ", "))

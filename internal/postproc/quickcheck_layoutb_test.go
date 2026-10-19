@@ -34,6 +34,13 @@ func par2LayoutFixture(layout, name string) string {
 // manifest lists that payload with its correct assembled CRC.
 func layoutJob(t *testing.T, layout string, par2Files []string, payloadSrc, payloadName string) (*Job, string) {
 	t.Helper()
+	return layoutJobHolding(t, layout, par2Files, payloadSrc, payloadName, false)
+}
+
+// layoutJobHolding is layoutJob whose job, when held, still holds a recovery
+// volume back (qcJob).
+func layoutJobHolding(t *testing.T, layout string, par2Files []string, payloadSrc, payloadName string, held bool) (*Job, string) {
+	t.Helper()
 	dir := t.TempDir()
 	for _, name := range par2Files {
 		copyToDir(t, par2LayoutFixture(layout, name), dir)
@@ -45,7 +52,7 @@ func layoutJob(t *testing.T, layout string, par2Files []string, payloadSrc, payl
 	if err := os.WriteFile(filepath.Join(dir, payloadName), payload, 0o644); err != nil {
 		t.Fatalf("write payload: %v", err)
 	}
-	j := buildQCJob(t, "layout-job", payloadName, int64(len(payload)), crc32.ChecksumIEEE(payload))
+	j := qcJob(t, "layout-job", payloadName, int64(len(payload)), crc32.ChecksumIEEE(payload), held)
 	return &Job{Job: j, DownloadDir: dir, FinalDir: dir, PP: types.PPDelete}, dir
 }
 
@@ -54,7 +61,14 @@ var layoutBPar2 = []string{"feature.par2", "feature.vol0+1.par2"}
 // layoutBJob is the Layout B post with release.rar delivered as payloadName.
 func layoutBJob(t *testing.T, payloadName string) (*Job, string) {
 	t.Helper()
-	return layoutJob(t, "layout_b", layoutBPar2, par2LayoutFixture("layout_b", "release.rar"), payloadName)
+	return layoutBJobHolding(t, payloadName, false)
+}
+
+// layoutBJobHolding is layoutBJob whose job, when held, still holds a
+// recovery volume back.
+func layoutBJobHolding(t *testing.T, payloadName string, held bool) (*Job, string) {
+	t.Helper()
+	return layoutJobHolding(t, "layout_b", layoutBPar2, par2LayoutFixture("layout_b", "release.rar"), payloadName, held)
 }
 
 // layoutStages returns quickcheck wired to an enabled native unpack stage with

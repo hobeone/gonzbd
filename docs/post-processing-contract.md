@@ -262,8 +262,8 @@ directory is left for a retry (#907):
 
 | Stage Name | Responsibilities | Skip / Gating Condition | Key Flags Updated |
 |---|---|---|---|
-| **`quickcheck`** | Relocates flat files into expected subdirs; verifies file CRC32s against par2 headers without executing `par2`; defers each par2 set that protects what an archive extracts to until after unpack. | Skipped if disabled or `PP < 1`. | Sets `quickCheck` to one of `NotRun` / `Clean` / `Damaged` / `Inconclusive` / `Unidentified`, and `deferredPar2Sets`. |
-| **`repair`** | Executes native Go `go_par2` engine or external `par2` verify/repair if files are missing or corrupted, for every par2 set not in `deferredPar2Sets`. | Skipped if `PP < 1`, `quickCheck == Clean`, or `quickCheck == Unidentified`. Runs for every other outcome, `NotRun` included, whatever DirectUnpack extracted (#953). | Sets `ParError` and `Par2Renames`. |
+| **`quickcheck`** | Relocates flat files into expected subdirs; verifies file CRC32s against par2 headers without executing `par2`; defers each par2 set that protects what an archive extracts to until after unpack; records each set that reads as nothing while no recovery volume is held. | Skipped if disabled or `PP < 1`. | Sets `quickCheck` to one of `NotRun` / `Clean` / `Damaged` / `Inconclusive` / `Unidentified`, `deferredPar2Sets` and `unverifiedPar2Sets`. |
+| **`repair`** | Executes native Go `go_par2` engine or external `par2` verify/repair if files are missing or corrupted, for every par2 set in neither `deferredPar2Sets` nor `unverifiedPar2Sets`. | Skipped if `PP < 1`, `quickCheck == Clean`, or `quickCheck == Unidentified`. Runs for every other outcome, `NotRun` included, whatever DirectUnpack extracted (#953). | Sets `ParError` and `Par2Renames`. |
 | **`rar_volume_recovery`** | Renames obfuscated volume files (e.g. `abc.001` → `abc.part001.rar`) using RAR5 header volume sequencing if standard filename parsing found no RAR sets. | Skipped if disabled, standard RAR sets already detected, or volume indexing is ambiguous. | Renames volume files in `DownloadDir`. |
 | **`unpack`** | Decompresses archives (`RAR`, `7z`, `TAR`, `split join`) up to `maxUnpackDepth = 3` recursive passes using native pure-Go engines (`go_rar`, `go_7z`, `go_tar`, `filejoin`) with optional external CLI fallbacks (`unrar`, `7z`). Respects `DirectUnpackSets` to skip already-extracted archives. When archive cleanup is enabled, records extracted archive parts in `Job.pendingDeletions` for deletion at `finalize` (#768). An archive whose type is disabled (`enable_unrar`, `enable_7zip`, `enable_filejoin` or `enable_tar` off) is skipped, not extracted: `extractArchive` asks `archiveTypes.allows`, reports the archive as not attempted, and unpack neither records its parts for deletion nor counts it as an extraction, so `finalize` delivers it as it is (#943, #947). | Skipped if `PP < 2` OR `ParError == true` (skips extraction unconditionally on repair failure), or when all four `enable_*` archive toggles are off (the stage is disabled). | Sets `UnpackError`; appends extracted archive parts to `pendingDeletions`. |
 | **`extracted_repair`** | Runs `repair`'s per-set verify/repair, with `repair`'s configuration, on the sets in `deferredPar2Sets`, against the files unpack extracted. | Does nothing when `deferredPar2Sets` is empty; skipped if `ParError` or `UnpackError` is set. | Sets `ParError` when a deferred set cannot be verified or repaired, or is gone; otherwise sets `deferredPar2Verified`. |
@@ -540,13 +540,26 @@ Both par2 engines are handed one candidate list, which `RepairStage.repairSets` 
    Every other outcome runs `repair`: `Damaged`, `Inconclusive` (quickcheck
    was attempted and could not complete, e.g. the job's manifest was
    unreadable), and `NotRun` (the stage was disabled or found no par2 sets).
-   A par2 set that reads as nothing (`par2.Identification.Unreadable`) leaves
-   the job `Inconclusive` whatever the other sets show, ahead of both bypasses
-   above: the files it protects were never checked. While the job holds
-   recovery volumes, the failed repair is what the finalizer retries to fetch
-   them, and `FindPar2Files` then reads one in place of the index. A set
-   nothing can make readable, such as a `.par2` posted with no volumes of its
-   name, fails the job (#1008).
+   While the job holds a recovery volume (`Job.par2VolumesHeld`), a par2 set
+   that reads as nothing (`par2.Identification.Unreadable`) leaves the job
+   `Inconclusive` whatever the other sets show, ahead of both bypasses above:
+   the files it protects were never checked, the failed repair is what the
+   finalizer retries to fetch the volumes, and `FindPar2Files` then reads one
+   in place of the index (#1008). Once the job holds none, nothing fetched
+   later can make the set readable, so quickcheck records it
+   (`Job.unverifiedPar2Sets`) and counts it as no set: the verdict is read
+   over the other sets, `repair` skips it by that record, and the files it
+   may protect are delivered unverified, as the files of a post with no par2
+   are. quickcheck's log and output lines say so; `repair`'s log says so
+   when it runs (`Damaged`, `Inconclusive`), since for `Clean` and
+   `Unidentified` it returns before reading the record. The record is made
+   ahead of quickcheck's manifest checks, so a job with no manifest to verify
+   against still has the set skipped. A job whose every set is such a set
+   stays `Inconclusive`, and `repair` runs for it and runs nothing.
+   The record is quickcheck's alone, so with quickcheck disabled `repair`
+   runs such a set and fails on it. One unreadable index thus costs the job
+   the verification of that set's files, not the job (Standing Design
+   Rule 3).
    A DirectUnpack success does not bypass it. It shows only that the RAR sets
    DirectUnpack extracted are intact, and says nothing of a loose file beside
    them — a payload `.mkv`, a sample, a `.zip` — or of an archive set

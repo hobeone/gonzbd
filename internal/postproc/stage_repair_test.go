@@ -410,6 +410,63 @@ func TestHandleRepairResult_NeedMoreBlocks(t *testing.T) {
 	}
 }
 
+// A par2 set that reads as nothing fails repair while the job holds a
+// recovery volume, which is what the finalizer retries to fetch it. Once the
+// job holds none, nothing fetched later can make the set readable, so
+// quickcheck records it and the stage skips it without ParError, saying its
+// files are not verified. quickcheck runs first, as in the pipeline: the
+// record is its.
+func TestRepairStage_UnreadableSetIsSkippedOnceNoVolumeIsHeld(t *testing.T) {
+	t.Parallel()
+
+	for name, tc := range map[string]struct {
+		held         bool
+		wantParError bool
+	}{
+		"a volume held": {true, true},
+		"nothing held":  {false, false},
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			dir := t.TempDir()
+			if err := os.WriteFile(filepath.Join(dir, "other.par2"), make([]byte, 4096), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			content := []byte("a delivered file no readable set describes")
+			if err := os.WriteFile(filepath.Join(dir, "data.bin"), content, 0o600); err != nil {
+				t.Fatal(err)
+			}
+			job := &Job{
+				Job:         qcJob(t, "job-unreadable-repair", "data.bin", int64(len(content)), 0, tc.held),
+				DownloadDir: dir,
+			}
+			qc := NewQuickCheckStage()
+			qc.SetEnabled(true)
+			if err := qc.Run(t.Context(), job); err != nil {
+				t.Fatalf("quickcheck: %v", err)
+			}
+			if job.quickCheck != QuickCheckInconclusive {
+				t.Fatalf("quickCheck = %s, want %s", job.quickCheck, QuickCheckInconclusive)
+			}
+
+			stage := appliedRepairStage(RepairConfig{UseGoPar2: true}, slog.New(slog.DiscardHandler))
+			err := stage.Run(t.Context(), job)
+			if job.ParError != tc.wantParError {
+				t.Errorf("ParError = %v, want %v (err=%v)\n%s", job.ParError, tc.wantParError, err, strings.Join(job.OutputLines, "\n"))
+			}
+			if (err != nil) != tc.wantParError {
+				t.Errorf("Run error = %v, want an error: %v", err, tc.wantParError)
+			}
+			skipped := slices.ContainsFunc(job.OutputLines, func(l string) bool {
+				return strings.Contains(l, `"other"`) && strings.Contains(l, "not verified")
+			})
+			if want := !tc.held; skipped != want {
+				t.Errorf("a skip line naming \"other\" as not verified = %v, want %v\n%s", skipped, want, strings.Join(job.OutputLines, "\n"))
+			}
+		})
+	}
+}
+
 // TestHandleRepairResult_InvalidPar2 verifies that a corrupt/missing par2
 // file (Parsed.Status == StatusInvalidPar2) sets ParError and returns an
 // error distinct from NeedMoreBlocks.

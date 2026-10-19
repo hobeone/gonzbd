@@ -90,9 +90,10 @@ func NewRepairStage() *RepairStage { return &RepairStage{} }
 // Name returns the stage identifier.
 func (*RepairStage) Name() string { return "repair" }
 
-// Run finds par2 sets in job.DownloadDir and repairs each one quickcheck did
-// not defer until after unpack (Job.deferredPar2Sets). No-op when the job has
-// no par2 files.
+// Run finds par2 sets in job.DownloadDir and repairs each one quickcheck
+// neither deferred until after unpack (Job.deferredPar2Sets) nor recorded as
+// one nothing can make readable (Job.unverifiedPar2Sets). No-op when the job
+// has no par2 files.
 func (s *RepairStage) Run(ctx context.Context, job *Job) error {
 	log := s.Log
 	if log == nil {
@@ -140,7 +141,8 @@ func (s *RepairStage) Run(ctx context.Context, job *Job) error {
 }
 
 // repairSets runs par2 verify+repair on the par2 sets in job.DownloadDir whose
-// deferral (Job.par2Deferred) equals deferred, and returns how many it ran:
+// deferral (Job.par2Deferred) equals deferred, less the ones quickcheck
+// recorded unverified (Job.par2Unverified), and returns how many it ran:
 // repair passes false for the sets it may verify before unpack, and
 // extracted_repair passes true for the ones that waited for it. A failing set
 // sets job.ParError and does not stop the others; the first error is
@@ -172,6 +174,16 @@ func (s *RepairStage) repairSets(ctx context.Context, log *slog.Logger, job *Job
 			if !deferred {
 				logf(ctx, log, job, slog.LevelInfo, "Skipped par2 set %q: it is verified after unpack", set.Name)
 			}
+			continue
+		}
+		// A set that read as nothing fails par2 while a volume is held, and
+		// the finalizer retries a failed repair to fetch that volume. With
+		// none held nothing fetched later can make the set readable, so
+		// quickcheck recorded it (unverifiedPar2Sets) and it costs the job
+		// only the verification of its own files.
+		if job.par2Unverified(set.Name) {
+			logf(ctx, log, job, slog.LevelWarn,
+				"Skipped par2 set %q: it describes no file and no recovery volume remains to read in its place; the files it protects are not verified", set.Name)
 			continue
 		}
 		sets = append(sets, set)
@@ -219,13 +231,14 @@ func (s *RepairStage) repairSets(ctx context.Context, log *slog.Logger, job *Job
 // No set's verdict is read from a record an earlier run wrote. That is the
 // property #533 restored, and it is narrower than "everything is always
 // verified": a set reaching here is verified without consulting stored state,
-// but four branches decide it never reaches here at all. Run returns early for
+// but five branches decide it never reaches here at all. Run returns early for
 // QuickCheckClean and for QuickCheckUnidentified (its switch's two arms that
 // return); repairSets passes over a set on the other side of
-// quickcheck's deferral from the one it was asked for; and this function skips
-// a set whose ParseFile is empty. Each of those is computed from THIS run's
-// state, which is what makes it a different thing from trusting the last
-// run's.
+// quickcheck's deferral from the one it was asked for, and over a set
+// quickcheck recorded as one nothing can make readable (par2Unverified); and
+// this function skips a set whose ParseFile is empty. Each of those is
+// computed from THIS run's state, which is what makes it a different thing
+// from trusting the last run's.
 //
 // See "Verification state is derived, never persisted" in
 // docs/post-processing-contract.md for why the persisted record was removed

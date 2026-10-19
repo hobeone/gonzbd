@@ -141,6 +141,30 @@ func (q *QuickCheckStage) assess(job *Job, sets []par2.Set, log *slog.Logger) (p
 }
 
 func (q *QuickCheckStage) recordVerdict(ctx context.Context, log *slog.Logger, job *Job, sets []par2.Set, a par2.Assessment) error {
+	// A set that read as nothing contributes no entry to the verdict below, so
+	// what it protects was never checked. Whether that keeps the job from a
+	// verdict turns on par2VolumesHeld: while a volume is held, repair runs and
+	// its failure is what the finalizer retries to fetch the volume, which
+	// FindPar2Files then reads in place of the index. With none held the set
+	// counts as no set, as a post with no par2 for those files would: it is
+	// recorded in unverifiedPar2Sets, which repair skips, the verdict is read
+	// over the other sets, and the files it may protect are delivered
+	// unverified, said here so the stage log carries it. The record depends on
+	// the set and the hold alone, so it is made ahead of the manifest checks
+	// below: a job with no CRCs to verify still has sets repair would run.
+	unreadable := a.ID.Unreadable
+	if len(unreadable) > 0 && !job.par2VolumesHeld() {
+		for _, name := range unreadable {
+			job.OutputLines = append(job.OutputLines,
+				fmt.Sprintf("[quickcheck] ⚠ par2 set %q could not be read and no recovery volume remains to read in its place; the files it protects are not verified", name))
+		}
+		logf(ctx, log, job, slog.LevelWarn,
+			"[quickcheck] par2 set(s) %s describe no file and no recovery volume is held — their files are not verified",
+			strings.Join(unreadable, ", "))
+		job.unverifiedPar2Sets = unreadable
+		unreadable = nil
+	}
+
 	// No manifest, or one describing no files, so there are no expected CRCs
 	// to compare the par2 sets against. The caller has already established
 	// that sets is non-empty — it returns at len(sets) == 0 — so this leaves
@@ -231,14 +255,16 @@ func (q *QuickCheckStage) recordVerdict(ctx context.Context, log *slog.Logger, j
 	}
 
 	switch {
-	case len(a.ID.Unreadable) > 0:
-		// A set that read as nothing contributes no entry above, so what it
-		// protects was never checked. Repair runs; while the job holds
-		// recovery volumes, its failure is what the finalizer retries to
-		// fetch them, and FindPar2Files reads one in place of the index.
+	case len(unreadable) > 0:
 		logf(ctx, log, job, slog.LevelWarn,
-			"[quickcheck] par2 set(s) %s describe no file — par2 repair will run",
-			strings.Join(a.ID.Unreadable, ", "))
+			"[quickcheck] par2 set(s) %s describe no file — par2 repair will run, and its failure fetches the held recovery volumes",
+			strings.Join(unreadable, ", "))
+	case len(job.unverifiedPar2Sets) > 0 && len(setsWithEntries(a.ID)) == 0:
+		// Every set read as nothing and none can be made readable, so there
+		// was nothing to verify. Stays Inconclusive: repair runs, skips each
+		// set, and runs nothing.
+		logf(ctx, log, job, slog.LevelWarn,
+			"[quickcheck] No par2 set is readable and no recovery volume is held — nothing to verify, and repair has nothing to run")
 	case len(deferred) > 0 && len(deferred) == len(setsWithEntries(a.ID)):
 		job.quickCheck = QuickCheckUnidentified
 		logf(ctx, log, job, slog.LevelInfo,

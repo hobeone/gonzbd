@@ -20,12 +20,27 @@ import (
 // recordVerdict reads via Manifest/Progress accessors.
 func buildQCJob(t *testing.T, id, filename string, bytes int64, crc uint32) *job.Job {
 	t.Helper()
+	return qcJob(t, id, filename, bytes, crc, false)
+}
+
+// qcJob is buildQCJob with, when held, a second file: a recovery volume the
+// job still holds back (FetchIfNeeded), so that HasDeferredPar2 reports true.
+func qcJob(t *testing.T, id, filename string, bytes int64, crc uint32, held bool) *job.Job {
+	t.Helper()
 	j := job.New(id, id+".nzb", job.Policy{})
-	m := job.NewManifest([]job.JobFile{{
+	files := []job.JobFile{{
 		Subject:  "subject.bin",
 		Bytes:    bytes,
 		Articles: []job.JobArticle{{ID: id + "-a@t", Bytes: int(bytes)}},
-	}})
+	}}
+	if held {
+		files = append(files, job.JobFile{
+			Subject:  "held.vol000+01.par2",
+			Bytes:    1,
+			Articles: []job.JobArticle{{ID: id + "-v@t", Bytes: 1}},
+		})
+	}
+	m := job.NewManifest(files)
 	if err := j.AttachContent(m); err != nil {
 		t.Fatalf("AttachContent: %v", err)
 	}
@@ -34,6 +49,11 @@ func buildQCJob(t *testing.T, id, filename string, bytes int64, crc uint32) *job
 	}
 	if crc != 0 {
 		jobtest.SeedFileCRC(t, j, 0, crc)
+	}
+	if held {
+		if err := j.SetFileFetchPolicy(1, job.FetchIfNeeded); err != nil {
+			t.Fatalf("SetFileFetchPolicy: %v", err)
+		}
 	}
 	return j
 }
@@ -427,15 +447,16 @@ func TestQuickCheckStage_UnreadableSetBesideADeferredOne(t *testing.T) {
 	t.Parallel()
 
 	for name, tc := range map[string]struct {
-		unreadable bool
-		want       QuickCheckOutcome
+		unreadable, held bool
+		want             QuickCheckOutcome
 	}{
-		"with an unreadable set": {true, QuickCheckInconclusive},
-		"alone":                  {false, QuickCheckUnidentified},
+		"with an unreadable set and a held volume": {true, true, QuickCheckInconclusive},
+		"with an unreadable set and nothing held":  {true, false, QuickCheckUnidentified},
+		"alone": {false, false, QuickCheckUnidentified},
 	} {
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()
-			job, dir := layoutBJob(t, "release.rar")
+			job, dir := layoutBJobHolding(t, "release.rar", tc.held)
 			if err := os.WriteFile(filepath.Join(dir, "feature.bin"), []byte("corrupt leftover extracted member"), 0o644); err != nil {
 				t.Fatalf("write leftover extracted member: %v", err)
 			}
@@ -456,9 +477,94 @@ func TestQuickCheckStage_UnreadableSetBesideADeferredOne(t *testing.T) {
 	}
 }
 
+// A job whose only par2 set reads as nothing stays Inconclusive either way.
+// With a volume held, repair runs it and fails, which fetches the volume.
+// With none held, the set is recorded unverified and the stage says there
+// was nothing to verify, so repair has nothing to run.
+func TestQuickCheckStage_LoneUnreadableSet(t *testing.T) {
+	t.Parallel()
+
+	for name, held := range map[string]bool{"a volume held": true, "nothing held": false} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			dir := t.TempDir()
+			if err := os.WriteFile(filepath.Join(dir, "other.par2"), make([]byte, 4096), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			content := []byte("a delivered file no readable set describes")
+			if err := os.WriteFile(filepath.Join(dir, "data.bin"), content, 0o600); err != nil {
+				t.Fatal(err)
+			}
+			job := &Job{
+				Job:         qcJob(t, "job-lone-unreadable", "data.bin", int64(len(content)), 0, held),
+				DownloadDir: dir,
+			}
+			stage := NewQuickCheckStage()
+			stage.SetEnabled(true)
+			if err := stage.Run(t.Context(), job); err != nil {
+				t.Fatalf("Run: %v", err)
+			}
+			if job.quickCheck != QuickCheckInconclusive {
+				t.Errorf("QuickCheck = %s, want %s", job.quickCheck, QuickCheckInconclusive)
+			}
+			var wantUnverified []string
+			if !held {
+				wantUnverified = []string{"other"}
+			}
+			if !slices.Equal(job.unverifiedPar2Sets, wantUnverified) {
+				t.Errorf("unverifiedPar2Sets = %q, want %q", job.unverifiedPar2Sets, wantUnverified)
+			}
+			nothing := slices.ContainsFunc(job.OutputLines, func(l string) bool {
+				return strings.Contains(l, "No par2 set is readable") && strings.Contains(l, "nothing to verify")
+			})
+			if nothing != !held {
+				t.Errorf("a 'nothing to verify' line = %v, want %v\n%s", nothing, !held, strings.Join(job.OutputLines, "\n"))
+			}
+		})
+	}
+}
+
+// The record of an unreadable set depends on the set and on whether a volume
+// is held, not on the manifest: a job with no record, or one whose manifest
+// is not resident, has no CRCs to verify, and still records the set so that
+// repair skips it rather than failing on it.
+func TestQuickCheckStage_UnreadableSetIsRecordedWithoutAManifest(t *testing.T) {
+	t.Parallel()
+
+	for name, record := range map[string]*job.Job{
+		"no record":             nil,
+		"manifest not resident": job.New("job-unreadable-no-manifest", "job-unreadable-no-manifest.nzb", job.Policy{}),
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			dir := t.TempDir()
+			if err := os.WriteFile(filepath.Join(dir, "other.par2"), make([]byte, 4096), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(filepath.Join(dir, "data.bin"), []byte("a delivered file no readable set describes"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			job := &Job{Job: record, DownloadDir: dir}
+			stage := NewQuickCheckStage()
+			stage.SetEnabled(true)
+			if err := stage.Run(t.Context(), job); err != nil {
+				t.Fatalf("Run: %v", err)
+			}
+			if job.quickCheck != QuickCheckInconclusive {
+				t.Errorf("QuickCheck = %s, want %s", job.quickCheck, QuickCheckInconclusive)
+			}
+			if want := []string{"other"}; !slices.Equal(job.unverifiedPar2Sets, want) {
+				t.Errorf("unverifiedPar2Sets = %q, want %q\n%s", job.unverifiedPar2Sets, want, strings.Join(job.OutputLines, "\n"))
+			}
+		})
+	}
+}
+
 // A par2 set that reads as nothing beside an intact one leaves the verdict
-// Inconclusive, not Clean, so repair runs and its failure fetches the set's
-// held volumes (#1008).
+// Inconclusive, not Clean, while the job holds a recovery volume, so repair
+// runs and its failure fetches the volume (#1008). With none held nothing can
+// make the set readable, so the verdict is read over the intact set and the
+// unreadable one is reported unverified rather than failing the job.
 func TestQuickCheckStage_UnreadableSetBesideACleanOne(t *testing.T) {
 	t.Parallel()
 
@@ -474,11 +580,12 @@ func TestQuickCheckStage_UnreadableSetBesideACleanOne(t *testing.T) {
 	)
 
 	for name, tc := range map[string]struct {
-		unreadable bool
-		want       QuickCheckOutcome
+		unreadable, held bool
+		want             QuickCheckOutcome
 	}{
-		"with an unreadable set": {true, QuickCheckInconclusive},
-		"alone":                  {false, QuickCheckClean},
+		"with an unreadable set and a held volume": {true, true, QuickCheckInconclusive},
+		"with an unreadable set and nothing held":  {true, false, QuickCheckClean},
+		"alone": {false, false, QuickCheckClean},
 	} {
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()
@@ -497,7 +604,7 @@ func TestQuickCheckStage_UnreadableSetBesideACleanOne(t *testing.T) {
 			stage := NewQuickCheckStage()
 			stage.SetEnabled(true)
 			job := &Job{
-				Job:         buildQCJob(t, "job-unreadable", "intact.txt", int64(len(content)), crc32.ChecksumIEEE(content)),
+				Job:         qcJob(t, "job-unreadable", "intact.txt", int64(len(content)), crc32.ChecksumIEEE(content), tc.held),
 				DownloadDir: dir,
 			}
 			if err := stage.Run(t.Context(), job); err != nil {
@@ -505,6 +612,12 @@ func TestQuickCheckStage_UnreadableSetBesideACleanOne(t *testing.T) {
 			}
 			if job.quickCheck != tc.want {
 				t.Errorf("QuickCheck = %s, want %s\n%s", job.quickCheck, tc.want, strings.Join(job.OutputLines, "\n"))
+			}
+			unverified := slices.ContainsFunc(job.OutputLines, func(l string) bool {
+				return strings.Contains(l, "other") && strings.Contains(l, "not verified")
+			})
+			if want := tc.unreadable && !tc.held; unverified != want {
+				t.Errorf("an 'other ... not verified' line = %v, want %v\n%s", unverified, want, strings.Join(job.OutputLines, "\n"))
 			}
 		})
 	}
