@@ -157,7 +157,7 @@ func TestMaybeReleaseRecoveryVolumes_Unknown(t *testing.T) {
 		t.Error("the volumes were held without recording why")
 	}
 	logged := logBuf.String()
-	if !strings.Contains(logged, "nothing on disk matched the par2 index; holding the volumes") {
-		t.Errorf("the held-and-finalizing message was not logged:\n%s", logged)
+	if !strings.Contains(logged, "no verdict; finalizing with the recovery volumes as they are") || !strings.Contains(logged, "held_volumes=1") {
+		t.Errorf("the no-verdict message naming the one held volume was not logged:\n%s", logged)
 	}
 }
