@@ -655,8 +655,11 @@ func (p *JobProgress) DownloadStarted() time.Time {
 // DownloadSeconds is the download duration in whole seconds, from the first
 // decoded article to the job's last exit from Fetching (see DownloadStarted
 // and DownloadFinished). A missing stamp, or a duration under a second,
-// reads as 1, so the result is a safe divisor. It is the one computation
-// of the figure: the history entry and the script environment both call it.
+// reads as 1 (as does a finish stamped before the start), so the result is a
+// safe divisor. The history entry and the script environment both call it.
+// Three display-only sites still compute finished-minus-started as a
+// time.Duration of their own: `git grep -n -E 'DownloadFinished\(\)\.Sub'
+// -- '*.go'` returns 3 lines (app.go, postproc/filelist.go, postproc.go).
 func (p *JobProgress) DownloadSeconds() int64 {
 	if p == nil || p.downloadStarted.IsZero() || p.downloadFinished.IsZero() {
 		return 1

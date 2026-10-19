@@ -17,6 +17,7 @@ func TestDownloadSeconds(t *testing.T) {
 		{"no stamps", &JobProgress{}, 1},
 		{"start only", &JobProgress{downloadStarted: start}, 1},
 		{"under a second", &JobProgress{downloadStarted: start, downloadFinished: start.Add(400 * time.Millisecond)}, 1},
+		{"finish before start", &JobProgress{downloadStarted: start, downloadFinished: start.Add(-5 * time.Second)}, 1},
 		{"whole seconds", &JobProgress{downloadStarted: start, downloadFinished: start.Add(35 * time.Second)}, 35},
 	} {
 		if got := tc.p.DownloadSeconds(); got != tc.want {
