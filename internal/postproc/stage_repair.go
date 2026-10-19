@@ -174,6 +174,16 @@ func (s *RepairStage) repairSets(ctx context.Context, log *slog.Logger, job *Job
 			}
 			continue
 		}
+		// A set that read as nothing fails par2 while a volume is held, and
+		// the finalizer retries a failed repair to fetch that volume. With
+		// none held nothing fetched later can make the set readable, so
+		// quickcheck recorded it (unverifiedPar2Sets) and it costs the job
+		// only the verification of its own files.
+		if job.par2Unverified(set.Name) {
+			logf(ctx, log, job, slog.LevelWarn,
+				"Skipped par2 set %q: it describes no file and no recovery volume remains to read in its place; the files it protects are not verified", set.Name)
+			continue
+		}
 		sets = append(sets, set)
 	}
 	if len(sets) == 0 {
@@ -219,13 +229,14 @@ func (s *RepairStage) repairSets(ctx context.Context, log *slog.Logger, job *Job
 // No set's verdict is read from a record an earlier run wrote. That is the
 // property #533 restored, and it is narrower than "everything is always
 // verified": a set reaching here is verified without consulting stored state,
-// but four branches decide it never reaches here at all. Run returns early for
+// but five branches decide it never reaches here at all. Run returns early for
 // QuickCheckClean and for QuickCheckUnidentified (its switch's two arms that
 // return); repairSets passes over a set on the other side of
-// quickcheck's deferral from the one it was asked for; and this function skips
-// a set whose ParseFile is empty. Each of those is computed from THIS run's
-// state, which is what makes it a different thing from trusting the last
-// run's.
+// quickcheck's deferral from the one it was asked for, and over a set
+// quickcheck recorded as one nothing can make readable (par2Unverified); and
+// this function skips a set whose ParseFile is empty. Each of those is
+// computed from THIS run's state, which is what makes it a different thing
+// from trusting the last run's.
 //
 // See "Verification state is derived, never persisted" in
 // docs/post-processing-contract.md for why the persisted record was removed

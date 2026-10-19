@@ -540,13 +540,22 @@ Both par2 engines are handed one candidate list, which `RepairStage.repairSets` 
    Every other outcome runs `repair`: `Damaged`, `Inconclusive` (quickcheck
    was attempted and could not complete, e.g. the job's manifest was
    unreadable), and `NotRun` (the stage was disabled or found no par2 sets).
-   A par2 set that reads as nothing (`par2.Identification.Unreadable`) leaves
-   the job `Inconclusive` whatever the other sets show, ahead of both bypasses
-   above: the files it protects were never checked. While the job holds
-   recovery volumes, the failed repair is what the finalizer retries to fetch
-   them, and `FindPar2Files` then reads one in place of the index. A set
-   nothing can make readable, such as a `.par2` posted with no volumes of its
-   name, fails the job (#1008).
+   While the job holds a recovery volume (`Job.par2VolumesHeld`), a par2 set
+   that reads as nothing (`par2.Identification.Unreadable`) leaves the job
+   `Inconclusive` whatever the other sets show, ahead of both bypasses above:
+   the files it protects were never checked, the failed repair is what the
+   finalizer retries to fetch the volumes, and `FindPar2Files` then reads one
+   in place of the index (#1008). Once the job holds none, nothing fetched
+   later can make the set readable, so quickcheck records it
+   (`Job.unverifiedPar2Sets`) and counts it as no set: the verdict is read
+   over the other sets, `repair` skips it by that record, and the files it
+   may protect are delivered unverified, as the files of a post with no par2
+   are, with both stages' logs saying so. A job whose every set is such a
+   set stays `Inconclusive`, and `repair` runs for it and runs nothing.
+   The record is quickcheck's alone, so with quickcheck disabled `repair`
+   runs such a set and fails on it. One unreadable index thus costs the job
+   the verification of that set's files, not the job (Standing Design
+   Rule 3).
    A DirectUnpack success does not bypass it. It shows only that the RAR sets
    DirectUnpack extracted are intact, and says nothing of a loose file beside
    them — a payload `.mkv`, a sample, a `.zip` — or of an archive set

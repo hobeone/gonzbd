@@ -67,8 +67,12 @@ const (
 	//     were no expected CRCs to compare against;
 	//   - par2 sets were found and no assembled CRC was available for any of
 	//     them, so the comparison had nothing on either side;
-	//   - a par2 set read as nothing (par2.Identification.Unreadable), so the
-	//     files it protects were never checked, whatever the other sets show.
+	//   - a par2 set read as nothing (par2.Identification.Unreadable) while
+	//     the job holds a recovery volume (par2VolumesHeld), so the files it
+	//     protects were never checked, whatever the other sets show;
+	//   - every par2 set read as nothing and none is held
+	//     (unverifiedPar2Sets), so there was nothing to verify and repair
+	//     has nothing to run.
 	QuickCheckInconclusive
 
 	// QuickCheckUnidentified is the stage's judgement that every par2 set in
@@ -247,6 +251,17 @@ type Job struct {
 	// finished. QuickCheckStage.recordVerdict is its only writer:
 	// `git grep -n '[.]deferredPar2Sets =' -- '*.go' ':!*_test.go'` finds 1 line.
 	deferredPar2Sets []string
+
+	// unverifiedPar2Sets names the par2 sets (par2.Set.Name) that read as
+	// nothing (par2.Identification.Unreadable) while the job held no recovery
+	// volume (par2VolumesHeld), so nothing fetched later can make them
+	// readable. quickcheck leaves them out of its verdict and repair skips
+	// them; the files they protect are delivered unverified. The judgement
+	// is quickcheck's alone, so with quickcheck disabled the list is empty
+	// and repair runs such a set, and fails on it, as it did before the list
+	// existed. QuickCheckStage.recordVerdict is its only writer:
+	// `git grep -n '[.]unverifiedPar2Sets =' -- '*.go' ':!*_test.go'` finds 1 line.
+	unverifiedPar2Sets []string
 
 	// deferredPar2Verified reports that extracted_repair verified, or
 	// repaired, every set in deferredPar2Sets against the extracted files.
@@ -440,6 +455,26 @@ func (j *Job) ScriptLine() string { return j.scriptLine } //nocover: single-fiel
 // HasRecord reports whether this post-processing job wraps a download job record.
 func (j *Job) HasRecord() bool {
 	return j.Job != nil
+}
+
+// par2VolumesHeld reports whether the job still holds a recovery volume back
+// (job.Job.HasDeferredPar2). It decides whether a par2 set that reads as
+// nothing can still be made readable: a volume repeats the packets an index
+// lost, and FindPar2Files reads one in place of the index once it is on disk,
+// so while one is held, a failed repair is what fetches it; with none held,
+// nothing fetched later can. quickcheck reads it to record such a set in
+// unverifiedPar2Sets. The retry half of the same fact is read by the app's
+// finalizer, through HasDeferredPar2 itself (heldVolumesMightRepair in
+// internal/app): a repair that fails with a volume held is retried to fetch
+// it, which is what quickcheck relies on while one is held.
+func (j *Job) par2VolumesHeld() bool {
+	return j.Job != nil && j.Job.HasDeferredPar2()
+}
+
+// par2Unverified reports whether quickcheck recorded the named par2 set as
+// one nothing can make readable (unverifiedPar2Sets).
+func (j *Job) par2Unverified(set string) bool {
+	return slices.Contains(j.unverifiedPar2Sets, set)
 }
 
 // par2Deferred reports whether quickcheck deferred the named par2 set until
