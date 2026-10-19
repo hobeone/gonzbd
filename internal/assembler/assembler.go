@@ -880,8 +880,10 @@ func (a *Assembler) ForgetJob(ctx context.Context, jobID string) error {
 	}
 
 	select {
-	case <-ack:
-		return nil
+	case err := <-ack:
+		// The forget arm acks with a bare close, so err is nil; it is read as
+		// an error to match ackCh's contract.
+		return err
 	case <-a.stopCh:
 		return ErrStopped
 	case <-ctx.Done():
@@ -926,8 +928,10 @@ func (a *Assembler) Quiesce(ctx context.Context) error {
 	}
 
 	select {
-	case <-ack:
-		return nil
+	case err := <-ack:
+		// The quiesce arm acks with a bare close, so err is nil; it is read as
+		// an error to match ackCh's contract.
+		return err
 	case <-a.stopCh:
 		return ErrStopped
 	case <-ctx.Done():
