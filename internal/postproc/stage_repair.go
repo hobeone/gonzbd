@@ -90,9 +90,10 @@ func NewRepairStage() *RepairStage { return &RepairStage{} }
 // Name returns the stage identifier.
 func (*RepairStage) Name() string { return "repair" }
 
-// Run finds par2 sets in job.DownloadDir and repairs each one quickcheck did
-// not defer until after unpack (Job.deferredPar2Sets). No-op when the job has
-// no par2 files.
+// Run finds par2 sets in job.DownloadDir and repairs each one quickcheck
+// neither deferred until after unpack (Job.deferredPar2Sets) nor recorded as
+// one nothing can make readable (Job.unverifiedPar2Sets). No-op when the job
+// has no par2 files.
 func (s *RepairStage) Run(ctx context.Context, job *Job) error {
 	log := s.Log
 	if log == nil {
@@ -140,7 +141,8 @@ func (s *RepairStage) Run(ctx context.Context, job *Job) error {
 }
 
 // repairSets runs par2 verify+repair on the par2 sets in job.DownloadDir whose
-// deferral (Job.par2Deferred) equals deferred, and returns how many it ran:
+// deferral (Job.par2Deferred) equals deferred, less the ones quickcheck
+// recorded unverified (Job.par2Unverified), and returns how many it ran:
 // repair passes false for the sets it may verify before unpack, and
 // extracted_repair passes true for the ones that waited for it. A failing set
 // sets job.ParError and does not stop the others; the first error is
