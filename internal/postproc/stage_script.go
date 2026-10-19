@@ -12,6 +12,7 @@ import (
 	"sync/atomic"
 
 	"github.com/hobeone/gonzbd/internal/fsutil"
+	jobpkg "github.com/hobeone/gonzbd/internal/job"
 )
 
 // ScriptStage executes a user-defined post-processing script after extraction.
@@ -75,6 +76,14 @@ func NewScriptStage(scriptDir, completeDir, version, apiKey, apiURL string) *Scr
 
 // Name returns the stage identifier.
 func (*ScriptStage) Name() string { return "script" }
+
+// boolInt is b as the 0/1 a script environment variable carries.
+func boolInt(b bool) int {
+	if b {
+		return 1
+	}
+	return 0
+}
 
 // recordScriptOutput records the run of the script named name for history:
 // its captured output, and the summary formatScriptLine makes of it. It is
@@ -145,9 +154,13 @@ func (s *ScriptStage) Run(ctx context.Context, job *Job) error {
 
 	logf(ctx, log, job, slog.LevelInfo, "Running: %s", scriptPath)
 
-	var expectedBytes int64
+	var expectedBytes, downloaded, downloadSecs, avgBPS int64
 	if prog := job.Progress(); prog != nil {
-		expectedBytes = prog.ExpectedBytes()
+		expected, remaining, failed := prog.ProgressFigures()
+		expectedBytes = expected
+		downloaded = jobpkg.WrittenBytes(expected, remaining, failed)
+		downloadSecs = prog.DownloadSeconds()
+		avgBPS = downloaded / downloadSecs
 	}
 
 	files, err := job.outputFileList()
@@ -185,7 +198,21 @@ func (s *ScriptStage) Run(ctx context.Context, job *Job) error {
 		// internal/app/history_helper.go) — a script reading SAB_BYTES for
 		// an on-demand-par2 job that verified clean must see what was
 		// actually fetched, not the pre-discard total.
-		Bytes:         expectedBytes,
+		Bytes: expectedBytes,
+		// The download figures come from the progress tier through the same
+		// functions buildHistoryEntry uses (WrittenBytes, DownloadSeconds), so
+		// the script and the history row cannot disagree. BytesTried is the
+		// expected size: every article of it was attempted, failed ones
+		// included; retries are not counted.
+		BytesDownloaded: downloaded,
+		BytesTried:      expectedBytes,
+		DownloadTime:    int(downloadSecs),
+		AvgBPS:          avgBPS,
+		// SABnzbd's SAB_REPAIR and SAB_UNPACK are the job's PP level split
+		// into flags (pp_to_opts), i.e. what was requested, and so are these.
+		// A stage's outcome is SAB_STATUS.
+		Repair:        boolInt(!shouldSkipForPP("repair", job.PP)),
+		Unpack:        boolInt(!shouldSkipForPP("unpack", job.PP)),
 		RedactSecrets: s.redactSecrets.Load(),
 		OnLine: func(line string) {
 			if job.OnOutput != nil {

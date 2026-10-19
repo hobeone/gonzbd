@@ -118,10 +118,10 @@ scripts. GoNZBD adds a few extensions (marked below).
 | Variable | Description | Example |
 |----------|-------------|---------|
 | `SAB_BYTES` | Total job size (bytes) | `1073741824` |
-| `SAB_BYTES_DOWNLOADED` | Bytes actually downloaded | `1073741824` |
-| `SAB_BYTES_TRIED` | Total bytes attempted including retries | `1073741824` |
-| `SAB_DOWNLOAD_TIME` | Download duration (seconds) | `120` |
-| `SAB_AVG_BPS` | Average download speed (bytes/sec) | `8947848` |
+| `SAB_BYTES_DOWNLOADED` | Bytes written (NZB-declared, yEnc-encoded), failed articles excluded; the history row's `downloaded` | `1073741824` |
+| `SAB_BYTES_TRIED` | Bytes the job attempted to fetch, failed articles included (equals `SAB_BYTES`; retries are not counted) | `1073741824` |
+| `SAB_DOWNLOAD_TIME` | Download duration (seconds, at least 1); the history row's `download_time` | `120` |
+| `SAB_AVG_BPS` | `SAB_BYTES_DOWNLOADED` / `SAB_DOWNLOAD_TIME` (bytes/sec) | `8947848` |
 | `SAB_AGE` | Age of NZB in days since posting date | `3` |
 
 ### Files
@@ -145,8 +145,8 @@ restart between finalize and the script is re-listed from its folder.
 | Variable | Description | Example |
 |----------|-------------|---------|
 | `SAB_PP_STATUS` | Post-processing status (0=success, 1=repair failed, 2=unpack failed, 3=both failed) | `0` |
-| `SAB_REPAIR` | Whether par2 repair was performed (0=no, 1=yes) | `1` |
-| `SAB_UNPACK` | Whether unpacking was performed (0=no, 1=yes) | `1` |
+| `SAB_REPAIR` | Whether the job's PP level requests repair (PP >= 1; 0=no, 1=yes). Requested, not performed: a clean verify still reads 1 | `1` |
+| `SAB_UNPACK` | Whether the job's PP level requests unpacking (PP >= 2; 0=no, 1=yes) | `1` |
 | `SAB_FAIL_MSG` | Failure message (empty on success) | `""` |
 | `SAB_FAILURE_URL` | Failure URL (if any) | `""` |
 | `SAB_REPORTNAME` | Report name (usually empty) *(Go extension)* | `""` |

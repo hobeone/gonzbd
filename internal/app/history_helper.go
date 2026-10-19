@@ -73,12 +73,7 @@ func buildHistoryEntry(ppJob *postproc.Job) history.Entry {
 		// Fetching or handed over late, which is stamped at its next exit and
 		// so counts the time since its first article. A missing stamp, or a
 		// duration under a second, reads as 1.
-		if !p.DownloadStarted().IsZero() && !p.DownloadFinished().IsZero() {
-			downloadDuration = int64(p.DownloadFinished().Sub(p.DownloadStarted()).Seconds())
-		}
-		if downloadDuration == 0 {
-			downloadDuration = 1
-		}
+		downloadDuration = p.DownloadSeconds()
 
 		completeness = downloadCompleteness(expectedBytes, failed)
 		// Bytes written (encoded), not fsynced; see DurableBytesOf.
