@@ -428,11 +428,11 @@ func (p *pipeline) handleFailureResult(ctx context.Context, res *downloader.Arti
 		}
 		telemetry.ArticlesFailed.Add(1)
 
-		// Early abort: if the first batch of articles is mostly
-		// failures, the job is likely DMCA'd or expired. Abort now
-		// to save bandwidth.
+		// Early abort: if most of the articles resolved so far failed and
+		// par2 coverage is absent, insufficient or unknown, the job is
+		// likely DMCA'd or expired. Abort now to save bandwidth.
 		if res.Job.CheckEarlyAbort() {
-			p.log.Warn("early abort: 80%+ of first articles failed, job appears DMCA'd/expired",
+			p.log.Warn("early abort: 80%+ of resolved articles failed and par2 coverage is absent, insufficient or unknown, job appears DMCA'd/expired",
 				"job", res.JobID())
 			if p.onJobHopeless != nil {
 				p.onJobHopeless(res.JobID())

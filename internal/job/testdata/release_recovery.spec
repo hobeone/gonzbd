@@ -36,9 +36,9 @@ file internal/job/cover.go
 [a hopeless job still releases]
 file internal/job/release.go
 --- anchor
-HasPar2Files()).Hopeless() {
+j.repairStateLocked().Hopeless() {
 --- replace
-HasPar2Files()).Hopeless() && false {
+j.repairStateLocked().Hopeless() && false {
 --- end
 
 [the zero value is treated as sized]

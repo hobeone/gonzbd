@@ -380,3 +380,179 @@ func TestCheckEarlyAbort_AZeroChargeRefusalStaysResolved(t *testing.T) {
 		})
 	}
 }
+
+// TestCheckEarlyAbort_SparesAJobWhoseDamageFitsRecovery pins #1011: the rate
+// rule defers to the job's RepairState, so a post whose failed content bytes
+// fit its par2 recovery volumes is not failed on the rate alone, while a post
+// with no par2, an index-only par2, or damage beyond the volumes still is.
+// Every row fails enough articles to reach the rate threshold, so the verdict
+// is the only variable. It runs on the live path, after a recompute, and with
+// the failures landing while the job is evicted and folded in at hydration.
+func TestCheckEarlyAbort_SparesAJobWhoseDamageFitsRecovery(t *testing.T) {
+	const failed = earlyAbortSample + 2 // 12 articles of 100 bytes: 1200 bytes
+	arts := func(prefix string, n int) []JobArticle {
+		out := make([]JobArticle, n)
+		for i := range out {
+			out[i] = JobArticle{ID: fmt.Sprintf("<%s%d@x>", prefix, i), Bytes: 100, Number: i + 1}
+		}
+		return out
+	}
+	vol := func(bytes int64, n int) JobFile {
+		return JobFile{Subject: "data.vol00+10.par2", Bytes: bytes, IsPar2Recovery: true, Articles: arts("v", n)}
+	}
+	cases := []struct {
+		name      string
+		files     []JobFile
+		written   []int // articles marked written before the failures
+		fail      []int // articles failed with WholeArticle
+		wantState RepairState
+		wantAbort bool
+	}{
+		{
+			name:      "recovery exceeds the failed bytes",
+			files:     []JobFile{{Subject: "data.bin", Bytes: 1200, Articles: arts("c", failed)}, vol(2000, 1)},
+			fail:      seq(0, failed),
+			wantState: RepairPossible, wantAbort: false,
+		},
+		{
+			name:      "recovery equals the failed bytes",
+			files:     []JobFile{{Subject: "data.bin", Bytes: 1200, Articles: arts("c", failed)}, vol(1200, 1)},
+			fail:      seq(0, failed),
+			wantState: RepairPossible, wantAbort: false,
+		},
+		{
+			name:      "failed bytes exceed recovery",
+			files:     []JobFile{{Subject: "data.bin", Bytes: 1200, Articles: arts("c", failed)}, vol(500, 1)},
+			fail:      seq(0, failed),
+			wantState: RepairBeyondCapacity, wantAbort: true,
+		},
+		{
+			name: "index-only par2, capacity unmeasured",
+			files: []JobFile{{Subject: "data.bin", Bytes: 1200, Articles: arts("c", failed)},
+				{Subject: "data.par2", Bytes: 100, Articles: arts("i", 1)}},
+			fail:      seq(0, failed),
+			wantState: RepairUnknown, wantAbort: true,
+		},
+		{
+			name:      "no par2",
+			files:     []JobFile{{Subject: "data.bin", Bytes: 1200, Articles: arts("c", failed)}},
+			fail:      seq(0, failed),
+			wantState: RepairNoCapacity, wantAbort: true,
+		},
+		{
+			name:      "only par2 articles failed, content intact",
+			files:     []JobFile{{Subject: "data.bin", Bytes: 200, Articles: arts("c", 2)}, vol(1200, failed)},
+			written:   []int{0, 1},
+			fail:      seq(2, 2+failed),
+			wantState: RepairIntact, wantAbort: false,
+		},
+	}
+	for _, tc := range cases {
+		newJob := func(t *testing.T) (*Job, *Manifest) {
+			t.Helper()
+			m := NewManifest(tc.files)
+			j := New("recoverable", "recoverable", PolicyFromPP(3))
+			if err := j.AttachContent(m); err != nil {
+				t.Fatalf("AttachContent: %v", err)
+			}
+			for _, i := range tc.written {
+				markWritten(t, j, i)
+			}
+			return j, m
+		}
+		failAll := func(t *testing.T, j *Job) {
+			t.Helper()
+			for _, i := range tc.fail {
+				if err := j.MarkArticleFailed(i, WholeArticle); err != nil {
+					t.Fatalf("MarkArticleFailed(%d): %v", i, err)
+				}
+			}
+		}
+		paths := map[string]func(t *testing.T) *Job{
+			"live": func(t *testing.T) *Job {
+				j, _ := newJob(t)
+				failAll(t, j)
+				return j
+			},
+			"recomputed": func(t *testing.T) *Job {
+				j, _ := newJob(t)
+				failAll(t, j)
+				j.contentMu.Lock()
+				j.progress.recompute(j.manifest)
+				j.contentMu.Unlock()
+				return j
+			},
+			"failed while evicted": func(t *testing.T) *Job {
+				j, m := newJob(t)
+				j.Evict()
+				failAll(t, j)
+				if err := j.RestoreContent(m); err != nil {
+					t.Fatalf("RestoreContent: %v", err)
+				}
+				return j
+			},
+		}
+		for name, run := range paths {
+			t.Run(tc.name+"/"+name, func(t *testing.T) {
+				j := run(t)
+				if got := j.RepairState(); got != tc.wantState {
+					t.Fatalf("RepairState = %v, want %v (the row's premise)", got, tc.wantState)
+				}
+				if got := j.CheckEarlyAbort(); got != tc.wantAbort {
+					t.Errorf("CheckEarlyAbort = %v in RepairState %v after %d failures, want %v",
+						got, tc.wantState, len(tc.fail), tc.wantAbort)
+				}
+			})
+		}
+	}
+}
+
+// TestCheckEarlyAbort_SparingLeavesTheLatchUnset pins that a spared call does
+// not latch: a job spared while its damage fits recovery still aborts on the
+// call after further failures push it beyond capacity.
+func TestCheckEarlyAbort_SparingLeavesTheLatchUnset(t *testing.T) {
+	arts := make([]JobArticle, 20)
+	for i := range arts {
+		arts[i] = JobArticle{ID: fmt.Sprintf("<l%d@x>", i), Bytes: 100, Number: i + 1}
+	}
+	m := NewManifest([]JobFile{
+		{Subject: "data.bin", Bytes: 2000, Articles: arts},
+		{Subject: "data.vol00+10.par2", Bytes: 1500, IsPar2Recovery: true,
+			Articles: []JobArticle{{ID: "<lv@x>", Bytes: 1500, Number: 1}}},
+	})
+	j := New("latch", "latch", PolicyFromPP(3))
+	if err := j.AttachContent(m); err != nil {
+		t.Fatalf("AttachContent: %v", err)
+	}
+	fail := func(lo, hi int) {
+		t.Helper()
+		for i := lo; i < hi; i++ {
+			if err := j.MarkArticleFailed(i, WholeArticle); err != nil {
+				t.Fatalf("MarkArticleFailed(%d): %v", i, err)
+			}
+		}
+	}
+	fail(0, 12)
+	if got := j.RepairState(); got != RepairPossible {
+		t.Fatalf("RepairState = %v after 12 failures, want %v", got, RepairPossible)
+	}
+	if j.CheckEarlyAbort() {
+		t.Fatal("CheckEarlyAbort = true while RepairPossible, want false")
+	}
+	fail(12, 16)
+	if got := j.RepairState(); got != RepairBeyondCapacity {
+		t.Fatalf("RepairState = %v after 16 failures, want %v", got, RepairBeyondCapacity)
+	}
+	if !j.CheckEarlyAbort() {
+		t.Error("CheckEarlyAbort = false once beyond capacity, want true: the spared call must not have latched")
+	}
+}
+
+// seq returns the integers lo up to but excluding hi.
+func seq(lo, hi int) []int {
+	out := make([]int, 0, hi-lo)
+	for i := lo; i < hi; i++ {
+		out = append(out, i)
+	}
+	return out
+}
