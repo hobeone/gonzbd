@@ -264,15 +264,15 @@ func (g *Grabber) Fetch(ctx context.Context, urlStr string, opts types.FetchOpti
 
 	// Invoke handler for each NZB found.
 	var ids []string
-	for i, nzbData := range nzbs {
-		// Derive a per-NZB filename if multiple found (e.g., from a zip).
+	for _, p := range nzbs {
+		// Payload.Name is set for zip members (unique within the archive);
+		// when empty the payload is named after the downloaded file.
 		nzbFilename := filename
-		if len(nzbs) > 1 {
-			base := strings.TrimSuffix(filename, ".nzb")
-			nzbFilename = fmt.Sprintf("%s_%d.nzb", base, i)
+		if p.Name != "" {
+			nzbFilename = p.Name
 		}
 
-		id, err := g.handler.HandleNZB(ctx, nzbFilename, nzbData, opts)
+		id, err := g.handler.HandleNZB(ctx, nzbFilename, p.Data, opts)
 		if err != nil {
 			g.logger.Error("urlgrabber: handler failed for NZB in archive",
 				slog.String("filename", nzbFilename),

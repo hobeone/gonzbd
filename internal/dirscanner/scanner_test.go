@@ -229,7 +229,7 @@ func TestDecompressGZ(t *testing.T) {
 		t.Errorf("expected 1 NZB, got %d", len(nzbs))
 	}
 
-	if !bytes.Equal(nzbs[0], nzbContent) {
+	if !bytes.Equal(nzbs[0].Data, nzbContent) {
 		t.Errorf("decompressed content mismatch")
 	}
 }
@@ -254,8 +254,8 @@ func TestDecompressBZ2(t *testing.T) {
 	if len(nzbs) != 1 {
 		t.Fatalf("expected 1 NZB, got %d", len(nzbs))
 	}
-	if !bytes.Equal(nzbs[0], want) {
-		t.Errorf("decompressed content = %q, want %q", nzbs[0], want)
+	if !bytes.Equal(nzbs[0].Data, want) {
+		t.Errorf("decompressed content = %q, want %q", nzbs[0].Data, want)
 	}
 }
 
@@ -297,11 +297,11 @@ func TestDecompressZip(t *testing.T) {
 	if len(nzbs) != 2 {
 		t.Fatalf("expected 2 NZBs (readme.txt skipped), got %d", len(nzbs))
 	}
-	if !bytes.Equal(nzbs[0], nzbA) {
-		t.Errorf("nzbs[0] = %q, want %q", nzbs[0], nzbA)
+	if !bytes.Equal(nzbs[0].Data, nzbA) {
+		t.Errorf("nzbs[0] = %q, want %q", nzbs[0].Data, nzbA)
 	}
-	if !bytes.Equal(nzbs[1], nzbB) {
-		t.Errorf("nzbs[1] = %q, want %q", nzbs[1], nzbB)
+	if !bytes.Equal(nzbs[1].Data, nzbB) {
+		t.Errorf("nzbs[1] = %q, want %q", nzbs[1].Data, nzbB)
 	}
 }
 
@@ -1000,11 +1000,11 @@ func TestProcessScannedFile_PartialError(t *testing.T) {
 		t.Fatalf("create zip: %v", err)
 	}
 
-	// Handler succeeds for "batch.zip[1]" (a.nzb) but fails for "batch.zip[2]"
-	// (b.nzb), producing a PartialError from handleStableFile.
+	// Handler succeeds for "a.nzb" but fails for "b.nzb", producing a
+	// PartialError from handleStableFile.
 	handler := &MockHandler{
 		failFor: map[string]error{
-			"batch.zip[2]": fmt.Errorf("simulated import failure for second NZB"),
+			"b.nzb": fmt.Errorf("simulated import failure for second NZB"),
 		},
 	}
 	scanner := New(tmpDir, store, handler, nil, nil)

@@ -63,7 +63,7 @@ func TestExtractNZBs_PlainNZB(t *testing.T) {
 	if len(results) != 1 {
 		t.Fatalf("got %d results, want 1", len(results))
 	}
-	if string(results[0]) != string(content) {
+	if string(results[0].Data) != string(content) {
 		t.Errorf("content mismatch")
 	}
 }
@@ -86,8 +86,8 @@ func TestExtractNZBs_GZip(t *testing.T) {
 	if len(results) != 1 {
 		t.Fatalf("got %d results, want 1", len(results))
 	}
-	if string(results[0]) != string(content) {
-		t.Errorf("content mismatch: got %q", results[0])
+	if string(results[0].Data) != string(content) {
+		t.Errorf("content mismatch: got %q", results[0].Data)
 	}
 }
 
@@ -110,7 +110,7 @@ func TestExtractNZBs_Zip(t *testing.T) {
 	if len(results) != 1 {
 		t.Fatalf("got %d results, want 1", len(results))
 	}
-	if string(results[0]) != string(content) {
+	if string(results[0].Data) != string(content) {
 		t.Errorf("content mismatch")
 	}
 }
@@ -234,7 +234,7 @@ func TestExtractPlainNZB_Direct(t *testing.T) {
 	if err != nil {
 		t.Fatalf("extractPlainNZB failed: %v", err)
 	}
-	if len(got) != 1 || string(got[0]) != string(content) {
+	if len(got) != 1 || string(got[0].Data) != string(content) {
 		t.Errorf("got %q, want %q", got, content)
 	}
 
@@ -273,7 +273,7 @@ func TestExtractGZ_Direct(t *testing.T) {
 	if err != nil {
 		t.Fatalf("extractGZ failed: %v", err)
 	}
-	if len(got) != 1 || string(got[0]) != string(content) {
+	if len(got) != 1 || string(got[0].Data) != string(content) {
 		t.Errorf("got %q, want %q", got, content)
 	}
 }
@@ -296,7 +296,7 @@ func TestExtractBZ2_Direct(t *testing.T) {
 		t.Fatalf("extractBZ2 failed: %v", err)
 	}
 	expected := "<nzb>bzipped</nzb>"
-	if len(got) != 1 || string(got[0]) != expected {
+	if len(got) != 1 || string(got[0].Data) != expected {
 		t.Errorf("got %q, want %q", got, expected)
 	}
 }
@@ -325,7 +325,7 @@ func TestExtractZip_Direct(t *testing.T) {
 	if err != nil {
 		t.Fatalf("extractZip failed: %v", err)
 	}
-	if len(got) != 1 || string(got[0]) != string(content) {
+	if len(got) != 1 || string(got[0].Data) != string(content) {
 		t.Errorf("got %q, want %q", got, content)
 	}
 }
@@ -377,7 +377,7 @@ func TestMaxDecompressSizeBoundary(t *testing.T) {
 	if err != nil {
 		t.Errorf("extractPlainNZB exactly at boundary failed: %v", err)
 	}
-	if len(res) != 1 || len(res[0]) != 10 {
+	if len(res) != 1 || len(res[0].Data) != 10 {
 		t.Errorf("expected 1 result of length 10")
 	}
 
@@ -403,7 +403,7 @@ func TestMaxDecompressSizeBoundary(t *testing.T) {
 	if err != nil {
 		t.Errorf("extractGZ exactly at boundary failed: %v", err)
 	}
-	if len(res) != 1 || len(res[0]) != 10 {
+	if len(res) != 1 || len(res[0].Data) != 10 {
 		t.Errorf("expected 1 result of length 10")
 	}
 
@@ -436,7 +436,7 @@ func TestMaxDecompressSizeBoundary(t *testing.T) {
 	if err != nil {
 		t.Errorf("extractZip exactly at boundary failed: %v", err)
 	}
-	if len(res) != 1 || len(res[0]) != 10 {
+	if len(res) != 1 || len(res[0].Data) != 10 {
 		t.Errorf("expected 1 result of length 10")
 	}
 
@@ -462,7 +462,7 @@ func TestMaxDecompressSizeBoundary(t *testing.T) {
 	if err != nil {
 		t.Errorf("extractBZ2 exactly at boundary failed: %v", err)
 	}
-	if len(res) != 1 || len(res[0]) != 10 {
+	if len(res) != 1 || len(res[0].Data) != 10 {
 		t.Errorf("expected 1 result of length 10")
 	}
 
