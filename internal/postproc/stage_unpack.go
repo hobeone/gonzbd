@@ -536,7 +536,9 @@ func extractWithDriver(ctx context.Context, log *slog.Logger, job *Job, a unpack
 	}
 
 	goErr := err
-	if goErr != nil && d.fallback {
+	// A cancelled or expired context is not an engine failure: the external
+	// retry would fail at once on the same context.
+	if goErr != nil && ctx.Err() == nil && d.fallback {
 		extBin, binErr := d.findBin(opts)
 		if binErr == nil {
 			logf(ctx, log, job, slog.LevelWarn,
