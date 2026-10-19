@@ -383,8 +383,10 @@ func dispatchRepairTool(
 	// authoritative — external par2 re-scans the same content-matched files and
 	// reaches the identical conclusion, so retrying only burns a full scan
 	// without changing the outcome. Gated on fallback so users can disable the
-	// retry entirely.
-	if fallback && shouldFallbackToExternal(res, err) {
+	// retry entirely. A cancelled or expired context is a decision not to
+	// continue, not an inconclusive result, and the retry would fail at once
+	// on the same context.
+	if fallback && ctx.Err() == nil && shouldFallbackToExternal(res, err) {
 		par2Bin := repairOpts.Bin()
 		if _, lookErr := exec.LookPath(par2Bin); lookErr == nil {
 			reason := nativeRepairReason(res, err)
