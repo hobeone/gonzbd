@@ -954,8 +954,8 @@ consults the job's `RepairState` first and spares a job in `RepairIntact` or
 is not aborted on the rate (#1011). The rate applies only when capacity is
 absent, exceeded, or unmeasured (`RepairUnknown`). For the first two the
 downloader's Early Health Gate, which acts on `Hopeless()`, reaches the same
-verdict by bytes; only `RepairUnknown` is decided by the rate alone. Within one open-file episode the writer enforces it;
-across a restart `owned` starts with the ranges the resolver supplies in
+verdict by bytes; only `RepairUnknown` is decided by the rate alone. Within one open-file episode the writer enforces the
+byte-range overlap rule; across a restart `owned` starts with the ranges the resolver supplies in
 `FileInfo.Owned` (the assembler seeds from it at open; see the E3 row). An
 article whose row had not reached SQLite before a crash is Outstanding after
 it, and is written again under the same rule; a permanent failure is not

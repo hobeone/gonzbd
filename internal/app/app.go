@@ -3416,7 +3416,7 @@ type hopelessTrigger uint8
 
 const (
 	// hopelessEarlyAbort is the pipeline's early-abort heuristic
-	// (Job.CheckEarlyAbort): most resolved articles failed and par2 does not cover them.
+	// (Job.CheckEarlyAbort): most resolved articles failed and par2 coverage is absent, insufficient or unknown.
 	hopelessEarlyAbort hopelessTrigger = iota
 	// hopelessHealthGate is the downloader's Early Health Gate: the job's
 	// RepairState is Hopeless.
