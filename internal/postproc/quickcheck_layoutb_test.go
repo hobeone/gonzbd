@@ -38,7 +38,7 @@ func layoutJob(t *testing.T, layout string, par2Files []string, payloadSrc, payl
 }
 
 // layoutJobHolding is layoutJob whose job, when held, still holds a recovery
-// volume back (buildQCJobHolding).
+// volume back (qcJob).
 func layoutJobHolding(t *testing.T, layout string, par2Files []string, payloadSrc, payloadName string, held bool) (*Job, string) {
 	t.Helper()
 	dir := t.TempDir()
@@ -52,11 +52,7 @@ func layoutJobHolding(t *testing.T, layout string, par2Files []string, payloadSr
 	if err := os.WriteFile(filepath.Join(dir, payloadName), payload, 0o644); err != nil {
 		t.Fatalf("write payload: %v", err)
 	}
-	build := buildQCJob
-	if held {
-		build = buildQCJobHolding
-	}
-	j := build(t, "layout-job", payloadName, int64(len(payload)), crc32.ChecksumIEEE(payload))
+	j := qcJob(t, "layout-job", payloadName, int64(len(payload)), crc32.ChecksumIEEE(payload), held)
 	return &Job{Job: j, DownloadDir: dir, FinalDir: dir, PP: types.PPDelete}, dir
 }
 

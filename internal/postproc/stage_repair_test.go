@@ -436,12 +436,8 @@ func TestRepairStage_UnreadableSetIsSkippedOnceNoVolumeIsHeld(t *testing.T) {
 			if err := os.WriteFile(filepath.Join(dir, "data.bin"), content, 0o600); err != nil {
 				t.Fatal(err)
 			}
-			build := buildQCJob
-			if tc.held {
-				build = buildQCJobHolding
-			}
 			job := &Job{
-				Job:         build(t, "job-unreadable-repair", "data.bin", int64(len(content)), 0),
+				Job:         qcJob(t, "job-unreadable-repair", "data.bin", int64(len(content)), 0, tc.held),
 				DownloadDir: dir,
 			}
 			qc := NewQuickCheckStage()

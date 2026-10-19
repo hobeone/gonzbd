@@ -23,13 +23,8 @@ func buildQCJob(t *testing.T, id, filename string, bytes int64, crc uint32) *job
 	return qcJob(t, id, filename, bytes, crc, false)
 }
 
-// buildQCJobHolding is buildQCJob with a second file, a recovery volume the
+// qcJob is buildQCJob with, when held, a second file: a recovery volume the
 // job still holds back (FetchIfNeeded), so that HasDeferredPar2 reports true.
-func buildQCJobHolding(t *testing.T, id, filename string, bytes int64, crc uint32) *job.Job {
-	t.Helper()
-	return qcJob(t, id, filename, bytes, crc, true)
-}
-
 func qcJob(t *testing.T, id, filename string, bytes int64, crc uint32, held bool) *job.Job {
 	t.Helper()
 	j := job.New(id, id+".nzb", job.Policy{})
@@ -500,12 +495,8 @@ func TestQuickCheckStage_LoneUnreadableSet(t *testing.T) {
 			if err := os.WriteFile(filepath.Join(dir, "data.bin"), content, 0o600); err != nil {
 				t.Fatal(err)
 			}
-			build := buildQCJob
-			if held {
-				build = buildQCJobHolding
-			}
 			job := &Job{
-				Job:         build(t, "job-lone-unreadable", "data.bin", int64(len(content)), 0),
+				Job:         qcJob(t, "job-lone-unreadable", "data.bin", int64(len(content)), 0, held),
 				DownloadDir: dir,
 			}
 			stage := NewQuickCheckStage()
@@ -612,12 +603,8 @@ func TestQuickCheckStage_UnreadableSetBesideACleanOne(t *testing.T) {
 			}
 			stage := NewQuickCheckStage()
 			stage.SetEnabled(true)
-			build := buildQCJob
-			if tc.held {
-				build = buildQCJobHolding
-			}
 			job := &Job{
-				Job:         build(t, "job-unreadable", "intact.txt", int64(len(content)), crc32.ChecksumIEEE(content)),
+				Job:         qcJob(t, "job-unreadable", "intact.txt", int64(len(content)), crc32.ChecksumIEEE(content), tc.held),
 				DownloadDir: dir,
 			}
 			if err := stage.Run(t.Context(), job); err != nil {
