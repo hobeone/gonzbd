@@ -1,5 +1,5 @@
 pkg ./internal/postproc/
-run ^TestQuickCheckStage_UnreadableSetBeside|^TestQuickCheckStage_LoneUnreadableSet|^TestRepairStage_UnreadableSetIsSkipped
+run ^TestQuickCheckStage_UnreadableSetBeside|^TestQuickCheckStage_LoneUnreadableSet|^TestQuickCheckStage_UnreadableSetIsRecordedWithoutAManifest|^TestRepairStage_UnreadableSetIsSkipped
 
 # A par2 set that read as nothing keeps QuickCheck from a Clean or
 # Unidentified verdict while the job holds a recovery volume, so repair runs

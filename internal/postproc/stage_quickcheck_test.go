@@ -533,6 +533,42 @@ func TestQuickCheckStage_LoneUnreadableSet(t *testing.T) {
 	}
 }
 
+// The record of an unreadable set depends on the set and on whether a volume
+// is held, not on the manifest: a job with no record, or one whose manifest
+// is not resident, has no CRCs to verify, and still records the set so that
+// repair skips it rather than failing on it.
+func TestQuickCheckStage_UnreadableSetIsRecordedWithoutAManifest(t *testing.T) {
+	t.Parallel()
+
+	for name, record := range map[string]*job.Job{
+		"no record":             nil,
+		"manifest not resident": job.New("job-unreadable-no-manifest", "job-unreadable-no-manifest.nzb", job.Policy{}),
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			dir := t.TempDir()
+			if err := os.WriteFile(filepath.Join(dir, "other.par2"), make([]byte, 4096), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(filepath.Join(dir, "data.bin"), []byte("a delivered file no readable set describes"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			job := &Job{Job: record, DownloadDir: dir}
+			stage := NewQuickCheckStage()
+			stage.SetEnabled(true)
+			if err := stage.Run(t.Context(), job); err != nil {
+				t.Fatalf("Run: %v", err)
+			}
+			if job.quickCheck != QuickCheckInconclusive {
+				t.Errorf("QuickCheck = %s, want %s", job.quickCheck, QuickCheckInconclusive)
+			}
+			if want := []string{"other"}; !slices.Equal(job.unverifiedPar2Sets, want) {
+				t.Errorf("unverifiedPar2Sets = %q, want %q\n%s", job.unverifiedPar2Sets, want, strings.Join(job.OutputLines, "\n"))
+			}
+		})
+	}
+}
+
 // A par2 set that reads as nothing beside an intact one leaves the verdict
 // Inconclusive, not Clean, while the job holds a recovery volume, so repair
 // runs and its failure fetches the volume (#1008). With none held nothing can
