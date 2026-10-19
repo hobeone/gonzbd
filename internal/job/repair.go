@@ -87,10 +87,12 @@ func (s RepairState) Hopeless() bool {
 
 // RepairStateFrom derives the verdict from the three quantities it depends on.
 //
-// Its non-test callers are Job.RepairState and Job.ReleaseRecovery, each
-// reading the three figures under contentMu — `git grep -n 'RepairStateFro[m](' -- '*.go' ':!*_test.go'`
-// returns 3 lines, those two calls and this declaration. Code outside this package
-// asks Job.RepairState rather than calling this with figures of its own.
+// Its one non-test caller is Job.repairStateLocked, which reads the three
+// figures under contentMu — `git grep -n 'RepairStateFro[m](' -- '*.go' ':!*_test.go'`
+// returns 2 lines, that call and this declaration. Job.RepairState,
+// Job.ReleaseRecovery and Job.CheckEarlyAbort all go through it. Code outside
+// this package asks Job.RepairState rather than calling this with figures of
+// its own.
 //
 // contentFailedBytes must exclude par2 files (see JobProgress.ContentFailedBytes):
 // a failed par2 file is lost capacity, not damage needing repair. Passing the

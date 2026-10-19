@@ -9,7 +9,7 @@ import (
 	"github.com/hobeone/gonzbd/internal/job"
 )
 
-const earlyAbortReason = "Aborted: 80%+ of first articles failed (DMCA'd or expired)"
+const earlyAbortReason = "Aborted: 80%+ of resolved articles failed (DMCA'd or expired)"
 
 // hopelessFiles is a job whose one recovery volume (100 B) covers the loss of
 // part02 (50 B) and not the loss of part01 (1000 B).
@@ -36,7 +36,7 @@ func TestHopelessReason(t *testing.T) {
 		want    string // a substring of the reason
 		notWant string
 	}{
-		{"early abort, repairable", failRepairable, hopelessEarlyAbort, earlyAbortReason, "exceeds repair capacity"},
+		{"early abort, not hopeless", failRepairable, hopelessEarlyAbort, earlyAbortReason, "exceeds repair capacity"},
 		{"health gate, repairable", failRepairable, hopelessHealthGate, "exceeded the job's repair capacity", "80%"},
 		{"early abort, beyond capacity", failBeyond, hopelessEarlyAbort, "exceeds repair capacity of", "80%"},
 		{"health gate, beyond capacity", failBeyond, hopelessHealthGate, "exceeds repair capacity of", "80%"},
@@ -58,7 +58,7 @@ func TestHopelessReason(t *testing.T) {
 
 // TestHopelessCallbacks_CarryTheirTrigger pins which trigger each detector's
 // callback passes: the pipeline's is the early-abort heuristic, the
-// downloader's is the Early Health Gate. The job is repairable, so the reason
+// downloader's is the Early Health Gate. The job is not hopeless, so the reason
 // that reaches it is the trigger's own wording, and it records Assessing as
 // its next state, so the hand-over is deferred to its Assessing worker and the
 // reason can be read back.

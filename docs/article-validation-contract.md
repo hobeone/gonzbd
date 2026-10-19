@@ -948,7 +948,13 @@ charge beside the failed bit (`job.WholeArticle` charges the whole size), and
 `JobProgress.chargeOf` reads it wherever failed bytes are summed. A refusal
 charged nothing is resolved but not failed for the early-abort rate
 (`JobProgress.isEarlyAbort`, #844), so a post whose refusals lose no bytes is
-not aborted as hopeless. Within one open-file episode the writer enforces it;
+not aborted as hopeless. That rate is itself bounded by par2: `Job.CheckEarlyAbort`
+consults the job's `RepairState` first and spares a job in `RepairIntact` or
+`RepairPossible`, so a post whose failed content bytes fit its recovery volumes
+is not aborted however many of its first articles failed (#1011). The rate
+applies only when capacity is absent, exceeded, or unmeasured
+(`RepairUnknown`); the downloader's Early Health Gate then stops a post by
+bytes alone. Within one open-file episode the writer enforces it;
 across a restart `owned` starts with the ranges the resolver supplies in
 `FileInfo.Owned` (the assembler seeds from it at open; see the E3 row). An
 article whose row had not reached SQLite before a crash is Outstanding after

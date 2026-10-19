@@ -524,6 +524,12 @@ func (j *Job) RecoveryFiles() int {
 func (j *Job) RepairState() RepairState {
 	j.contentMu.RLock()
 	defer j.contentMu.RUnlock()
+	return j.repairStateLocked()
+}
+
+// repairStateLocked is the one place a Job's RepairState is computed from its
+// own figures. The caller holds contentMu, read or write.
+func (j *Job) repairStateLocked() RepairState {
 	if j.progress == nil {
 		return RepairUnknown
 	}
@@ -810,10 +816,19 @@ func (j *Job) IsComplete() bool {
 }
 
 // CheckEarlyAbort evaluates the early-abort heuristic and sets earlyAborted if triggered.
+//
+// A job whose failed content fits its par2 recovery capacity (RepairIntact or
+// RepairPossible) is spared, and the latch stays unset so a later failure can
+// still trigger the rule once the figures change. The rate rule therefore
+// applies only when capacity is absent, exceeded or unmeasured (RepairUnknown),
+// the same verdict the downloader's Early Health Gate acts on (#1011).
 func (j *Job) CheckEarlyAbort() bool {
 	j.contentMu.Lock()
 	defer j.contentMu.Unlock()
 	if j.progress == nil {
+		return false
+	}
+	if st := j.repairStateLocked(); st == RepairPossible || st == RepairIntact {
 		return false
 	}
 	return j.progress.isEarlyAbort()

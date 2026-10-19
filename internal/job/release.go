@@ -43,8 +43,8 @@ func (j *Job) ReleaseRecovery(s RecoverySizing) (released int, err error) {
 	if j.progress == nil {
 		return 0, fmt.Errorf("job %s: %w", j.id, ErrNotResident)
 	}
-	// Computed inline: RepairState takes contentMu.RLock, which this holds.
-	if RepairStateFrom(j.progress.ContentFailedBytes(), j.recoveryBytes, j.progress.HasPar2Files()).Hopeless() {
+	// repairStateLocked, not RepairState: that takes contentMu.RLock, which this holds.
+	if j.repairStateLocked().Hopeless() {
 		return 0, nil
 	}
 	var onDisk, held []int

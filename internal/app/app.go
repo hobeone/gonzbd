@@ -3416,7 +3416,7 @@ type hopelessTrigger uint8
 
 const (
 	// hopelessEarlyAbort is the pipeline's early-abort heuristic
-	// (Job.CheckEarlyAbort): most of the first articles failed.
+	// (Job.CheckEarlyAbort): most resolved articles failed and par2 does not cover them.
 	hopelessEarlyAbort hopelessTrigger = iota
 	// hopelessHealthGate is the downloader's Early Health Gate: the job's
 	// RepairState is Hopeless.
@@ -3438,14 +3438,14 @@ func (app *Application) finalizeHopeless(jobID string, trigger hopelessTrigger) 
 // hopelessReason is the failure reason of a job a detector declared hopeless,
 // and it is never "". failMsgForJob's verdict comes first, since it words the
 // job's figures as they stand; when it has none, as for a job the early-abort
-// heuristic stopped while its RepairState is still repairable, the reason
+// heuristic stopped while its RepairState is RepairUnknown, the reason
 // names the trigger.
 func hopelessReason(j *job.Job, trigger hopelessTrigger) string {
 	if msg := failMsgForJob(j); msg != "" {
 		return msg
 	}
 	if trigger == hopelessEarlyAbort {
-		return "Aborted: 80%+ of first articles failed (DMCA'd or expired)"
+		return "Aborted: 80%+ of resolved articles failed (DMCA'd or expired)"
 	}
 	return "Aborted: failed articles exceeded the job's repair capacity. Job is beyond repair"
 }

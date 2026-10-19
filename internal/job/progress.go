@@ -1320,9 +1320,10 @@ func (p *JobProgress) resetForReload(fi int, clearEmitted bool) (cleared, retain
 }
 
 // isEarlyAbort returns true if the job should be aborted based on the
-// first-article failure rate: at least earlyAbortSample articles resolved, and
-// at least earlyAbortThreshold of them failed. A failure charged nothing is in
-// articlesResolved but not in articlesFailed.
+// cumulative failure rate: at least earlyAbortSample articles resolved, and
+// at least earlyAbortThreshold of all those resolved so far failed. A failure
+// charged nothing is in articlesResolved but not in articlesFailed. It knows
+// nothing of par2; Job.CheckEarlyAbort decides whether to ask it.
 func (p *JobProgress) isEarlyAbort() bool {
 	if p.earlyAborted {
 		return false
