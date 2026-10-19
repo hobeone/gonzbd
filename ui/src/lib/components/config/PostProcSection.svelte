@@ -72,7 +72,7 @@
 		<h4 class="text-sm font-semibold text-muted-foreground uppercase tracking-wider mb-2">Cleanup &amp; Output</h4>
 		<div class="divide-y divide-gray-100 dark:divide-gray-800">
 			<ConfigSwitch section="postproc" keyword="enable_par_cleanup" label="Cleanup par2 files" value={configData.postproc.enable_par_cleanup} description="Delete verification files after successful repair." onupdate={onFieldUpdate} />
-			<ConfigSwitch section="postproc" keyword="enable_rar_cleanup" label="Cleanup archive files" value={configData.postproc.enable_rar_cleanup} description="Delete source RAR/7z/split files after successful extraction." onupdate={onFieldUpdate} />
+			<ConfigSwitch section="postproc" keyword="enable_rar_cleanup" label="Cleanup archive files" value={configData.postproc.enable_rar_cleanup} description="Delete source RAR/7z/split files after successful extraction, for jobs at post-processing level +Delete." onupdate={onFieldUpdate} />
 			<ConfigSwitch section="postproc" keyword="deobfuscate_filenames" label="Deobfuscate filenames" value={configData.postproc.deobfuscate_filenames} description="Rename obfuscated files (random hex strings, UUIDs) using the job name." onupdate={onFieldUpdate} />
 			<ConfigSwitch section="postproc" keyword="ignore_samples" label="Delete sample files" value={configData.postproc.ignore_samples} description="Remove files matching 'sample' or 'proof' patterns after extraction." onupdate={onFieldUpdate} />
 			<ConfigSwitch section="postproc" keyword="folder_rename" label="Folder rename (_UNPACK_ prefix)" value={configData.postproc.folder_rename} description="Prefix destination with _UNPACK_ during processing and _FAILED_ on error. Prevents media managers from importing incomplete downloads." onupdate={onFieldUpdate} />

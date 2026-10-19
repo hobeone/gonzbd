@@ -15,6 +15,7 @@ import (
 
 	"github.com/hobeone/gonzbd/internal/cmdutil"
 	"github.com/hobeone/gonzbd/internal/fsutil"
+	"github.com/hobeone/gonzbd/internal/types"
 	"github.com/hobeone/gonzbd/internal/unpack"
 )
 
@@ -189,7 +190,7 @@ func (u *UnpackStage) Run(ctx context.Context, job *Job) error {
 	opts := u.baseOpts
 	permissions := u.permissions
 	passwordFile := u.passwordFile
-	types := u.types
+	allowed := u.types
 	enableRecursive := u.enableRecursive
 	u.mu.RUnlock()
 	opts.MinFreeSpace = u.minFreeSpace.Load()
@@ -246,7 +247,7 @@ func (u *UnpackStage) Run(ctx context.Context, job *Job) error {
 			logf(ctx, log, job, slog.LevelInfo, "  %s: %s (%d parts)", archiveTypeName(a.Type), a.MainFile, len(a.Parts))
 		}
 
-		extractedAny := u.extractPendingArchives(ctx, log, job, pending, processed, opts, types, &firstErr, &allSuccessful)
+		extractedAny := u.extractPendingArchives(ctx, log, job, pending, processed, opts, allowed, &firstErr, &allSuccessful)
 		// If nothing was extracted this pass, no point re-scanning.
 		if !extractedAny {
 			break
@@ -269,7 +270,7 @@ func (u *UnpackStage) extractPendingArchives(
 	pending []unpack.Archive,
 	processed map[string]bool,
 	opts unpack.Options,
-	types archiveTypes,
+	allowed archiveTypes,
 	firstErr *error, //nolint:gocritic // ptrToRefParam: pointer required to accumulate first error across calls
 	allSuccessful *[]unpack.Archive,
 ) bool {
@@ -277,7 +278,7 @@ func (u *UnpackStage) extractPendingArchives(
 	for _, a := range pending {
 		processed[a.MainFile] = true
 
-		res, attempted, err := u.extractArchive(ctx, log, job, a, opts, types)
+		res, attempted, err := u.extractArchive(ctx, log, job, a, opts, allowed)
 		if !attempted {
 			// A skipped archive stays out of allSuccessful, so its parts are
 			// not queued for deletion, and it does not set extractedAny: it
@@ -397,10 +398,10 @@ func (u *UnpackStage) filterPending(archives []unpack.Archive, processed map[str
 
 // extractArchive executes extraction based on the archive type. It is where
 // an archive is decided to be skipped: attempted is false when no extractor
-// ran (its type is unrecognised, or types does not allow it), and the
+// ran (its type is unrecognised, or allowed does not allow it), and the
 // archive's bytes are then untouched, so the caller must treat it as neither
 // extracted nor failed. err is nil whenever attempted is false.
-func (u *UnpackStage) extractArchive(ctx context.Context, log *slog.Logger, job *Job, a unpack.Archive, opts unpack.Options, types archiveTypes) (res unpack.Result, attempted bool, err error) {
+func (u *UnpackStage) extractArchive(ctx context.Context, log *slog.Logger, job *Job, a unpack.Archive, opts unpack.Options, allowed archiveTypes) (res unpack.Result, attempted bool, err error) {
 	var extract func() (unpack.Result, error)
 	switch a.Type {
 	case unpack.RarArchive:
@@ -418,7 +419,7 @@ func (u *UnpackStage) extractArchive(ctx context.Context, log *slog.Logger, job 
 		logf(ctx, log, job, slog.LevelInfo, "Skipping unrecognised archive type: %s", filepath.Base(a.MainFile))
 		return unpack.Result{}, false, nil
 	}
-	if !types.allows(a.Type) {
+	if !allowed.allows(a.Type) {
 		logf(ctx, log, job, slog.LevelInfo, "Skipping %s archive (disabled): %s", archiveTypeName(a.Type), filepath.Base(a.MainFile))
 		return unpack.Result{}, false, nil
 	}
@@ -429,8 +430,13 @@ func (u *UnpackStage) extractArchive(ctx context.Context, log *slog.Logger, job 
 // cleanupArchives records source archive files for deletion after FinalizeStage
 // moves the job to FinalDir (#768), keeping them in DownloadDir until then so a
 // crash before finalize can safely rerun post-processing.
+//
+// Deletion needs both enable_rar_cleanup and a job at PP = +Delete: levels 0-2
+// leave the archives beside the extracted files (#1015). The level is read here
+// rather than in shouldSkipForPP because the unpack stage itself still runs at
+// PP = 2.
 func (u *UnpackStage) cleanupArchives(ctx context.Context, log *slog.Logger, job *Job, allSuccessful []unpack.Archive) {
-	if u.cleanup.Load() && len(allSuccessful) > 0 {
+	if u.cleanup.Load() && job.PP >= types.PPDelete && len(allSuccessful) > 0 {
 		var cleaned int
 		for _, a := range allSuccessful {
 			for _, part := range a.Parts {
