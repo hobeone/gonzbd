@@ -9,6 +9,7 @@ import (
 
 	"github.com/hobeone/gonzbd/internal/par2"
 	"github.com/hobeone/gonzbd/internal/testutil"
+	"github.com/hobeone/gonzbd/internal/types"
 )
 
 // writeScript creates an executable script file at path, creating parent
@@ -36,6 +37,9 @@ func stageJob(t *testing.T) (*Job, string) {
 		Job:         j,
 		Filename:    "test.nzb",
 		DownloadDir: dir,
+		// Archive deletion needs PP = +Delete (#1015); stages run directly, so
+		// no other stage consults the level.
+		PP: types.PPDelete,
 	}
 	// Stands in for finalize's file list, which the script stage requires;
 	// the tests of the list itself run the real FinalizeStage.

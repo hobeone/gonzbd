@@ -306,7 +306,8 @@ postproc:
   enable_par_cleanup: true
 
   # Delete source archive files (RAR, 7z, split) after successful
-  # extraction. Set to false to keep originals alongside extracted files.
+  # extraction, for jobs at post-processing level 3 (+Delete); levels 0-2 keep
+  # the originals. Set to false to keep originals at level 3 as well.
   enable_rar_cleanup: true
 
   # Scan extracted archives for par2 files and use them for 16K-MD5

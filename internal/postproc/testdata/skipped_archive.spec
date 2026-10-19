@@ -9,7 +9,7 @@ run ^(TestUnpackStage_DisabledArchiveType_IsDelivered|TestUnpackHelpers)$
 [the disabled-type gate is dropped]
 file internal/postproc/stage_unpack.go
 --- anchor
-	if !types.allows(a.Type) {
+	if !allowed.allows(a.Type) {
 --- replace
 	if false {
 --- end

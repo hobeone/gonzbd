@@ -32,8 +32,8 @@ type PostProcConfig struct {
 	// EnableParCleanup deletes par2 files after a successful repair.
 	EnableParCleanup bool `yaml:"enable_par_cleanup" json:"enable_par_cleanup"`
 	// EnableRarCleanup deletes source archive files (RAR, 7z, split)
-	// after a successful extraction. Mirrors Python SABnzbd's behavior
-	// where PP bit 2 (delete) removes originals.
+	// after a successful extraction, for jobs at post-processing level 3
+	// (+Delete); levels 0-2 keep the originals regardless of this setting.
 	EnableRarCleanup bool `yaml:"enable_rar_cleanup" json:"enable_rar_cleanup"`
 
 	// ProcessUnpackedPar2 when true scans extracted archives for par2

@@ -447,9 +447,10 @@ func (p *PostProcessor) runStage(ctx context.Context, stage Stage, job *Job) (St
 	//   0 = download only (skip repair + par2 cleanup + unpack)
 	//   1 = +repair (par2 verify/repair + par2 cleanup)
 	//   2 = +unpack (also does repair + par2 cleanup)
-	//   3 = +delete (repair + unpack + cleanup)
+	//   3 = +delete (repair + unpack + archive cleanup)
 	// Quickcheck, repair, and par2_cleanup require PP ≥ 1; unpack requires PP ≥ 2.
-	// Every other stage runs at every PP level.
+	// Every other stage runs at every PP level. Archive deletion inside unpack
+	// additionally requires PP ≥ 3 (UnpackStage.cleanupArchives).
 	if shouldSkipForPP(stage.Name(), job.PP) {
 		p.log.Info("postproc: skipping stage (PP level)",
 			"stage", stage.Name(),
@@ -790,7 +791,9 @@ func (p *PostProcessor) addHistory(job *Job) {
 //	3 = +delete (includes repair + unpack + archive cleanup)
 //
 // Stages gated by PP: quickcheck, repair, and par2_cleanup (≥1); unpack (≥2).
-// Every other stage runs at every PP level.
+// Every other stage runs at every PP level. Level 3 gates no stage: the unpack
+// stage runs at 2 as well, and UnpackStage.cleanupArchives reads job.PP itself
+// to delete archives only at 3 (#1015).
 func shouldSkipForPP(stageName string, pp int) bool {
 	switch stageName {
 	case "quickcheck", "repair", "par2_cleanup":

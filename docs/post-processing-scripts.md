@@ -37,8 +37,8 @@ all lower levels:
 |------|----------------|
 | `0` | Download only — skip repair, par2 cleanup, and unpack (script still runs) |
 | `1` | + **Repair** — par2 verify, repair, and par2 cleanup |
-| `2` | + **Unpack** — extract RAR, 7z, and split archives, and delete extracted archives when `enable_rar_cleanup` is enabled (implies repair and par2 cleanup) |
-| `3` | + **Delete** — same stages as `2` in GoNZBD (archive deletion is governed by `enable_rar_cleanup` inside `unpack`) |
+| `2` | + **Unpack** — extract RAR, 7z, and split archives; the archives stay in place (implies repair and par2 cleanup) |
+| `3` | + **Delete** — same stages as `2`, and `unpack` also deletes the extracted archives when `enable_rar_cleanup` is enabled |
 
 A `pp` above 3 passed to the API (an add or `change_opts`) is treated as 3. A
 category's `pp` in the config file is not: a value outside `[0, 3]`, such as

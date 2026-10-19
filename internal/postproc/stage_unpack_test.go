@@ -19,6 +19,7 @@ import (
 	"github.com/hobeone/gonzbd/internal/cmdutil"
 	"github.com/hobeone/gonzbd/internal/directunpack"
 	"github.com/hobeone/gonzbd/internal/testutil"
+	"github.com/hobeone/gonzbd/internal/types"
 	"github.com/hobeone/gonzbd/internal/unpack"
 )
 
@@ -1609,6 +1610,7 @@ func TestUnpackStage_CleanupArchives(t *testing.T) {
 	job := &Job{
 		DownloadDir: dir,
 		OutputLines: []string{},
+		PP:          types.PPDelete,
 	}
 	allSuccessful := []unpack.Archive{
 		{
@@ -1627,6 +1629,42 @@ func TestUnpackStage_CleanupArchives(t *testing.T) {
 	}
 	if _, err := os.Stat(archiveFile); !os.IsNotExist(err) {
 		t.Errorf("FinalizeStage failed to remove %s", archiveFile)
+	}
+}
+
+// TestUnpackStage_CleanupArchives_RequiresDeleteLevel pins #1015: with
+// enable_rar_cleanup on, a job below PP = +Delete keeps its archives.
+func TestUnpackStage_CleanupArchives_RequiresDeleteLevel(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		pp   int
+		want bool
+	}{
+		{"PP 2 keeps archives", types.PPUnpack, false},
+		{"PP 3 queues archives", types.PPDelete, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			archiveFile := filepath.Join(dir, "test.rar")
+			if err := os.WriteFile(archiveFile, []byte("rar data"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			u := appliedUnpackStage(UnpackConfig{Base: unpack.Options{}, EnableUnrar: true, Enable7zip: true, Cleanup: true})
+			job := &Job{DownloadDir: dir, FinalDir: dir, PP: tc.pp}
+
+			u.cleanupArchives(t.Context(), slog.Default(), job, []unpack.Archive{{Parts: []string{archiveFile}}})
+
+			if got := job.isPendingDeletion(archiveFile); got != tc.want {
+				t.Errorf("isPendingDeletion = %v, want %v", got, tc.want)
+			}
+			if err := NewFinalizeStage().Run(t.Context(), job); err != nil {
+				t.Fatalf("FinalizeStage.Run: %v", err)
+			}
+			_, err := os.Stat(archiveFile)
+			if exists := err == nil; exists == tc.want {
+				t.Errorf("archive exists after finalize = %v, want %v", exists, !tc.want)
+			}
+		})
 	}
 }
 
