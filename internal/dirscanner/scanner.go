@@ -204,8 +204,8 @@ func (s *Scanner) handleStableFile(ctx context.Context, path, filename, category
 	successCount := 0
 
 	for _, p := range nzbs {
-		// A zip member is named after itself; every other payload after the
-		// file it came from.
+		// Payload.Name is set for zip members (unique within the archive);
+		// when empty the payload is named after the file it came from.
 		label := filename
 		if p.Name != "" {
 			label = p.Name

@@ -265,8 +265,8 @@ func (g *Grabber) Fetch(ctx context.Context, urlStr string, opts types.FetchOpti
 	// Invoke handler for each NZB found.
 	var ids []string
 	for _, p := range nzbs {
-		// A zip member is named after itself, any other payload after the
-		// downloaded file.
+		// Payload.Name is set for zip members (unique within the archive);
+		// when empty the payload is named after the downloaded file.
 		nzbFilename := filename
 		if p.Name != "" {
 			nzbFilename = p.Name

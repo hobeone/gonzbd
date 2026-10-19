@@ -3,7 +3,7 @@
 #     go run ./scripts/mutate internal/dirscanner/testdata/zip_member_names.spec
 
 pkg ./internal/dirscanner/
-run TestHandleStableFile_ZipMembersNamedAfterMembers|TestMemberBaseName_NeverCarriesADirectory
+run TestHandleStableFile_ZipMembersNamedAfterMembers|TestMemberBaseName_NeverCarriesADirectory|TestHandleStableFile_ZipMemberNamesAreDistinct
 
 [the scanner names a member after the archive again]
 file internal/dirscanner/scanner.go
@@ -32,9 +32,9 @@ file internal/dirscanner/decompress.go
 [an over-long name is accepted]
 file internal/dirscanner/decompress.go
 --- anchor
- || len(base) > maxMemberNameLen {
+ || len(base) > maxMemberNameLen || !utf8.ValidString(base) {
 --- replace
- {
+ || !utf8.ValidString(base) {
 --- end
 
 [the member name keeps its directory]
@@ -43,4 +43,20 @@ file internal/dirscanner/decompress.go
 	base := name[strings.LastIndex(name, "/")+1:]
 --- replace
 	base := name
+--- end
+
+[a repeated or rejected member name is left as is]
+file internal/dirscanner/decompress.go
+--- anchor
+		if name == "" || seen[name] {
+--- replace
+		if false {
+--- end
+
+[an invalid UTF-8 name is accepted]
+file internal/dirscanner/decompress.go
+--- anchor
+ || !utf8.ValidString(base) {
+--- replace
+ || (false && !utf8.ValidString(base)) {
 --- end

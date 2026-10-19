@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"strings"
 	"unicode"
+	"unicode/utf8"
 )
 
 var (
@@ -53,9 +54,11 @@ func DetectType(path string) (ArchiveType, error) {
 
 // Payload is one NZB extracted from a file.
 type Payload struct {
-	// Name is the zip member's base name, empty for every other source: a
-	// plain, gzip or bzip2 NZB carries no name of its own, and the caller
-	// names it after the file it opened.
+	// Name is what the caller hands to the handler as the NZB's filename.
+	// It is empty for a plain, gzip or bzip2 NZB and for the only NZB in a
+	// zip whose member name memberBaseName rejected; the caller then uses
+	// the name of the file it opened. Within one archive every non-empty
+	// Name is distinct (uniqueMemberNames).
 	Name string
 	Data []byte
 }
@@ -189,7 +192,32 @@ func extractZip(path string) ([]Payload, error) {
 		return nil, fmt.Errorf("no .nzb files found in zip")
 	}
 
+	uniqueMemberNames(result, filepath.Base(path))
 	return result, nil
+}
+
+// uniqueMemberNames is the one place that guarantees no two NZBs of one
+// archive reach the handler under the same filename: the app files an NZB
+// under its filename and adds a second one with the same name paused as a
+// duplicate. A member whose name was rejected, or repeats an earlier
+// member's, is named "<zip>[n]" after its 1-based position. A lone NZB keeps
+// whatever memberBaseName returned, so the caller falls back to the zip's
+// own name.
+func uniqueMemberNames(payloads []Payload, zipName string) {
+	if len(payloads) < 2 {
+		return
+	}
+	seen := make(map[string]bool, len(payloads))
+	for i := range payloads {
+		name := payloads[i].Name
+		if name == "" || seen[name] {
+			// Unique without a check: a member name always ends in
+			// ".nzb" and this one ends in "]", and positions differ.
+			name = fmt.Sprintf("%s[%d]", zipName, i+1)
+		}
+		seen[name] = true
+		payloads[i].Name = name
+	}
 }
 
 // maxMemberNameLen keeps the name usable as the admin/nzb/<name>.gz backup
@@ -199,12 +227,12 @@ const maxMemberNameLen = 200
 // memberBaseName reduces an untrusted zip member name to its final path
 // element, so a name such as "../../x.nzb" or "a\\b\\x.nzb" carries no
 // directory component to whoever uses it. "" means no usable name: empty,
-// a bare ".nzb", containing a control character (NUL included), or longer
-// than maxMemberNameLen bytes; the caller then uses the zip's name.
+// a bare ".nzb", not valid UTF-8 (a legacy-codepage header), containing a
+// control character (NUL included), or longer than maxMemberNameLen bytes.
 func memberBaseName(name string) string {
 	name = strings.ReplaceAll(name, "\\", "/")
 	base := name[strings.LastIndex(name, "/")+1:]
-	if base == "" || base == "." || base == ".." || strings.EqualFold(base, ".nzb") || len(base) > maxMemberNameLen {
+	if base == "" || base == "." || base == ".." || strings.EqualFold(base, ".nzb") || len(base) > maxMemberNameLen || !utf8.ValidString(base) {
 		return ""
 	}
 	for _, r := range base {

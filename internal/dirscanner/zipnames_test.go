@@ -62,6 +62,45 @@ func TestHandleStableFile_ZipMembersNamedAfterMembers(t *testing.T) {
 	}
 }
 
+// TestHandleStableFile_ZipMemberNamesAreDistinct pins that no two NZBs of one
+// archive reach the handler under the same filename, whether the names repeat
+// across subdirectories, are rejected, or are not valid UTF-8.
+func TestHandleStableFile_ZipMemberNamesAreDistinct(t *testing.T) {
+	cases := map[string]struct {
+		members []string
+		want    []string
+	}{
+		"same base name in two dirs": {
+			[]string{"a/x.nzb", "b/x.nzb"}, []string{"x.nzb", "z.zip[2]"},
+		},
+		"two rejected names": {
+			[]string{"a\x00.nzb", "b\x00.nzb"}, []string{"z.zip[1]", "z.zip[2]"},
+		},
+		"invalid UTF-8 name": {
+			[]string{"ok.nzb", "caf\xe9.nzb"}, []string{"ok.nzb", "z.zip[2]"},
+		},
+	}
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			dir := t.TempDir()
+			zipPath := filepath.Join(dir, "z.zip")
+			writeNamedZip(t, zipPath, tc.members)
+			h := &MockHandler{failFor: map[string]error{}}
+			s := New(dir, NewStore(), h, nil, nil)
+			if err := s.handleStableFile(t.Context(), zipPath, "z.zip", ""); err != nil {
+				t.Fatal(err)
+			}
+			got := make([]string, 0, len(h.calls))
+			for _, c := range h.calls {
+				got = append(got, c.Filename)
+			}
+			if !slices.Equal(got, tc.want) {
+				t.Errorf("handler names = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
 // TestMemberBaseName_NeverCarriesADirectory pins that an untrusted member name
 // is reduced to one path element.
 func TestMemberBaseName_NeverCarriesADirectory(t *testing.T) {
@@ -78,6 +117,7 @@ func TestMemberBaseName_NeverCarriesADirectory(t *testing.T) {
 		"a\x00b.nzb":                      "",
 		"a\tb.nzb":                        "",
 		"d/.nzb":                          "",
+		"caf\xe9.nzb":                     "",
 		strings.Repeat("x", 300) + ".nzb": "",
 		strings.Repeat("x", 195) + ".nzb": strings.Repeat("x", 195) + ".nzb",
 	} {
