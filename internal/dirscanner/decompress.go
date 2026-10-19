@@ -50,11 +50,20 @@ func DetectType(path string) (ArchiveType, error) {
 	}
 }
 
-// ExtractNZBs opens a file and returns one or more NZB payloads as byte slices.
+// Payload is one NZB extracted from a file.
+type Payload struct {
+	// Name is the zip member's base name, empty for every other source: a
+	// plain, gzip or bzip2 NZB carries no name of its own, and the caller
+	// names it after the file it opened.
+	Name string
+	Data []byte
+}
+
+// ExtractNZBs opens a file and returns one or more NZB payloads.
 // For plain NZB, GZ, and BZ2 it returns a single payload.
 // For ZIP it may return multiple payloads if multiple .nzb files are found.
 // Each decompressed NZB is capped at MaxDecompressSize.
-func ExtractNZBs(path string) ([][]byte, error) {
+func ExtractNZBs(path string) ([]Payload, error) {
 	archType, err := DetectType(path)
 	if err != nil {
 		return nil, err
@@ -74,7 +83,7 @@ func ExtractNZBs(path string) ([][]byte, error) {
 	}
 }
 
-func extractPlainNZB(path string) ([][]byte, error) {
+func extractPlainNZB(path string) ([]Payload, error) {
 	//nolint:gosec // G304: opening path provided by caller/config
 	data, err := os.ReadFile(path)
 	if err != nil {
@@ -83,10 +92,10 @@ func extractPlainNZB(path string) ([][]byte, error) {
 	if len(data) > MaxDecompressSize {
 		return nil, fmt.Errorf("NZB file exceeds maximum size (%d > %d)", len(data), MaxDecompressSize)
 	}
-	return [][]byte{data}, nil
+	return []Payload{{Data: data}}, nil
 }
 
-func extractGZ(path string) ([][]byte, error) {
+func extractGZ(path string) ([]Payload, error) {
 	//nolint:gosec // G304: opening path provided by caller/config
 	file, err := os.Open(path)
 	if err != nil {
@@ -109,10 +118,10 @@ func extractGZ(path string) ([][]byte, error) {
 		return nil, fmt.Errorf("decompressed size exceeds maximum (%d > %d)", len(data), MaxDecompressSize)
 	}
 
-	return [][]byte{data}, nil
+	return []Payload{{Data: data}}, nil
 }
 
-func extractBZ2(path string) ([][]byte, error) {
+func extractBZ2(path string) ([]Payload, error) {
 	//nolint:gosec // G304: opening path provided by caller/config
 	file, err := os.Open(path)
 	if err != nil {
@@ -131,17 +140,17 @@ func extractBZ2(path string) ([][]byte, error) {
 		return nil, fmt.Errorf("decompressed size exceeds maximum (%d > %d)", len(data), MaxDecompressSize)
 	}
 
-	return [][]byte{data}, nil
+	return []Payload{{Data: data}}, nil
 }
 
-func extractZip(path string) ([][]byte, error) {
+func extractZip(path string) ([]Payload, error) {
 	reader, err := zip.OpenReader(path)
 	if err != nil {
 		return nil, fmt.Errorf("failed to open zip file: %w", err)
 	}
 	defer reader.Close() //nolint:errcheck // cleanup of zip reader
 
-	var result [][]byte
+	var result []Payload
 	var cumulative int64
 	for _, file := range reader.File {
 		if !strings.HasSuffix(strings.ToLower(file.Name), ".nzb") {
@@ -172,7 +181,7 @@ func extractZip(path string) ([][]byte, error) {
 			return nil, fmt.Errorf("cumulative decompressed size exceeds %d bytes", maxCumulativeBytes)
 		}
 
-		result = append(result, data)
+		result = append(result, Payload{Name: memberBaseName(file.Name), Data: data})
 	}
 
 	if len(result) == 0 {
@@ -180,4 +189,16 @@ func extractZip(path string) ([][]byte, error) {
 	}
 
 	return result, nil
+}
+
+// memberBaseName reduces an untrusted zip member name to its final path
+// element, so a name such as "../../x.nzb" or "a\\b\\x.nzb" carries no
+// directory component to whoever uses it. "" means no usable name.
+func memberBaseName(name string) string {
+	name = strings.ReplaceAll(name, "\\", "/")
+	base := name[strings.LastIndex(name, "/")+1:]
+	if base == "." || base == ".." {
+		return ""
+	}
+	return base
 }

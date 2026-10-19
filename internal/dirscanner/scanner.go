@@ -203,11 +203,12 @@ func (s *Scanner) handleStableFile(ctx context.Context, path, filename, category
 	var lastErr error
 	successCount := 0
 
-	for i, nzbData := range nzbs {
-		// For archives with multiple NZBs, label them.
+	for _, p := range nzbs {
+		// A zip member is named after itself; every other payload after the
+		// file it came from.
 		label := filename
-		if len(nzbs) > 1 {
-			label = fmt.Sprintf("%s[%d]", filename, i+1)
+		if p.Name != "" {
+			label = p.Name
 		}
 
 		opts := types.FetchOptions{
@@ -215,7 +216,7 @@ func (s *Scanner) handleStableFile(ctx context.Context, path, filename, category
 			PP:       types.PPInherit,
 			Priority: constants.DefaultPriority,
 		}
-		if _, err := s.handler.HandleNZB(ctx, label, nzbData, opts); err != nil {
+		if _, err := s.handler.HandleNZB(ctx, label, p.Data, opts); err != nil {
 			s.logger.Warn("handler failed for NZB", "label", label, "err", err)
 			lastErr = err
 			continue
