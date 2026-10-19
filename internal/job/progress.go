@@ -652,6 +652,25 @@ func (p *JobProgress) DownloadStarted() time.Time {
 	return p.downloadStarted
 }
 
+// DownloadSeconds is the download duration in whole seconds, from the first
+// decoded article to the job's last exit from Fetching (see DownloadStarted
+// and DownloadFinished). A missing stamp, or a duration under a second,
+// reads as 1, so the result is a safe divisor. It is the one computation
+// of the figure: the history entry and the script environment both call it.
+func (p *JobProgress) DownloadSeconds() int64 {
+	if p == nil || p.downloadStarted.IsZero() || p.downloadFinished.IsZero() {
+		return 1
+	}
+	return max(int64(p.downloadFinished.Sub(p.downloadStarted).Seconds()), 1)
+}
+
+// WrittenBytes derives the bytes a job has written from its ProgressFigures:
+// expected - failed - remaining, clamped at 0 against a torn read. All three
+// legs are NZB-declared, yEnc-encoded bytes, so the result is too.
+func WrittenBytes(expected, remaining, failed int64) int64 {
+	return max(expected-failed-remaining, 0)
+}
+
 // DownloadFinished returns the wall-clock time the download phase completed, or zero.
 func (p *JobProgress) DownloadFinished() time.Time {
 	if p == nil {

@@ -648,6 +648,8 @@ type Progress interface {
 	FileAssembledCRC32(fi int) uint32
 	FileFetchPolicy(fi int) job.FetchPolicy
 	ExpectedBytes() int64
+	ProgressFigures() (expected, remaining, failed int64)
+	DownloadSeconds() int64
 	FailedBytes() int64
 	DownloadStarted() time.Time
 	DownloadFinished() time.Time

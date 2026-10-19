@@ -106,7 +106,8 @@ type ScriptInput struct {
 	// AvgBPS is average bytes/sec during download (SAB_AVG_BPS env-only).
 	AvgBPS int64
 
-	// BytesTried is total bytes attempted including retries (SAB_BYTES_TRIED).
+	// BytesTried is the bytes the job attempted to fetch, failed articles included and
+	// retries not counted (SAB_BYTES_TRIED).
 	BytesTried int64
 
 	// Password is the per-job password (SAB_PASSWORD env-only).
@@ -118,10 +119,10 @@ type ScriptInput struct {
 	// Priority is the job priority (SAB_PRIORITY).
 	Priority int
 
-	// Repair indicates par2 repair was performed (SAB_REPAIR: 0/1).
+	// Repair is whether the job's PP level requests repair (SAB_REPAIR: 0/1).
 	Repair int
 
-	// Unpack indicates unpacking was performed (SAB_UNPACK: 0/1).
+	// Unpack is whether the job's PP level requests unpacking (SAB_UNPACK: 0/1).
 	Unpack int
 
 	// Age is the age of the NZB in days since posting date (SAB_AGE).

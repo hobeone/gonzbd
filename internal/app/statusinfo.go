@@ -143,9 +143,5 @@ func DurableBytesOf(p ProgressByteCounters) int64 {
 		return 0
 	}
 	expected, remaining, failed := p.ProgressFigures()
-	durable := expected - failed - remaining
-	if durable < 0 {
-		return 0
-	}
-	return durable
+	return job.WrittenBytes(expected, remaining, failed)
 }
