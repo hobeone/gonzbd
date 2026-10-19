@@ -21,6 +21,22 @@ Payload{Name: memberBaseName(file.Name), Data: data}
 Payload{Data: data}
 --- end
 
+[control characters are accepted in a name]
+file internal/dirscanner/decompress.go
+--- anchor
+		if unicode.IsControl(r) {
+--- replace
+		if unicode.IsControl(r) && r > unicode.MaxRune {
+--- end
+
+[an over-long name is accepted]
+file internal/dirscanner/decompress.go
+--- anchor
+ || len(base) > maxMemberNameLen {
+--- replace
+ {
+--- end
+
 [the member name keeps its directory]
 file internal/dirscanner/decompress.go
 --- anchor

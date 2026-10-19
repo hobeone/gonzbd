@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"unicode"
 )
 
 var (
@@ -191,14 +192,25 @@ func extractZip(path string) ([]Payload, error) {
 	return result, nil
 }
 
+// maxMemberNameLen keeps the name usable as the admin/nzb/<name>.gz backup
+// filename: well under the 255-byte limit once ".gz" is appended.
+const maxMemberNameLen = 200
+
 // memberBaseName reduces an untrusted zip member name to its final path
 // element, so a name such as "../../x.nzb" or "a\\b\\x.nzb" carries no
-// directory component to whoever uses it. "" means no usable name.
+// directory component to whoever uses it. "" means no usable name: empty,
+// a bare ".nzb", containing a control character (NUL included), or longer
+// than maxMemberNameLen bytes; the caller then uses the zip's name.
 func memberBaseName(name string) string {
 	name = strings.ReplaceAll(name, "\\", "/")
 	base := name[strings.LastIndex(name, "/")+1:]
-	if base == "." || base == ".." {
+	if base == "" || base == "." || base == ".." || strings.EqualFold(base, ".nzb") || len(base) > maxMemberNameLen {
 		return ""
+	}
+	for _, r := range base {
+		if unicode.IsControl(r) {
+			return ""
+		}
 	}
 	return base
 }

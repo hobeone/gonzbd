@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strings"
 	"testing"
 )
 
@@ -65,15 +66,20 @@ func TestHandleStableFile_ZipMembersNamedAfterMembers(t *testing.T) {
 // is reduced to one path element.
 func TestMemberBaseName_NeverCarriesADirectory(t *testing.T) {
 	for in, want := range map[string]string{
-		"a.nzb":           "a.nzb",
-		"d/a.nzb":         "a.nzb",
-		"../../etc/a.nzb": "a.nzb",
-		"/abs/a.nzb":      "a.nzb",
-		`C:\x\a.nzb`:      "a.nzb",
-		`..\..\a.nzb`:     "a.nzb",
-		"..":              "",
-		"dir/..":          "",
-		"":                "",
+		"a.nzb":                           "a.nzb",
+		"d/a.nzb":                         "a.nzb",
+		"../../etc/a.nzb":                 "a.nzb",
+		"/abs/a.nzb":                      "a.nzb",
+		`C:\x\a.nzb`:                      "a.nzb",
+		`..\..\a.nzb`:                     "a.nzb",
+		"..":                              "",
+		"dir/..":                          "",
+		"":                                "",
+		"a\x00b.nzb":                      "",
+		"a\tb.nzb":                        "",
+		"d/.nzb":                          "",
+		strings.Repeat("x", 300) + ".nzb": "",
+		strings.Repeat("x", 195) + ".nzb": strings.Repeat("x", 195) + ".nzb",
 	} {
 		if got := memberBaseName(in); got != want {
 			t.Errorf("memberBaseName(%q) = %q, want %q", in, got, want)
