@@ -32,3 +32,12 @@ makes a call. PR bodies summarise and link; the file is the record.
 rather than growing a changelog.
 **Cost:** a merge conflict on this file between parallel stages — avoided
 by running the stages serially, which their dependencies require anyway.
+
+### D4 — PRs are filed without the show-for-approval pause
+
+**Call:** each PR body still goes through the math scan and the cold-reader
+audit, but is filed without waiting for the owner to read the draft.
+**Why:** the owner asked for PRs to be opened autonomously while away; the
+PR itself is the review surface and can be edited.
+**Cost:** a body the owner would have reworded ships as filed; `gh pr edit`
+fixes it.
