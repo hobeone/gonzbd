@@ -9,5 +9,5 @@ file internal/job/manifest.go
 	return json.Marshal(struct {
 		manifestJSON
 		TotalBytes int64 `json:"total_bytes"`
-	}{manifestJSON{Files: files}, m.totalBytes})
+	}{manifestJSON{Files: files}, m.ft.totalBytes})
 --- end

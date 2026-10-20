@@ -60,10 +60,10 @@ func (j *Job) ReleaseRecovery(s RecoverySizing) (released int, err error) {
 		var idxs, blocks []int
 		var bytes []int64
 		for _, i := range held {
-			if n, ok := RecoveryVolumeBlocks(j.manifest.FileSubject(i)); ok {
+			if n, ok := RecoveryVolumeBlocks(j.manifest.Files().Subject(i)); ok {
 				idxs = append(idxs, i)
 				blocks = append(blocks, n)
-				bytes = append(bytes, j.manifest.FileBytes(i))
+				bytes = append(bytes, j.manifest.Files().Bytes(i))
 			}
 		}
 		if s.need <= MaxPar2Slices && len(idxs)*(s.need+1) <= maxCoverCells {

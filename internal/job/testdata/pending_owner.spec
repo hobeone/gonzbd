@@ -1,5 +1,5 @@
 pkg ./internal/job/
-run ^(TestFetchPolicyChange_PendingFollowsThePolicy|TestFetchPolicyDoors_OneResidencyRule|TestRestoreContent_RefusesADifferentFileShape)$
+run ^(TestFetchPolicyChange_PendingFollowsThePolicy|TestFetchPolicyDoors_OneResidencyRule|TestAttachArticles_RefusesAManifestWithADifferentFileShape)$
 
 # #903: setFileFetchPolicy owns the pending counters a policy change moves,
 # the per-article transitions count only a file the job is fetching, and both
@@ -48,10 +48,10 @@ file internal/job/release.go
 	}
 --- end
 
-[the shape check ignores the per-file ranges]
-file internal/job/progress.go
+[the pairing check is dropped, so a manifest of another table attaches]
+file internal/job/content.go
 --- anchor
-		if lo, hi := m.FileRange(fi); lo != p.fileStarts[fi] || hi != p.fileStarts[fi+1] {
+	if m.Files() != j.fileTable {
 --- replace
-		if lo, hi := m.FileRange(fi); false && (lo != p.fileStarts[fi] || hi != p.fileStarts[fi+1]) {
+	if false {
 --- end

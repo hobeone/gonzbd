@@ -3,6 +3,7 @@ package job
 import (
 	"errors"
 	"fmt"
+	"slices"
 	"time"
 
 	"github.com/hobeone/gonzbd/internal/durability"
@@ -14,20 +15,21 @@ import (
 // hydrateErr existed because those two had been indistinguishable.
 var ErrNotResident = errors.New("job: content tier not resident")
 
-// AttachContent installs the manifest and derives the progress record from it.
+// AttachFiles installs the file table and derives the progress record from it.
 //
-// It is the sole path that DERIVES a fresh progress record from a manifest:
-// progress is computed here from m and never supplied by an AttachContent
-// caller, which is what makes "progress describes this manifest" hold for a
-// job starting out rather than being merely asserted.
+// It is the sole path that DERIVES a fresh progress record: progress is
+// computed here from ft and never supplied by a caller, which is what makes
+// "progress describes this table" hold for a job starting out rather than
+// being merely asserted.
 //
-// It is the only writer of the progress pointer, which
-// TestProgressPointerWriters_MatchTheEnumerationStatedInProse pins.
-// RestoreContent, below, installs a manifest beside the progress record the
+// It is the only writer of the file-table pointer and of the progress pointer,
+// which TestFilesPointerWriters_MatchTheEnumerationStatedInProse and
+// TestProgressPointerWriters_MatchTheEnumerationStatedInProse pin.
+// AttachArticles, below, installs a manifest beside the progress record the
 // job already holds and never replaces that record.
-func (j *Job) AttachContent(m *Manifest) error {
-	if m == nil {
-		return fmt.Errorf("job %s: AttachContent: nil manifest", j.id)
+func (j *Job) AttachFiles(ft *FileTable) error {
+	if ft == nil {
+		return fmt.Errorf("job %s: AttachFiles: nil file table", j.id)
 	}
 	j.contentMu.Lock()
 	defer j.contentMu.Unlock()
@@ -36,17 +38,17 @@ func (j *Job) AttachContent(m *Manifest) error {
 	// discard every done/failed bit and both stamps with no error — and since
 	// the first attach zeroed the Job-level copy, there would be nothing left
 	// to seed the replacement from either. Callers gate on this today
-	// (residency.Hydrate takes the RestoreContent arm when HasProgress() is
+	// (residency.Hydrate takes the AttachArticles arm when HasProgress() is
 	// true, and the ingest path builds a fresh Job), which is what makes
 	// this an assertion of an invariant rather than a behaviour change.
-	if j.progress != nil || j.manifest != nil {
-		return fmt.Errorf("job %s: AttachContent: content already attached; use RestoreContent to install a manifest alongside existing progress", j.id)
+	if j.progress != nil || j.fileTable != nil {
+		return fmt.Errorf("job %s: AttachFiles: files already attached; use AttachArticles to install a manifest alongside existing progress", j.id)
 	}
-	j.manifest = m
-	j.progress = newJobProgress(m)
-	j.totalBytes = m.TotalBytes()
-	j.recoveryBytes = m.RecoveryBytes()
-	j.recoveryFiles = m.RecoveryFiles()
+	j.fileTable = ft
+	j.progress = newJobProgress(ft)
+	j.totalBytes = ft.TotalBytes()
+	j.recoveryBytes = ft.RecoveryBytes()
+	j.recoveryFiles = ft.RecoveryFiles()
 	// Seed from state restored before this job had a JobProgress, then zero it
 	// so the Job-level copy and the progress record are never both live. These
 	// go through the existing restore doors rather than assigning the fields:
@@ -62,10 +64,9 @@ func (j *Job) AttachContent(m *Manifest) error {
 	return nil
 }
 
-// RestoreContent re-attaches a manifest to the job's own progress record. It
-// is AttachContent's counterpart for a job whose manifest was evicted, and it
-// installs the manifest only: the progress record stays the one the job
-// already holds.
+// AttachArticles installs the article table beside the job's file table and
+// its own progress record. It is the counterpart of Evict, and the only
+// writer of the manifest pointer besides Evict's nil.
 //
 // The record is recomputed in place, under the same lock its writers take, and
 // never replaced. Writes that need no manifest — MarkArticleFailed,
@@ -75,27 +76,78 @@ func (j *Job) AttachContent(m *Manifest) error {
 // silently discard whatever arrived in between. recompute is what folds the
 // bits those writes left into the counters.
 //
-// It verifies the two describe the same job rather than trusting the caller:
-// describesSameJobAs compares article and file counts, and a mismatch here
-// means the manifest read from disk belongs to a different revision.
+// It verifies the manifest was built from this job's own table, by pointer
+// identity rather than by comparing shapes: NewManifestFromArticles already
+// refused a count that disagrees with its table, so the pairing is the only
+// thing left to check.
+func (j *Job) AttachArticles(m *Manifest) error {
+	if m == nil {
+		return fmt.Errorf("job %s: AttachArticles: nil manifest", j.id)
+	}
+	j.contentMu.Lock()
+	defer j.contentMu.Unlock()
+	if j.fileTable == nil {
+		return fmt.Errorf("job %s: AttachArticles: no file table attached; use AttachFiles", j.id)
+	}
+	if m.Files() != j.fileTable {
+		return fmt.Errorf("job %s: AttachArticles: manifest was built from a different file table", j.id)
+	}
+	if j.manifest != nil {
+		return fmt.Errorf("job %s: AttachArticles: manifest already attached", j.id)
+	}
+	j.progress.recompute(m)
+	j.manifest = m
+	return nil
+}
+
+// AttachContent attaches a job's files and articles together: AttachFiles on
+// m's table, then AttachArticles on m. It writes no field itself.
+func (j *Job) AttachContent(m *Manifest) error {
+	if m == nil {
+		return fmt.Errorf("job %s: AttachContent: nil manifest", j.id)
+	}
+	if err := j.AttachFiles(m.Files()); err != nil {
+		return err
+	}
+	return j.AttachArticles(m)
+}
+
+// RestoreContent re-attaches a manifest read back from disk, for callers
+// outside this package that have not yet moved to AttachFiles/AttachArticles
+// (`git grep -n 'RestoreContent(' -- '*.go' ':!internal/job'` finds them). A
+// manifest read from disk was built with a table of its own, so it is
+// re-indexed over the job's table when the two describe the same files, and
+// refused when they do not. A later change migrates the callers and deletes
+// this forwarder. It writes no field itself.
 func (j *Job) RestoreContent(m *Manifest) error {
 	if m == nil {
 		return fmt.Errorf("job %s: RestoreContent: nil manifest", j.id)
 	}
-	j.contentMu.Lock()
-	defer j.contentMu.Unlock()
-	if j.progress == nil {
-		return fmt.Errorf("job %s: RestoreContent: no progress record to restore onto; use AttachContent", j.id)
+	ft := j.Files()
+	if ft == nil {
+		return fmt.Errorf("job %s: RestoreContent: no file table to restore onto; use AttachContent", j.id)
 	}
-	if !j.progress.describesSameJobAs(m) {
-		return fmt.Errorf("job %s: RestoreContent: progress describes a different manifest", j.id)
+	if m.Files() != ft {
+		if !slices.Equal(ft.Specs(), m.Files().Specs()) {
+			return fmt.Errorf("job %s: RestoreContent: manifest describes different files", j.id)
+		}
+		articles := make([]JobArticle, m.NumArticles())
+		for i := range articles {
+			articles[i] = JobArticle{ID: m.ArticleID(i), Bytes: m.ArticleBytes(i), Number: m.ArticleNumber(i)}
+		}
+		var err error
+		if m, err = NewManifestFromArticles(ft, articles); err != nil {
+			return fmt.Errorf("job %s: RestoreContent: %w", j.id, err)
+		}
 	}
-	j.progress.recompute(m)
-	j.manifest = m
-	j.totalBytes = m.TotalBytes()
-	j.recoveryBytes = m.RecoveryBytes()
-	j.recoveryFiles = m.RecoveryFiles()
-	return nil
+	return j.AttachArticles(m)
+}
+
+// Files returns the job's file table, or nil before AttachFiles.
+func (j *Job) Files() *FileTable {
+	j.contentMu.RLock()
+	defer j.contentMu.RUnlock()
+	return j.fileTable
 }
 
 // Evict drops the manifest and keeps the progress record.
@@ -360,7 +412,7 @@ func (j *Job) TakeFetchPolicyChanges() []durability.FileState {
 // evicted, so refusing an evicted job would lose the failure. Evicted, it
 // records the bits and the charge alone: the counters need the manifest's
 // file ranges and article sizes, and
-// RestoreContent's recompute derives the counters from the bits when the job
+// AttachArticles's recompute derives the counters from the bits when the job
 // is next hydrated.
 func (j *Job) MarkArticleFailed(artIdx int, charge int64) error {
 	if charge < 0 && charge != WholeArticle {
@@ -413,7 +465,7 @@ func (j *Job) MarkArticleEmitted(artIdx int) error {
 // It does not require the manifest. Eviction keeps the emitted bit and
 // ForEachUnfinishedArticle skips an article whose bit is set, so refusing an
 // evicted job strands the article until a downloader reload or a restart.
-// Evicted, it clears the bit alone, and RestoreContent's recompute restores the
+// Evicted, it clears the bit alone, and AttachArticles's recompute restores the
 // pending counts when the job is next hydrated.
 func (j *Job) ClearArticleEmitted(artIdx int) error {
 	j.contentMu.Lock()
@@ -500,12 +552,11 @@ func (j *Job) RecoveryBytes() int64 {
 // SetRecoveryBytes records the summed size of the job's par2 recovery volumes.
 //
 // Writers of recoveryBytes — `git grep -n 'recoveryBytes\s*=' internal/job/`:
-//   - AttachContent: derives truth from Manifest
-//   - RestoreContent: derives truth from Manifest
+//   - AttachFiles: derives truth from the FileTable
 //   - SetRecoveryBytes: restores persisted count from SQLite on startup prior to hydration
 //
-// Manifest hydration (AttachContent/RestoreContent) strictly supersedes any
-// value restored from SQLite via SetRecoveryBytes.
+// File attachment (AttachFiles, which AttachContent calls) strictly supersedes
+// any value restored from SQLite via SetRecoveryBytes.
 func (j *Job) SetRecoveryBytes(n int64) {
 	j.contentMu.Lock()
 	defer j.contentMu.Unlock()
@@ -536,16 +587,17 @@ func (j *Job) repairStateLocked() RepairState {
 	return RepairStateFrom(j.progress.ContentFailedBytes(), j.recoveryBytes, j.progress.HasPar2Files())
 }
 
-// NumFiles returns the number of files in the job if content has been attached,
-// or 0 if neither progress nor manifest is resident.
+// NumFiles returns the number of files in the job if files have been attached,
+// or 0 before AttachFiles. It reads the file table, then progress; never the
+// manifest, so it answers for an evicted job.
 func (j *Job) NumFiles() int {
 	j.contentMu.RLock()
 	defer j.contentMu.RUnlock()
+	if j.fileTable != nil {
+		return j.fileTable.NumFiles()
+	}
 	if j.progress != nil {
 		return len(j.progress.files)
-	}
-	if j.manifest != nil {
-		return j.manifest.NumFiles()
 	}
 	return 0
 }
@@ -721,7 +773,7 @@ func (j *Job) FileLocation(fileIdx int) (name, filename string) {
 // It does not require the manifest. A job evicted when the reload runs still
 // holds the failures the old servers recorded, through MarkArticleFailed at
 // any residency, and skipping it would keep them failed for the rest of the
-// process (#904). Evicted, it writes the bits alone, and RestoreContent's
+// process (#904). Evicted, it writes the bits alone, and AttachArticles's
 // recompute derives the counters at the next hydration. Resident, it
 // recomputes here, whatever the reset touched: a cleared emitted bit returns
 // its article to Pending as surely as an un-failed one does.

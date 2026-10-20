@@ -102,8 +102,8 @@ func TestFetchPolicyChange_PendingFollowsThePolicy(t *testing.T) {
 			t.Fatalf("SetFileFetchPolicy: %v", err)
 		}
 		j.Evict()
-		if err := j.RestoreContent(m); err != nil {
-			t.Fatalf("RestoreContent: %v", err)
+		if err := j.AttachArticles(m); err != nil {
+			t.Fatalf("AttachArticles: %v", err)
 		}
 		if err := j.SetFileFetchPolicy(1, FetchAlways); err != nil {
 			t.Fatalf("SetFileFetchPolicy: %v", err)
@@ -158,8 +158,8 @@ func TestFetchPolicyDoors_OneResidencyRule(t *testing.T) {
 		if got := j.Progress().FileFetchPolicy(1); got != FetchAlways {
 			t.Errorf("policy = %v after the release, want FetchAlways", got)
 		}
-		if err := j.RestoreContent(m); err != nil {
-			t.Fatalf("RestoreContent: %v", err)
+		if err := j.AttachArticles(m); err != nil {
+			t.Fatalf("AttachArticles: %v", err)
 		}
 		checkPendingMatchesRecompute(t, j, m, 5)
 		if got := offered(t, j); !slices.Equal(got, []int32{0, 1, 2, 3, 4}) {
@@ -176,8 +176,8 @@ func TestFetchPolicyDoors_OneResidencyRule(t *testing.T) {
 		if !j.DiscardDeferredPar2() {
 			t.Fatal("DiscardDeferredPar2 on an evicted job reported no change")
 		}
-		if err := j.RestoreContent(m); err != nil {
-			t.Fatalf("RestoreContent: %v", err)
+		if err := j.AttachArticles(m); err != nil {
+			t.Fatalf("AttachArticles: %v", err)
 		}
 		checkPendingMatchesRecompute(t, j, m, 2)
 		if got := offered(t, j); !slices.Equal(got, []int32{0, 1}) {
@@ -186,10 +186,10 @@ func TestFetchPolicyDoors_OneResidencyRule(t *testing.T) {
 	})
 }
 
-// TestRestoreContent_RefusesADifferentFileShape pins that the progress tier's
+// TestAttachArticles_RefusesAManifestWithADifferentFileShape pins that the progress tier's
 // own copy of the file ranges cannot disagree with the manifest it is paired
 // with: equal totals split differently between the files are refused.
-func TestRestoreContent_RefusesADifferentFileShape(t *testing.T) {
+func TestAttachArticles_RefusesAManifestWithADifferentFileShape(t *testing.T) {
 	t.Parallel()
 	j, m := newHeldVolumeJob(t)
 	j.Evict()
@@ -204,7 +204,7 @@ func TestRestoreContent_RefusesADifferentFileShape(t *testing.T) {
 	if other.NumArticles() != m.NumArticles() || other.NumFiles() != m.NumFiles() {
 		t.Fatal("precondition: the two manifests must agree on both totals")
 	}
-	if err := j.RestoreContent(other); err == nil {
-		t.Error("RestoreContent accepted a manifest whose files split the articles differently")
+	if err := j.AttachArticles(other); err == nil {
+		t.Error("AttachArticles accepted a manifest whose files split the articles differently")
 	}
 }

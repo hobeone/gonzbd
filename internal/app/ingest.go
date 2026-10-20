@@ -120,7 +120,6 @@ func BuildIngestJob(cfg *config.Config, parsed *nzb.NZB, filename string, opts t
 		isRecovery := isPar2 && job.IsRecoveryVolume(pf.Subject)
 		jf := job.JobFile{
 			Subject:        pf.Subject,
-			Date:           pf.Date,
 			Bytes:          pf.Bytes,
 			Articles:       make([]job.JobArticle, 0, len(pf.Articles)),
 			IsPar2Recovery: isRecovery,

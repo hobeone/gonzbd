@@ -198,8 +198,10 @@ func TestFetchedRecoveryBlocks(t *testing.T) {
 	art := func(id string) []JobArticle { return []JobArticle{{ID: id, Bytes: 100, Number: 1}} }
 	m := NewManifest([]JobFile{
 		{Subject: "data.rar", Bytes: 100, Articles: art("<d@x>")},
-		// Named like a volume but not classified as one, so it must not count.
-		{Subject: "x.vol15+16.par2", Bytes: 100, Articles: art("<i@x>")},
+		// A par2 index: not a recovery volume by the FileTable's predicate.
+		// RecoveryVolumeBlocks reads the same pattern, so a name the table does
+		// not classify as a volume cannot declare blocks either.
+		{Subject: "x.par2", Bytes: 100, Articles: art("<i@x>")},
 		{Subject: "x.vol00+01.par2", Bytes: 100, IsPar2Recovery: true, Articles: art("<v0@x>")},
 		{Subject: "x.vol01+02.par2", Bytes: 100, IsPar2Recovery: true, Articles: art("<v1@x>")},
 		{Subject: "x.vol03+04.par2", Bytes: 100, IsPar2Recovery: true, Articles: art("<v2@x>")},
@@ -227,7 +229,7 @@ func TestFetchedRecoveryBlocks(t *testing.T) {
 		{"a minus-form volume has no count", func(f []FileProgress) {
 			f[5].Complete = true
 		}, 0},
-		{"a file not classified as a recovery volume is not counted", func(f []FileProgress) {
+		{"a par2 index has no recovery blocks to count", func(f []FileProgress) {
 			f[1].Complete = true
 		}, 0},
 	}

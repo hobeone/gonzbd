@@ -18,7 +18,7 @@ import (
 // field apart from an unrelated struct that happens to reuse the same field
 // name. Of the package's non-test struct types —
 // `git grep -n '^typ[e] [A-Za-z]* struct' -- 'internal/job/*.go' ':!internal/job/*_test.go'`
-// returns 24 — only the owners listed below declare any of these fields;
+// returns 26 — only the owners listed below declare any of these fields;
 // TestFieldOwners_AreTheOnlyDeclarers enforces that, so this sentence is
 // orientation rather than the guarantee.
 var fieldOwner = map[string]string{
@@ -30,6 +30,10 @@ var fieldOwner = map[string]string{
 	"par2ReleaseReason": "JobProgress",
 	"recoveryBytes":     "Job",
 	"progress":          "Job",
+	"fileTable":         "Job",
+	"manifest":          "Job",
+	"offsets":           "FileTable",
+	"recoveryByteTotal": "FileTable",
 }
 
 // scanWriters parses this package's non-test sources and returns the sorted,
@@ -301,34 +305,80 @@ func TestPar2ReleaseReasonWriters_MatchTheEnumerationStatedInProse(t *testing.T)
 }
 
 // TestRecoveryBytesWriters_MatchTheEnumerationStatedInProse asserts that the
-// only writers of j.recoveryBytes are AttachContent, RestoreContent, and SetRecoveryBytes.
+// only writers of j.recoveryBytes are AttachFiles and SetRecoveryBytes.
 func TestRecoveryBytesWriters_MatchTheEnumerationStatedInProse(t *testing.T) {
 	writers := scanWriters(t, "recoveryBytes")
-	want := []string{"AttachContent", "RestoreContent", "SetRecoveryBytes"}
+	want := []string{"AttachFiles", "SetRecoveryBytes"}
 	if !slices.Equal(writers, want) {
 		t.Errorf("functions assigning recoveryBytes = %v, want %v\n\n"+
 			"the recoveryBytes field is owned by Job and may only be written "+
-			"via AttachContent, RestoreContent, and SetRecoveryBytes.",
+			"via AttachFiles and SetRecoveryBytes.",
 			writers, want)
 	}
 }
 
 // TestProgressPointerWriters_MatchTheEnumerationStatedInProse asserts that
-// AttachContent is the only writer of j.progress.
+// AttachFiles is the only writer of j.progress.
 //
 // Writes that need no manifest land on the job's progress record at any
 // residency, so a record installed over an existing one — a copy taken before
-// those writes, as hydration once did — discards them silently. RestoreContent
+// those writes, as hydration once did — discards them silently. AttachArticles
 // recomputes the record in place instead; a second writer here is how that
 // lost update would come back.
 func TestProgressPointerWriters_MatchTheEnumerationStatedInProse(t *testing.T) {
 	writers := scanWriters(t, "progress")
-	want := []string{"AttachContent"}
+	want := []string{"AttachFiles"}
 	if !slices.Equal(writers, want) {
 		t.Errorf("functions assigning j.progress = %v, want %v\n\n"+
 			"a write that replaces a live progress record discards whatever reached "+
 			"the old one in between; restore onto the record in place instead.",
 			writers, want)
+	}
+}
+
+// TestFilesPointerWriters_MatchTheEnumerationStatedInProse asserts that
+// AttachFiles is the only writer of j.fileTable. The field is not called
+// files because FileTable and JobProgress each declare one and the scan
+// matches a selector by name alone.
+func TestFilesPointerWriters_MatchTheEnumerationStatedInProse(t *testing.T) {
+	writers := scanWriters(t, "fileTable")
+	want := []string{"AttachFiles"}
+	if !slices.Equal(writers, want) {
+		t.Errorf("functions assigning j.fileTable = %v, want %v\n\n"+
+			"the file table is installed once, beside the progress record sized from it; "+
+			"a second writer is how the two come to describe different jobs.",
+			writers, want)
+	}
+}
+
+// TestManifestPointerWriters_MatchTheEnumerationStatedInProse asserts that
+// AttachArticles installs the manifest and Evict clears it, and nothing else
+// writes j.manifest.
+func TestManifestPointerWriters_MatchTheEnumerationStatedInProse(t *testing.T) {
+	writers := scanWriters(t, "manifest")
+	want := []string{"AttachArticles", "Evict"}
+	if !slices.Equal(writers, want) {
+		t.Errorf("functions assigning j.manifest = %v, want %v\n\n"+
+			"AttachArticles pairs the manifest with the job's file table before "+
+			"installing it; a writer that skips that check can attach articles "+
+			"indexed against a different table.",
+			writers, want)
+	}
+}
+
+// TestFileTableWriters_MatchTheEnumerationStatedInProse asserts that
+// newFileTable is the only writer of the FileTable fields this scan can name
+// unambiguously: offsets and recoveryByteTotal (files and totalBytes are also
+// declared by other types, so a by-name scan cannot attribute them). The
+// derived figures are computed in one place, so a table cannot describe a file
+// list its figures were not computed from.
+func TestFileTableWriters_MatchTheEnumerationStatedInProse(t *testing.T) {
+	for _, field := range []string{"offsets", "recoveryByteTotal"} {
+		writers := scanWriters(t, field)
+		want := []string{"newFileTable"}
+		if !slices.Equal(writers, want) {
+			t.Errorf("functions assigning FileTable.%s = %v, want %v", field, writers, want)
+		}
 	}
 }
 

@@ -5,61 +5,51 @@ import (
 	"fmt"
 	"sort"
 	"strings"
-	"time"
 
 	"github.com/hobeone/gonzbd/internal/nzb"
 )
 
-// Manifest is the immutable article/file structure of a job: parsed once
-// from the NZB (or loaded once from disk) and never mutated afterward.
-// Safe to share by reference — Job.Manifest hands every caller the same
-// pointer — and there is no aliasing hazard, because the only writes to a
-// Manifest's fields happen during construction, and newManifest is the sole
-// place that construction occurs (UnmarshalJSON reaches it too, replacing
-// the whole value rather than editing fields).
+// Manifest is the job's article table: the flat, global-indexed message-ID,
+// byte-count and part-number arrays for every article of every file. Its file
+// structure — subjects, sizes, article counts, offsets and recovery figures —
+// is the FileTable it was built from, reachable as Files(); a Manifest holds
+// no per-file field of its own.
 //
-// That is unconditional. It was not always: a lazily-built messageID ->
-// article index used to be the one field written after construction, which
-// made the share-by-reference argument carry an exception every reader had
-// to re-check. Nothing keys on a Message-ID here any more, so the exception
-// is gone rather than merely documented.
+// It is immutable after construction and safe to share by reference — every
+// Job.Manifest caller gets the same pointer — because the only writes to its
+// fields happen in newManifest (UnmarshalJSON reaches it too, replacing the
+// whole value rather than editing fields). newManifest is the sole
+// constructor and refuses an article list whose length is not the table's
+// TotalArticles. NewManifestFromArticles is its exported door; NewManifest is
+// the wrapper that ingest and tests use to build the table and the manifest
+// together from []JobFile.
+//
+// The JSON form is nested files carrying their articles; a later change makes
+// it articles-only.
 type Manifest struct {
-	files         []manifestFile
+	ft            *FileTable
 	articleIDs    []string // flat, global article index
 	articleBytes  []int
 	articleNumber []int
-	// fileArticleOffsets[fi]..fileArticleOffsets[fi+1] is the global article
-	// range [lo, hi) owned by file fi — a cumulative prefix-sum boundary
-	// array, one longer than files (a final sentinel = total article count).
-	fileArticleOffsets []int
-
-	totalBytes        int64
-	par2RecoveryBytes int64
-	par2RecoveryFiles int
-}
-
-type manifestFile struct {
-	subject        string
-	date           time.Time
-	bytes          int64
-	isPar2Recovery bool
 }
 
 // JobFile is the intermediate, NZB-parsed shape NewManifest converts into a
-// Manifest; internal/app's BuildIngestJob builds it, and UnmarshalJSON
-// decodes to it. It is not part of Job's runtime state — construction
-// scaffolding only.
+// FileTable and a Manifest; internal/app's BuildIngestJob builds it, and
+// UnmarshalJSON decodes to it. It is not part of Job's runtime state —
+// construction scaffolding only.
 //
 //nolint:revive // stutter is preserved for consistency during queue -> job transition
 type JobFile struct {
-	Subject        string
-	Date           time.Time
-	Articles       []JobArticle
-	Bytes          int64
+	Subject  string
+	Articles []JobArticle
+	Bytes    int64
+	// IsPar2Recovery is not read by NewManifest: the FileTable derives the
+	// classification from Subject with IsRecoveryVolume, so a caller cannot
+	// supply one that disagrees with it.
 	IsPar2Recovery bool
 	// Deferred marks a file whose articles are intentionally held back from
 	// dispatch (on-demand par2: recovery volumes not downloaded until repair
-	// is shown to be needed). newManifest does not read it: the Manifest
+	// is shown to be needed). NewManifest does not read it: the Manifest
 	// carries no fetch policy, and the builder applies it after
 	// AttachContent, through SetFileFetchPolicy with FetchIfNeeded.
 	Deferred bool
@@ -75,110 +65,88 @@ type JobArticle struct {
 	Number int
 }
 
-// NewManifest builds a Manifest from parsed files.
+// NewManifest builds a FileTable and a Manifest from parsed files. The
+// article count cannot disagree with the table by construction, so a refusal
+// from NewManifestFromArticles is a bug here and panics rather than returning
+// an error no caller could act on.
 func NewManifest(files []JobFile) *Manifest {
-	return newManifest(files)
-}
-
-// newManifest builds a Manifest from files, flattening each file's nested
-// articles into the parallel global arrays and computing the
-// fileArticleOffsets prefix sum, totalBytes, and the recovery figures.
-//
-// NewManifest and UnmarshalJSON are the only callers (`git grep -n
-// 'newManifes[t](' -- '*.go' ':!*_test.go'` returns 3 lines: those two calls
-// and this declaration), which is the point: every
-// Manifest in the process, however it arrived, has its derived state computed
-// here and nowhere else. DiscardDeferredPar2 used to call it too, to rebuild
-// against a reduced file set, and that rebuild is why the recovery
-// figures were once stored rather than derived — the discard deliberately
-// left them describing the larger, pre-discard job. Since #331 the discard
-// only marks a FetchPolicy and changes no file set, so nothing can make
-// these figures disagree with the file list they are computed from.
-func newManifest(files []JobFile) *Manifest {
-	m := &Manifest{
-		files:              make([]manifestFile, len(files)),
-		fileArticleOffsets: make([]int, len(files)+1),
-	}
+	specs := make([]FileSpec, len(files))
+	var articles []JobArticle
 	for fi, f := range files {
-		m.files[fi] = manifestFile{
-			subject:        f.Subject,
-			date:           f.Date,
-			bytes:          f.Bytes,
-			isPar2Recovery: f.IsPar2Recovery,
-		}
-		m.fileArticleOffsets[fi] = len(m.articleIDs)
-		for _, a := range f.Articles {
-			m.articleIDs = append(m.articleIDs, a.ID)
-			m.articleBytes = append(m.articleBytes, a.Bytes)
-			m.articleNumber = append(m.articleNumber, a.Number)
-		}
-		m.totalBytes += f.Bytes
+		specs[fi] = FileSpec{Subject: f.Subject, Bytes: f.Bytes, ArticleCount: len(f.Articles)}
+		articles = append(articles, f.Articles...)
 	}
-	m.fileArticleOffsets[len(files)] = len(m.articleIDs)
-	m.par2RecoveryBytes, m.par2RecoveryFiles = recoveryFigures(m.files)
+	m, err := NewManifestFromArticles(NewFileTable(specs), articles)
+	if err != nil {
+		panic(err)
+	}
 	return m
 }
 
-// recoveryFigures sums the par2 recovery volumes in files, returning their
-// total size and count. Both construction paths — newManifest and
-// UnmarshalJSON — call it, so the two cannot disagree about what a job's
-// repair capacity is.
-//
-// The predicate is isPar2Recovery — a subject matching the ".volNNN+MM.par2"
-// convention — not the broader name-based isPar2File, which matches any
-// ".par2" subject and so also picks up the file conventionally used as an
-// index. An index holds per-file checksums, and counting those as repair
-// capacity overstated it everywhere these figures are read.
-//
-// "Conventionally" is doing real work in that sentence, and the figure is
-// weaker than it looks. The PAR2 specification says a file carrying recovery
-// slices *should* be named with a .volNNN+MM segment; it does not require it,
-// does not forbid recovery slices in a plainly-named .par2, and does not
-// define an index file at all. par2 itself reads packets and ignores names.
-// So this counts recognized capacity, and a job can hold more than it reports.
-// Callers must not read zero here as proof that a job cannot be repaired —
-// see JobProgress.HasPar2Files and the guards that use it.
-func recoveryFigures(files []manifestFile) (bytes int64, count int) {
-	for _, f := range files {
-		if f.isPar2Recovery {
-			bytes += f.bytes
-			count++
-		}
-	}
-	return bytes, count
+// NewManifestFromArticles builds a Manifest over ft from the flat article list,
+// ordered file by file as ft's offsets describe. It refuses a list whose
+// length is not ft.TotalArticles().
+func NewManifestFromArticles(ft *FileTable, articles []JobArticle) (*Manifest, error) {
+	return newManifest(ft, articles)
 }
+
+// newManifest flattens articles into the parallel global arrays beside ft.
+//
+// NewManifestFromArticles is its only caller (`git grep -n 'newManifes[t](' --
+// '*.go' ':!*_test.go'` returns 2 lines: that call and this declaration), and
+// NewManifest and UnmarshalJSON reach it through that door, so every Manifest
+// in the process has its arrays sized against its table here and nowhere else.
+func newManifest(ft *FileTable, articles []JobArticle) (*Manifest, error) {
+	if ft == nil {
+		return nil, fmt.Errorf("job: manifest: nil file table")
+	}
+	if want := ft.TotalArticles(); len(articles) != want {
+		return nil, fmt.Errorf("job: manifest: file table describes %d articles, got %d", want, len(articles))
+	}
+	m := &Manifest{
+		ft:            ft,
+		articleIDs:    make([]string, len(articles)),
+		articleBytes:  make([]int, len(articles)),
+		articleNumber: make([]int, len(articles)),
+	}
+	for i, a := range articles {
+		m.articleIDs[i] = a.ID
+		m.articleBytes[i] = a.Bytes
+		m.articleNumber[i] = a.Number
+	}
+	return m, nil
+}
+
+// Files returns the file table this manifest's articles are indexed against.
+func (m *Manifest) Files() *FileTable { return m.ft }
 
 // isPar2File reports whether subject names a par2 file (index or recovery
 // volume). It has two callers: IsPar2File, which internal/app's
 // BuildIngestJob pairs with IsRecoveryVolume to decide
-// JobFile.IsPar2Recovery, and fileMetaFromManifest, which classifies
-// FileProgress.IsPar2 with it. Manifest's own figures do not use it — see
-// recoveryFigures for why a name-based test is the wrong predicate for repair
+// JobFile.IsPar2Recovery, and fileMetaFromTable, which classifies
+// FileProgress.IsPar2 with it. A FileTable's own figures do not use it — see
+// FileTable for why a name-based test is the wrong predicate for repair
 // capacity.
 func isPar2File(subject string) bool {
 	return strings.Contains(strings.ToLower(subject), ".par2")
 }
 
 // NumFiles returns the number of files in the manifest.
-func (m *Manifest) NumFiles() int { return len(m.files) }
+func (m *Manifest) NumFiles() int { return m.ft.NumFiles() }
 
-// FileSubject returns the NZB subject line for file fileIdx.
-func (m *Manifest) FileSubject(fileIdx int) string { return m.files[fileIdx].subject }
+// FileSubject returns the NZB subject line for file fileIdx. Forwards to Files().
+func (m *Manifest) FileSubject(fileIdx int) string { return m.ft.Subject(fileIdx) }
 
-// FileDate returns the posting date for file fileIdx.
-func (m *Manifest) FileDate(fileIdx int) time.Time { return m.files[fileIdx].date }
-
-// FileBytes returns the NZB-claimed byte count for file fileIdx.
-func (m *Manifest) FileBytes(fileIdx int) int64 { return m.files[fileIdx].bytes }
+// FileBytes returns the NZB-claimed byte count for file fileIdx. Forwards to Files().
+func (m *Manifest) FileBytes(fileIdx int) int64 { return m.ft.Bytes(fileIdx) }
 
 // FileIsPar2Recovery reports whether file fileIdx is a par2 recovery volume.
-func (m *Manifest) FileIsPar2Recovery(fileIdx int) bool { return m.files[fileIdx].isPar2Recovery }
+// Forwards to Files().
+func (m *Manifest) FileIsPar2Recovery(fileIdx int) bool { return m.ft.IsPar2Recovery(fileIdx) }
 
 // FileRange returns the [lo, hi) global article index range owned by
 // file fileIdx.
-func (m *Manifest) FileRange(fileIdx int) (lo, hi int) {
-	return m.fileArticleOffsets[fileIdx], m.fileArticleOffsets[fileIdx+1]
-}
+func (m *Manifest) FileRange(fileIdx int) (lo, hi int) { return m.ft.Range(fileIdx) }
 
 // ArticleInFile reports whether fileIdx names a file of m and artIdx an
 // article inside that file's range. It is the range check a written row
@@ -195,15 +163,15 @@ func (m *Manifest) ArticleInFile(fileIdx int, artIdx int32) bool {
 }
 
 // fileIndexForArticle returns the file index owning global article index i,
-// derived from fileArticleOffsets rather than a cached per-article
+// derived from the table's offsets rather than a cached per-article
 // back-pointer — JobProgress stores no FileIdx field, since the value is
-// always cheaply recomputable from the manifest and caching it would risk
-// drifting out of sync with fileArticleOffsets after a rebuild.
+// always cheaply recomputable and caching it would risk drifting out of sync
+// with the offsets.
 func (m *Manifest) fileIndexForArticle(i int) int {
-	// fileArticleOffsets[fi+1] is the first index NOT owned by file fi, so
-	// the first fi where offsets[fi+1] > i is the owning file.
-	return sort.Search(len(m.fileArticleOffsets)-1, func(fi int) bool {
-		return m.fileArticleOffsets[fi+1] > i
+	// offsets[fi+1] is the first index NOT owned by file fi, so the first fi
+	// where offsets[fi+1] > i is the owning file.
+	return sort.Search(m.ft.NumFiles(), func(fi int) bool {
+		return m.ft.offsets[fi+1] > i
 	})
 }
 
@@ -219,36 +187,18 @@ func (m *Manifest) ArticleBytes(i int) int { return m.articleBytes[i] }
 // ArticleNumber returns the part number of global article index i.
 func (m *Manifest) ArticleNumber(i int) int { return m.articleNumber[i] }
 
-// TotalBytes returns the sum of all files' claimed byte counts.
-func (m *Manifest) TotalBytes() int64 { return m.totalBytes }
+// TotalBytes returns the sum of all files' claimed byte counts. Forwards to
+// Files().
+func (m *Manifest) TotalBytes() int64 { return m.ft.TotalBytes() }
 
-// RecoveryBytes returns the summed size of the files whose subjects identify
-// them as par2 recovery volumes, excluding the file conventionally used as the
-// set's index, which holds per-file checksums rather than recovery slices.
-//
-// This is a proxy for repair capacity, and a doubly weak one. Read the
-// qualifications before comparing anything against it.
-//
-// It is *recognized* capacity, not total capacity. The classification comes
-// from the NZB subject, and the ".volNNN+MM.par2" convention is a convention:
-// the PAR2 specification recommends it for files carrying recovery slices
-// without requiring it, never forbids slices in a plainly-named .par2, and
-// defines no index file. par2 reads packets, not names. A job may therefore
-// hold recovery data this figure does not see, so zero is not evidence a job
-// cannot be repaired.
-//
-// Even where the classification is right, bytes are only a proxy for what
-// actually decides repair, which is block counts — usable parity shards
-// against unusable data shards — and nothing can know those until par2 parses
-// the volumes. The comparison is sound in one direction only: damage
-// exceeding this figure does imply unrepairable, since recovery bytes are at
-// least the slice payload. Damage failing to exceed it implies nothing,
-// because scattered damage destroys more blocks than its byte count suggests.
-func (m *Manifest) RecoveryBytes() int64 { return m.par2RecoveryBytes }
+// RecoveryBytes returns the summed size of the par2 recovery volumes.
+// Forwards to Files(); FileTable documents what the figure does and does not
+// establish.
+func (m *Manifest) RecoveryBytes() int64 { return m.ft.RecoveryBytes() }
 
 // RecoveryFiles returns the count of par2 recovery volumes, excluding the
-// index. See RecoveryBytes.
-func (m *Manifest) RecoveryFiles() int { return m.par2RecoveryFiles }
+// index. Forwards to Files().
+func (m *Manifest) RecoveryFiles() int { return m.ft.RecoveryFiles() }
 
 // manifestJSONArticle is one article's on-disk shape within a manifestJSONFile.
 type manifestJSONArticle struct {
@@ -263,7 +213,6 @@ type manifestJSONArticle struct {
 // wire-format compatibility requirement on this persistence format.
 type manifestJSONFile struct {
 	Subject        string                `json:"subject"`
-	Date           time.Time             `json:"date"`
 	Bytes          int64                 `json:"bytes"`
 	IsPar2Recovery bool                  `json:"is_par2_recovery,omitempty"`
 	Articles       []manifestJSONArticle `json:"articles"`
@@ -272,8 +221,8 @@ type manifestJSONFile struct {
 // manifestJSON is Manifest's on-disk shape.
 //
 // No summary figure is persisted: the total and the recovery pair are all
-// recomputed on load by newManifest from the per-file bytes and
-// is_par2_recovery flags this format carries. A derived value that is also
+// recomputed on load by NewFileTable from the per-file bytes and subjects
+// this format carries. A derived value that is also
 // stored is a second source of truth, and the stored copy is the one that
 // drifts. encoding/json ignores keys with no matching field, so a stray
 // total_bytes in a blob is read by no one.
@@ -295,10 +244,9 @@ func (m *Manifest) MarshalJSON() ([]byte, error) {
 			})
 		}
 		files[fi] = manifestJSONFile{
-			Subject:        m.files[fi].subject,
-			Date:           m.files[fi].date,
-			Bytes:          m.files[fi].bytes,
-			IsPar2Recovery: m.files[fi].isPar2Recovery,
+			Subject:        m.ft.Subject(fi),
+			Bytes:          m.ft.Bytes(fi),
+			IsPar2Recovery: m.ft.IsPar2Recovery(fi),
 			Articles:       articles,
 		}
 	}
@@ -308,13 +256,13 @@ func (m *Manifest) MarshalJSON() ([]byte, error) {
 // UnmarshalJSON implements json.Unmarshaler.
 //
 // It decodes to the same []JobFile shape NewManifest takes and delegates to
-// newManifest, rather than populating the fields itself. newManifest is the
-// sole owner of a Manifest's derived state; a second constructor filling the
-// same eight fields by its own code path is one edit away from disagreeing
-// with the first, and the two had already diverged over totalBytes — this
-// path trusted the persisted total while newManifest derived it from the
-// files. Deriving on load means no stored total exists to drift from the file
-// list it would summarise.
+// it, rather than populating the fields itself. NewManifest reaches the one
+// constructor, which owns a Manifest's arrays and its table's derived state; a
+// second constructor filling the same fields by its own code path is one edit
+// away from disagreeing with the first, and the two had already diverged over
+// totalBytes — this path trusted the persisted total while the constructor
+// derived it from the files. Deriving on load means no stored total exists to
+// drift from the file list it would summarise.
 //
 // It also re-checks each Message-ID, which is the sole thing here that does
 // not trust this package's own earlier output — see the comment at the check
@@ -351,12 +299,11 @@ func (m *Manifest) UnmarshalJSON(data []byte) error {
 		}
 		files[fi] = JobFile{
 			Subject:        f.Subject,
-			Date:           f.Date,
 			Bytes:          f.Bytes,
 			IsPar2Recovery: f.IsPar2Recovery,
 			Articles:       articles,
 		}
 	}
-	*m = *newManifest(files)
+	*m = *NewManifest(files)
 	return nil
 }

@@ -1,5 +1,5 @@
 pkg ./internal/job/
-run TestMarkArticleFailed_RecordsAFailureThatArrivesAfterEviction|TestMarkArticleFailed_EvictedRejectsAnOutOfRangeIndex|TestClearArticleEmitted_ReturnsAnEvictedArticleToOutstanding|TestRestoreContent_KeepsWritesMadeWhileEvicted|TestMarkArticleFailed_ResidentEmittedArticleLeavesPendingOnce|TestProgressPointerWriters_MatchTheEnumerationStatedInProse
+run TestMarkArticleFailed_RecordsAFailureThatArrivesAfterEviction|TestMarkArticleFailed_EvictedRejectsAnOutOfRangeIndex|TestClearArticleEmitted_ReturnsAnEvictedArticleToOutstanding|TestAttachArticles_KeepsWritesMadeWhileEvicted|TestMarkArticleFailed_ResidentEmittedArticleLeavesPendingOnce|TestProgressPointerWriters_MatchTheEnumerationStatedInProse
 
 [an evicted job's failure refused, as before the fix]
 file internal/job/content.go
@@ -111,13 +111,13 @@ file internal/job/content.go
 --- anchor
 	j.progress.recompute(m)
 	j.manifest = m
-	j.totalBytes = m.TotalBytes()
+	return nil
 --- replace
 	cp := j.progress.clone()
 	cp.recompute(m)
 	j.progress = cp
 	j.manifest = m
-	j.totalBytes = m.TotalBytes()
+	return nil
 --- end
 
 [re-hydration replaces the record with a fresh one]
@@ -125,9 +125,9 @@ file internal/job/content.go
 --- anchor
 	j.progress.recompute(m)
 	j.manifest = m
-	j.totalBytes = m.TotalBytes()
+	return nil
 --- replace
-	j.progress = newJobProgress(m)
+	j.progress = newJobProgress(m.Files())
 	j.manifest = m
-	j.totalBytes = m.TotalBytes()
+	return nil
 --- end

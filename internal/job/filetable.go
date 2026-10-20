@@ -5,10 +5,13 @@ package job
 // figures derived from them. It is immutable after construction and safe to
 // share by reference.
 //
-// newFileTable is the only writer of every field, including every derived
-// one (offsets, totalBytes, the recovery figures, isPar2Recovery), so a
-// table cannot describe a file list its figures were not computed from.
-// NewFileTable is the exported door to it.
+// newFileTable writes the derived fields (offsets, totalBytes, the recovery
+// figures, isPar2Recovery), so a table cannot describe a file list its
+// figures were not computed from. NewFileTable is the exported door to it.
+// TestFileTableWriters_MatchTheEnumerationStatedInProse pins the writers of
+// offsets and recoveryByteTotal; totalBytes and files share a name with
+// fields of other types, which a by-name scan cannot tell apart, so those two
+// rest on the same function writing all four.
 //
 // IsRecoveryVolume is the one predicate for recovery capacity: a subject
 // matching the ".volNNN+MM.par2" convention, not the broader name-based

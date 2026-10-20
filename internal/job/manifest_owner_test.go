@@ -3,21 +3,20 @@ package job
 import (
 	"bytes"
 	"encoding/json"
+	"strings"
 	"testing"
-	"time"
 )
 
-// A Manifest has one owner for its derived state: newManifest. UnmarshalJSON
-// delegates to it rather than filling the fields itself, so a round-trip
-// cannot produce a Manifest that differs from one built directly — which is
-// what lets the rest of the system reason about "a manifest" without asking
-// which constructor made it.
-func TestManifestRoundTripMatchesDirectConstruction(t *testing.T) {
+// A Manifest has one owner for its derived state: newManifest, reached through
+// NewManifestFromArticles. UnmarshalJSON delegates to it rather than filling
+// the fields itself, so a round-trip cannot produce a Manifest that differs
+// from one built directly — which is what lets the rest of the system reason
+// about "a manifest" without asking which constructor made it.
+func TestManifestRoundTrip_MatchesDirectConstruction(t *testing.T) {
 	t.Parallel()
 	files := []JobFile{
 		{
 			Subject: "a.bin",
-			Date:    time.Unix(1700000000, 0).UTC(),
 			Bytes:   300,
 			Articles: []JobArticle{
 				{ID: "a1@h", Bytes: 100, Number: 1},
@@ -26,17 +25,19 @@ func TestManifestRoundTripMatchesDirectConstruction(t *testing.T) {
 		},
 		{
 			Subject:        "a.vol01+02.par2",
-			Date:           time.Unix(1700000001, 0).UTC(),
 			Bytes:          50,
 			IsPar2Recovery: true,
 			Articles:       []JobArticle{{ID: "p1@h", Bytes: 50, Number: 1}},
 		},
 	}
 
-	direct := newManifest(files)
+	direct := NewManifest(files)
 	blob, err := json.Marshal(direct)
 	if err != nil {
 		t.Fatalf("Marshal: %v", err)
+	}
+	if bytes.Contains(blob, []byte(`"date"`)) {
+		t.Errorf("marshalled manifest carries a date key: %s", blob)
 	}
 	var loaded Manifest
 	if err := json.Unmarshal(blob, &loaded); err != nil {
@@ -55,14 +56,53 @@ func TestManifestRoundTripMatchesDirectConstruction(t *testing.T) {
 	if got, want := loaded.RecoveryBytes(), direct.RecoveryBytes(); got != want {
 		t.Errorf("RecoveryBytes = %d, want %d", got, want)
 	}
+	if got, want := loaded.RecoveryFiles(), direct.RecoveryFiles(); got != want {
+		t.Errorf("RecoveryFiles = %d, want %d", got, want)
+	}
 	for i := range direct.NumArticles() {
 		if got, want := loaded.ArticleID(i), direct.ArticleID(i); got != want {
 			t.Errorf("ArticleID(%d) = %q, want %q", i, got, want)
 		}
+		if got, want := loaded.ArticleBytes(i), direct.ArticleBytes(i); got != want {
+			t.Errorf("ArticleBytes(%d) = %d, want %d", i, got, want)
+		}
+		if got, want := loaded.ArticleNumber(i), direct.ArticleNumber(i); got != want {
+			t.Errorf("ArticleNumber(%d) = %d, want %d", i, got, want)
+		}
 	}
 	for fi := range direct.NumFiles() {
-		if got, want := loaded.FileBytes(fi), direct.FileBytes(fi); got != want {
-			t.Errorf("FileBytes(%d) = %d, want %d", fi, got, want)
+		if got, want := loaded.Files().Bytes(fi), direct.Files().Bytes(fi); got != want {
+			t.Errorf("Files().Bytes(%d) = %d, want %d", fi, got, want)
+		}
+		if got, want := loaded.Files().Subject(fi), direct.Files().Subject(fi); got != want {
+			t.Errorf("Files().Subject(%d) = %q, want %q", fi, got, want)
+		}
+		lo, hi := loaded.FileRange(fi)
+		wlo, whi := direct.FileRange(fi)
+		if lo != wlo || hi != whi {
+			t.Errorf("FileRange(%d) = [%d,%d), want [%d,%d)", fi, lo, hi, wlo, whi)
+		}
+	}
+}
+
+// NewManifestFromArticles is the one constructor, and it refuses a flat article
+// list whose length the table does not account for. The error names both
+// counts so a reader can tell which side is short.
+func TestNewManifestFromArticles_RefusesAnArticleCountTheTableDoesNotHave(t *testing.T) {
+	t.Parallel()
+	ft := NewFileTable([]FileSpec{
+		{Subject: "a.bin", Bytes: 200, ArticleCount: 2},
+		{Subject: "b.bin", Bytes: 100, ArticleCount: 1},
+	})
+	m, err := NewManifestFromArticles(ft, []JobArticle{
+		{ID: "a1@h", Bytes: 100, Number: 1}, {ID: "a2@h", Bytes: 100, Number: 2},
+	})
+	if err == nil {
+		t.Fatalf("NewManifestFromArticles = %v, nil; want an error for 2 articles against a 3-article table", m)
+	}
+	for _, want := range []string{"3", "2"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error %q does not name the count %s", err, want)
 		}
 	}
 }
@@ -72,7 +112,7 @@ func TestManifestRoundTripMatchesDirectConstruction(t *testing.T) {
 // carries only the files, and a stray total_bytes key in one is read by no one.
 func TestManifestDoesNotPersistTotalBytes(t *testing.T) {
 	t.Parallel()
-	m := newManifest([]JobFile{{Subject: "a.bin", Bytes: 300, Articles: []JobArticle{
+	m := NewManifest([]JobFile{{Subject: "a.bin", Bytes: 300, Articles: []JobArticle{
 		{ID: "a1@h", Bytes: 100, Number: 1}, {ID: "a2@h", Bytes: 200, Number: 2},
 	}}})
 

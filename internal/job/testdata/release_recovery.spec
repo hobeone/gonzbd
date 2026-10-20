@@ -68,7 +68,7 @@ file internal/job/release.go
 [candidate bytes ignored]
 file internal/job/release.go
 --- anchor
-				bytes = append(bytes, j.manifest.FileBytes(i))
+				bytes = append(bytes, j.manifest.Files().Bytes(i))
 --- replace
 				bytes = append(bytes, 1)
 --- end

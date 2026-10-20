@@ -20,14 +20,12 @@ import (
 //
 // Keys are "Receiver.Method", not a bare method name.
 var manifestGateExempt = map[string]string{
-	"Job.AttachContent":         "assigns the manifest; establishes residency rather than relying on it",
-	"Job.RestoreContent":        "assigns the manifest and validates alignment with progress; establishes residency rather than relying on it",
+	"Job.AttachArticles":        "assigns the manifest; establishes residency rather than relying on it",
 	"Job.Evict":                 "clears the manifest; runs precisely to drop residency",
 	"Job.Resident":              "reports residency state directly",
-	"Job.NumFiles":              "reads manifest count only if progress is not resident as a fallback",
-	"Job.markArticleFailed":     "MarkArticleFailed's body; records a permanent failure's bits on progress alone when the manifest is evicted, since the failure is in memory only and the bit is all of it; the counters need the manifest, and RestoreContent's recompute derives the counters at the next hydration",
-	"Job.ClearArticleEmitted":   "clears the emitted bit on progress alone when the manifest is evicted, since a refused clear strands the article; only the pending counts need the manifest, and RestoreContent's recompute derives them at the next hydration",
-	"Job.ClearEmittedForReload": "resets the emitted and failed bits on progress alone when the manifest is evicted, since skipping an evicted job keeps the old servers' failures for the rest of the process; only the counters need the manifest, and RestoreContent's recompute derives them at the next hydration",
+	"Job.markArticleFailed":     "MarkArticleFailed's body; records a permanent failure's bits on progress alone when the manifest is evicted, since the failure is in memory only and the bit is all of it; the counters need the manifest, and AttachArticles's recompute derives the counters at the next hydration",
+	"Job.ClearArticleEmitted":   "clears the emitted bit on progress alone when the manifest is evicted, since a refused clear strands the article; only the pending counts need the manifest, and AttachArticles's recompute derives them at the next hydration",
+	"Job.ClearEmittedForReload": "resets the emitted and failed bits on progress alone when the manifest is evicted, since skipping an evicted job keeps the old servers' failures for the rest of the process; only the counters need the manifest, and AttachArticles's recompute derives them at the next hydration",
 	"Job.ReleaseRecovery":       "releases every held volume on progress alone when the manifest is evicted, since a sized release needs the volume names and sizes only the manifest holds, and refusing would leave the job's repair waiting on volumes nothing fetches",
 	"Job.ResetForRetry":         "carries deliberate early return for retry; both callers hydrate first, so the skip is unreachable and an error return would change an exported signature for a branch that cannot execute",
 }
