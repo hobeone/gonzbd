@@ -20,4 +20,8 @@ jobs:
       - id: govulncheck
         uses: golang/govulncheck-action@v1
         with:
+           # The action defaults to the latest stable Go with GOTOOLCHAIN=local,
+           # so a go.mod ahead of that fails to load. Read it from go.mod like
+           # ci.yml, codeql.yml and release.yml do.
+           go-version-file: go.mod
            go-package: ./...
