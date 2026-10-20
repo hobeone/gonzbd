@@ -782,10 +782,8 @@ func (app *Application) AddJob(ctx context.Context, j *job.Job, hdr dispatch.Hea
 	// without one — so the attempt runs unrecorded and reports as a failure to
 	// add.
 	if app.durable != nil {
-		if m, err := j.Manifest(); err == nil && m != nil {
-			if err := seedJobFiles(ctx, app.durable, j.ID(), m.Files().Specs(), j.FileFetchPolicy); err != nil {
-				return err
-			}
+		if err := seedJobFiles(ctx, app.durable, j); err != nil {
+			return err
 		}
 	}
 	if _, err := app.claimJobName(snap, baseName, func(name string) error {
@@ -860,21 +858,28 @@ func (app *Application) removeNZBBackupIn(dir, jobID, nzbBackup string) {
 // in-flight tick Save before its own busy_timeout begins.
 const addPersistTimeout = 10 * time.Second
 
-// seedJobFiles seeds a job's job_files rows through the durability store,
-// translating each file's structure and job.FetchPolicy to the store's plain
-// types. See durability.Store.Admit for why the seed must exist before the
-// recorder's first write, and why it is one transaction.
-func seedJobFiles(ctx context.Context, st durabilityStore, jobID string, specs []job.FileSpec, fetch func(int) job.FetchPolicy) error {
+// seedJobFiles seeds a job's job_files rows through the durability store from
+// the job's file table and per-file fetch policy, translating them to the
+// store's plain types. It refuses a job with no file table rather than
+// seeding zero rows: a job without a table would run with no rows for the
+// recorder to update. See durability.Store.Admit for why the seed must exist
+// before the recorder's first write, and why it is one transaction.
+func seedJobFiles(ctx context.Context, st durabilityStore, j *job.Job) error {
+	ft := j.Files()
+	if ft == nil {
+		return fmt.Errorf("app: seed job_files for %s: job has no file table", j.ID())
+	}
+	specs := ft.Specs()
 	files := make([]durability.AdmitFile, len(specs))
 	for i, s := range specs {
 		files[i] = durability.AdmitFile{
 			Subject:      s.Subject,
 			Bytes:        s.Bytes,
 			ArticleCount: s.ArticleCount,
-			FetchPolicy:  uint8(fetch(i)),
+			FetchPolicy:  uint8(j.FileFetchPolicy(i)),
 		}
 	}
-	return st.Admit(ctx, jobID, files)
+	return st.Admit(ctx, j.ID(), files)
 }
 
 // RemoveJob cancels and removes a job from the queue.
@@ -2929,7 +2934,7 @@ func (app *Application) retryHistoryJob(ctx context.Context, jobID string, allow
 	// drops state for a job the dispatcher does not hold yet. A file the
 	// verification finished keeps complete = 1.
 	if app.durable != nil {
-		if err := seedJobFiles(ctx, app.durable, jobID, m.Files().Specs(), j.FileFetchPolicy); err != nil {
+		if err := seedJobFiles(ctx, app.durable, j); err != nil {
 			return fmt.Errorf("app: retry %s: seed job_files: %w", jobID, err)
 		}
 		// context.Background(): a client disconnect mid-request must not

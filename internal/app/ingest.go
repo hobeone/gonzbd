@@ -157,7 +157,7 @@ func BuildIngestJob(cfg *config.Config, parsed *nzb.NZB, filename string, opts t
 		Filename:      filename,
 		Category:      category,
 		Priority:      priority,
-		Bytes:         manifest.TotalBytes(),
+		Bytes:         j.Files().TotalBytes(),
 		IngestAnomaly: parseAnomalySummary(parsed),
 		Script:        script,
 		Password:      password,

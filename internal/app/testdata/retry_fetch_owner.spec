@@ -62,7 +62,7 @@ file internal/app/app.go
 [the seed writes the default instead of the derived policy]
 file internal/app/app.go
 --- anchor
-			FetchPolicy:  uint8(fetch(i)),
+			FetchPolicy:  uint8(j.FileFetchPolicy(i)),
 --- replace
 			FetchPolicy:  0,
 --- end

@@ -236,7 +236,7 @@ func TestRetryHistoryJob_AFinalizerStartingAfterTheClaimKeepsItsState(t *testing
 	if err != nil {
 		t.Fatalf("Manifest: %v", err)
 	}
-	if err := seedJobFiles(t.Context(), application.durable, id, m.Files().Specs(), j1.FileFetchPolicy); err != nil {
+	if err := seedJobFiles(t.Context(), application.durable, j1); err != nil {
 		t.Fatalf("seedJobFiles: %v", err)
 	}
 	rows := jobFilesCount(t, application, id)
