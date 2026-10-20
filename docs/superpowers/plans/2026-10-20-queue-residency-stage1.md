@@ -12,7 +12,7 @@
 
 ## Global Constraints
 
-- Standing Rule 2: one constructor per type. `newFileTable`, `newManifest`, `newJobProgress` are each the sole place their type's derived state is computed; `BuildContent` is a wrapper, not a constructor.
+- Standing Rule 2: one constructor per type. `newFileTable`, `newManifest`, `newJobProgress` are each the sole place their type's derived state is computed; `NewManifest(files)` is a wrapper, not a constructor.
 - Standing Rule 1: no migration, no dual-read. `001_initial.sql` and `schema.golden` are edited in place.
 - Durability §3 is untouched in this stage: hydration still verifies before any Done bit is installed.
 - `internal/dispatch` must not name `job.Manifest` (`TestDispatchNamesNoManifestType`); it does not name `job.FileTable` either.
@@ -43,7 +43,7 @@ Entries, each with Call / Why / Cost:
 - **D5 — `is_par2` is not a column.** `IsRecoveryVolume(subject)` is a pure function of `subject` (its regex requires `.par2`), so storing the flag would be a persisted derived value. `newFileTable` computes it; `job_files` carries `subject`, `bytes`, `article_count` only.
 - **D6 — `date` dropped from `JobFile` and the manifest JSON.** `FileDate` has no reader; the field is deleted rather than carried.
 - **D7 — `Manifest` keeps `NumFiles()` and `FileRange()` as forwarders to its file table; the content accessors (`FileSubject`, `FileBytes`, `FileIsPar2Recovery`, `TotalBytes`, `RecoveryBytes`, `RecoveryFiles`) move to `FileTable`, reached as `m.Files()` or `j.Files()`.** Why: `FileRange`/`NumFiles` have ~25 internal callers that hold a `*Manifest` for article work; the content accessors are what callers hold a manifest *only* to read.
-- **D8 — `NewManifest(ft, articles)` is the constructor; `BuildContent([]JobFile) (*FileTable, *Manifest, error)` is the one wrapper over `newFileTable`+`newManifest` for ingest and tests; `AttachArticles` refuses a manifest whose `Files()` is not the job's own pointer.**
+- **D8 — `NewManifestFromArticles(ft, articles)` is the constructor; `NewManifest([]JobFile) *Manifest` is the one wrapper over `NewFileTable`+`NewManifestFromArticles` for ingest and tests; `AttachArticles` refuses a manifest whose `Files()` is not the job's own pointer.**
 - **D9 — `SetRecoveryBytes` and `dispatch_jobs.recovery_bytes` stay until stage 2.** Deleting them now would make a restored job report 0 recovery bytes before hydration — a behaviour change stage 1 must not make.
 - **D10 — Stage 1 is executed subagent-driven in a worktree, implementers on Sonnet.** Why: nine tasks whose interfaces depend on each other, and a mistake lands in the durability core. Cost: a fresh context per task and per review.
 
@@ -150,27 +150,27 @@ This task must land as one compiling commit for `internal/job` (the package's te
 - Produces:
   ```go
   type JobFile struct { Subject string; Articles []JobArticle; Bytes int64; IsPar2Recovery bool; Deferred bool } // Date deleted
-  func NewManifest(ft *FileTable, articles []JobArticle) (*Manifest, error) // refuses len(articles) != ft.TotalArticles()
-  func BuildContent(files []JobFile) (*FileTable, *Manifest, error)          // the wrapper: NewFileTable(specs) then NewManifest
+  func NewManifestFromArticles(ft *FileTable, articles []JobArticle) (*Manifest, error) // refuses len(articles) != ft.TotalArticles()
+  func NewManifest(files []JobFile) *Manifest                                // the wrapper: NewFileTable(specs) then NewManifestFromArticles; panics on a refusal, which cannot occur by construction
   func DecodeArticles(r io.Reader) ([]JobArticle, error)                     // flat JSON {"articles":[...]}, re-checks nzb.MessageIDIsFetchable
   func (m *Manifest) MarshalJSON() ([]byte, error)                           // writes {"articles":[...]}; no UnmarshalJSON
   func (m *Manifest) Files() *FileTable
   func (m *Manifest) NumFiles() int           // forwards to Files()
   func (m *Manifest) FileRange(fi int) (lo, hi int) // forwards to Files().Range
   // deleted from Manifest: FileSubject, FileBytes, FileDate, FileIsPar2Recovery, TotalBytes, RecoveryBytes, RecoveryFiles, UnmarshalJSON
-  func (j *Job) AttachFiles(ft *FileTable) error        // sole writer of j.files and j.progress; refuses a second call; seeds stamps from restored* and zeroes them (moved verbatim from AttachContent)
+  func (j *Job) AttachFiles(ft *FileTable) error        // sole writer of j.files and j.progress; refuses a second call; seeds stamps from restored* and zeroes them (moved verbatim from AttachContent, which now calls it)
   func (j *Job) AttachArticles(m *Manifest) error       // sole writer of j.manifest; refuses j.files == nil, m.Files() != j.files, or j.manifest != nil; then progress.recompute(m)
   func (j *Job) Files() *FileTable                      // nil before AttachFiles
-  // deleted: AttachContent, RestoreContent, JobProgress.describesSameJobAs
+  // deleted: RestoreContent, JobProgress.describesSameJobAs; AttachContent kept as the composite (decision D12)
   ```
   `j.totalBytes/recoveryBytes/recoveryFiles` are now written by `AttachFiles` only (and `SetRecoveryBytes`, kept per D9). `newJobProgress(ft *FileTable)`.
 
 - [ ] **Step 1: Write the failing tests** (in `manifest_owner_test.go`, rewritten, and `content_test.go`)
 
 ```go
-func TestNewManifest_RefusesAnArticleCountTheTableDoesNotHave(t *testing.T) // 3-article table, 2 articles → error mentions both counts
-func TestManifestRoundTrip_FlatArticlesOnly(t *testing.T)                   // MarshalJSON → DecodeArticles → NewManifest(sameFT) equals original (IDs, bytes, numbers); the JSON contains no "subject"
-func TestDecodeArticles_RefusesACRLFMessageID(t *testing.T)                 // keep today's cases from TestManifestRefusesAnUnfetchableMessageIDFromDisk
+func TestNewManifestFromArticles_RefusesAnArticleCountTheTableDoesNotHave(t *testing.T) // 3-article table, 2 articles → error mentions both counts
+func TestDecodeArticles_RoundTripsMarshalJSON(t *testing.T)                   // MarshalJSON → DecodeArticles → NewManifest(sameFT) equals original (IDs, bytes, numbers); the JSON contains no "subject"
+func TestDecodeArticles_RefusesAnUnfetchableMessageID(t *testing.T)                 // keep today's cases from TestManifestRefusesAnUnfetchableMessageIDFromDisk <!-- doccite:ok TestManifestRefusesAnUnfetchableMessageIDFromDisk — the pre-stage-1 test this one replaces, deleted by Task 1 -->
 func TestDecodeArticles_AcceptsOrdinaryMessageIDs(t *testing.T)
 func TestAttachFiles_RefusesASecondAttach(t *testing.T)
 func TestAttachArticles_RefusesAManifestFromAnotherTable(t *testing.T)      // two tables with identical specs; manifest built from ft2 attached to a job holding ft1 → error
@@ -187,7 +187,7 @@ Expected: FAIL to compile, `undefined: NewManifest` signature mismatch / `Attach
 
 - [ ] **Step 3a: Add the new types and doors beside the old ones** — `Manifest` gains `ft *FileTable`; `newManifest(ft, articles)`; `AttachFiles`/`AttachArticles`/`Files()`; reimplement `AttachContent(m)` as `AttachFiles(m.Files())` + `AttachArticles(m)` and `RestoreContent(m)` as `AttachArticles(m)` so the package builds. `go build ./internal/job/`.
 
-- [ ] **Step 3b: Migrate every in-package caller and test** to `BuildContent` + the two doors, using the `attachFiles` test helper. Change `newJobProgress(ft)`, `fileMetaFromTable(ft)` (`IsPar2: isPar2File(ft.Subject(fi))`), `recompute` (`m.Files().Bytes(fi)`), `RecoveryReleased`/`FetchedRecoveryBlocks` (`m.Files().IsPar2Recovery`, `.Subject`), `ForEachUnfinishedArticle` (`m.Files().Subject(fi)`), `Job.NumFiles` (`j.files` first, then progress). Delete `describesSameJobAs`. `go build ./internal/job/ && go vet ./internal/job/`.
+- [ ] **Step 3b: Migrate every in-package caller and test** to `NewManifest` + the two doors, using the `attachFiles` test helper. Change `newJobProgress(ft)`, `fileMetaFromTable(ft)` (`IsPar2: isPar2File(ft.Subject(fi))`), `recompute` (`m.Files().Bytes(fi)`), `RecoveryReleased`/`FetchedRecoveryBlocks` (`m.Files().IsPar2Recovery`, `.Subject`), `ForEachUnfinishedArticle` (`m.Files().Subject(fi)`), `Job.NumFiles` (`j.files` first, then progress). Delete `describesSameJobAs`. `go build ./internal/job/ && go vet ./internal/job/`.
 
 - [ ] **Step 3c: Delete `AttachContent`, `RestoreContent`, `UnmarshalJSON`, `manifestFile`, `manifestJSONFile`, the content accessors, `JobFile.Date`.** Rewrite `manifest.go`'s header comment: Manifest is the article table; its file structure is the job's `FileTable`; `newManifest` is the sole constructor and refuses a count mismatch; `DecodeArticles` carries the Message-ID re-check with today's comment moved verbatim.
 
@@ -265,7 +265,7 @@ git commit -m "feat(durability): persist each file's subject, bytes and article 
 - Test: `internal/app/ingest_test.go` (or the existing test that covers `BuildIngestJob`; `git grep -n 'BuildIngestJob(' -- 'internal/app/*_test.go'`)
 
 **Interfaces:**
-- Consumes: `job.BuildContent`, `job.AttachFiles`, `job.AttachArticles`, `durability.AdmitFile`.
+- Consumes: `job.NewManifest`, `job.AttachFiles`, `job.AttachArticles`, `durability.AdmitFile`.
 - Produces: `func seedJobFiles(ctx, st durabilityStore, j *job.Job) error` — builds `[]AdmitFile` from `j.Files().Specs()` and `j.FileFetchPolicy(i)`.
 
 - [ ] **Step 1: Write the failing test**
@@ -280,11 +280,11 @@ func TestSeedJobFiles_WritesTheStructure(t *testing.T)         // after AddJob o
 Run: `go test -count=1 -run 'TestBuildIngestJob_AttachesFilesAndArticles|TestSeedJobFiles' ./internal/app/`
 Expected: FAIL to compile
 
-- [ ] **Step 3: Implement.** In `BuildIngestJob`: build `[]job.JobFile` as today minus `Date`; `ft, m, err := job.BuildContent(files)`; `j.AttachFiles(ft)`; `j.AttachArticles(m)`; header `Bytes: ft.TotalBytes()`. `seedJobFiles(ctx, st, j)` replaces the `(numFiles, fetch)` form at both call sites.
+- [ ] **Step 3: Implement.** In `BuildIngestJob`: build `[]job.JobFile` as today minus `Date`; `m := job.NewManifest(files)`; `j.AttachContent(m)`; header `Bytes: m.Files().TotalBytes()`. `seedJobFiles(ctx, st, j)` replaces the `(numFiles, fetch)` form at both call sites.
 
 - [ ] **Step 4: Run**
 
-Run: `go build ./... 2>&1 | head -40` — expect the remaining compile errors to be exactly the sites Tasks 5–6 own (`residency.go`, `verify.go`, `api/queue.go`, `postproc`, `directunpack_orchestrator.go`, `unwanted.go`, `par2names.go`, `pipeline.go`, `archive_peek.go`, `jobtest`, `scripts/localnntp`). Do not fix them here. Run only `go test -count=1 -run 'TestBuildIngestJob|TestSeedJobFiles' ./internal/app/` once Task 5 has made `internal/app` compile — so **Task 4 and Task 5 are committed together** if the package will not otherwise build. Prefer: complete Task 5 then run both tasks' tests, commit as two commits only if each builds alone; otherwise one commit named for both.
+Run: `go build ./... 2>&1 | head -40` — expect the remaining compile errors to be exactly the sites Tasks 5–6 own (`residency.go`, `verify.go`, `internal/api/queue.go`, `postproc`, `directunpack_orchestrator.go`, `unwanted.go`, `par2names.go`, `pipeline.go`, `archive_peek.go`, `jobtest`, `scripts/localnntp`). Do not fix them here. Run only `go test -count=1 -run 'TestBuildIngestJob|TestSeedJobFiles' ./internal/app/` once Task 5 has made `internal/app` compile — so **Task 4 and Task 5 are committed together** if the package will not otherwise build. Prefer: complete Task 5 then run both tasks' tests, commit as two commits only if each builds alone; otherwise one commit named for both.
 
 ---
 
@@ -305,7 +305,7 @@ Run: `go build ./... 2>&1 | head -40` — expect the remaining compile errors to
   func fileTableFromRows(rows []durability.FileRow) (*job.FileTable, error)      // refuses rows not covering 0..n-1 exactly once each
   func verifyJobFiles(ctx, ft *job.FileTable, files []durability.FileRow, rows []durability.WrittenRow, locate ..., retry bool) (verifyResult, error)
   ```
-  `Hydrate` order for a job with `Files() == nil`: `readRecord` → `fileTableFromRows` → `AttachFiles(ft)` → `readArticles` → `NewManifest(ft, arts)` (error ⇒ unreadable manifest, returned as today's decode error) → `verifyJobFiles(ft, …)` → `commit` → `cleanUnrecordedFetchingFiles` → `AttachArticles(m)` → `installVerification`. For a job with files and progress already (evicted since): `readArticles` → `NewManifest(j.Files(), arts)` → `AttachArticles(m)`. With `r.store == nil` and `Files() == nil`: return `fmt.Errorf("residency: hydrate %s: no record store to build the file table from", id)`.
+  `Hydrate` order for a job with `Files() == nil`: `readRecord` → `fileTableFromRows` → `AttachFiles(ft)` → `readArticles` → `NewManifestFromArticles(ft, arts)` (error ⇒ unreadable manifest, returned as today's decode error) → `verifyJobFiles(ft, …)` → `commit` → `cleanUnrecordedFetchingFiles` → `AttachArticles(m)` → `installVerification`. For a job with files and progress already (evicted since): `readArticles` → `NewManifest(j.Files(), arts)` → `AttachArticles(m)`. With `r.store == nil` and `Files() == nil`: return `fmt.Errorf("residency: hydrate %s: no record store to build the file table from", id)`.
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -313,9 +313,9 @@ Run: `go build ./... 2>&1 | head -40` — expect the remaining compile errors to
 func TestHydrate_BuildsTheFileTableFromJobFilesBeforeVerifying(t *testing.T) // job with rows, no files; after Hydrate: Files().Subject(0) == admitted subject, Resident()
 func TestHydrate_RefusesAManifestWhoseCountDisagreesWithTheRows(t *testing.T) // manifest file with one article fewer → error, !Resident(), not a residency fault (Review Focus 1)
 func TestHydrate_WithoutAStoreNeedsAnAttachedFileTable(t *testing.T)          // r.store nil, Files() nil → error containing "no record store" (Review Focus 4)
-func TestFileTableFromRows_RefusesAGap(t *testing.T)                           // rows {0,2} → error
+func TestFileTableFromRows_RefusesAGapAndADuplicate(t *testing.T)                           // rows {0,2} → error
 ```
-Adapt `verify_test.go` fixtures: where a test built `m := job.NewManifest(...)` to pass to `verifyJobFiles`, build `ft, m, _ := job.BuildContent(...)` and pass `ft`.
+Adapt `verify_test.go` fixtures: where a test built `m := job.NewManifest(...)` to pass to `verifyJobFiles`, build `m := job.NewManifest(...)` and pass `m.Files()`.
 
 - [ ] **Step 2: Run to verify they fail**
 
@@ -348,12 +348,12 @@ git commit -m "refactor(app): build the file table from job_files at hydration a
 - Modify: `internal/job/jobtest/markwritten.go:60-61` (`m.Files().Bytes`)
 - Modify: `scripts/localnntp/verify.go:231-262` (`readGzipQueueManifest` returns `[]job.JobArticle` via `job.DecodeArticles`; index the slice)
 - Modify: `scripts/nzbprobe/main.go:142` (comment only)
-- Tests: `internal/api/queue_nonresident_test.go`, `internal/postproc/*_test.go`, `internal/job/jobtest/markwritten_test.go` — fixtures to `BuildContent`/`jobtest.Attach`
-- Create: `internal/job/jobtest/attach.go` — `func Attach(t testing.TB, j *job.Job, files []job.JobFile) (*job.FileTable, *job.Manifest)` for out-of-package tests
+- Tests: `internal/api/queue_nonresident_test.go`, `internal/postproc/*_test.go`, `internal/job/jobtest/markwritten_test.go` — fixtures to `NewManifest`/`AttachContent`
+- Create: `internal/job/jobtest/attach.go` <!-- doccite:ok internal/job/jobtest/attach.go — planned, not created: out-of-package tests attach through job.AttachContent --> — `func Attach(t testing.TB, j *job.Job, files []job.JobFile) (*job.FileTable, *job.Manifest)` for out-of-package tests
 
 - [ ] **Step 1: Make the tree build**
 
-Run: `go build ./... && go vet ./...` — fix each error at the site; where a caller held a `*Manifest` only for file-level reads and the job is in hand, switch to `j.Files()` and delete the `Manifest()` error branch (record in the commit body which sites became infallible: expected `unwanted.go`, `api/queue.go` ×2, `directunpack_orchestrator.go:137`, `par2names.go`).
+Run: `go build ./... && go vet ./...` — fix each error at the site; where a caller held a `*Manifest` only for file-level reads and the job is in hand, switch to `j.Files()` and delete the `Manifest()` error branch (record in the commit body which sites became infallible: expected `unwanted.go`, `internal/api/queue.go` ×2, `directunpack_orchestrator.go:137`, `par2names.go`).
 
 - [ ] **Step 2: Make the tests build and pass**
 

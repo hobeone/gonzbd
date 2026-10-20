@@ -164,7 +164,9 @@ to `newManifest` rather than filling the fields itself. One derivation, one
 owner, and the persisted `TotalBytes` field was no longer read at all. The
 manifest file has since become the article list alone (`Manifest.MarshalJSON`,
 `job.DecodeArticles`), so no per-file figure is persisted beside the articles
-and `NewManifestFromArticles` is the only door to `newManifest`.
+and `NewManifestFromArticles` is the only door to `newManifest` (`git grep -n
+'newManifes[t](' -- 'internal/*.go' ':!*_test.go'` returns 2 lines: that call and
+the declaration).
 
 > **When a check and an owner would both work, take the owner.** A check must be
 > called at every site that could violate the invariant, and the failure mode of
@@ -706,8 +708,8 @@ since narrowed the key from the job ID to the job instance, which still
 separates two jobs.
 
 **A7 holds for restored jobs too, and this is a ground-rule consequence rather
-than an enforcement.** the manifest decoder was once taken to replay stored article IDs
-verbatim and re-check nothing, so an earlier draft recorded that the invariant
+than an enforcement.** An earlier draft took the manifest decoder to replay stored
+article IDs verbatim and re-check nothing, so it recorded that the invariant
 was "real for new jobs and untrue for old ones until the queue drains", and kept
 `messageIDIndex` working for the latter. The no-backcompat rule deletes that
 population outright: every manifest on disk was written by a parser that

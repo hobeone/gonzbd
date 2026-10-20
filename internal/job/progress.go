@@ -68,7 +68,7 @@ type JobProgress struct {
 	done, failed, emitted bitset
 	files                 []FileProgress
 	// fileStarts[fi]..fileStarts[fi+1] is file fi's global article range, the
-	// manifest's own prefix sum (Manifest.FileRange) held on the progress
+	// file table's own prefix sum (FileTable.Range) held on the progress
 	// tier so that a write needing only the file of an article runs at any
 	// residency. newJobProgressSized builds it and nothing changes it after,
 	// so a clone shares it.

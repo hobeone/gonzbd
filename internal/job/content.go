@@ -939,7 +939,7 @@ func (j *Job) ClearDownloadFinished() error {
 // accepted or rejected the same way whichever record receives it. Without that
 // the pre-hydration accessor could report a stamp that hydration then dropped.
 //
-// AttachContent seeds the fresh JobProgress from the Job-level copy and zeroes it.
+// AttachFiles seeds the fresh JobProgress from the Job-level copy and zeroes it.
 func (j *Job) RestoreProgressState(reason string, started, finished time.Time) {
 	j.contentMu.Lock()
 	defer j.contentMu.Unlock()

@@ -9,7 +9,7 @@ contract's first fact:
 
 | Package | Owns |
 |---|---|
-| `internal/job` | the `Job`, its four axes, `Attempt`, `Lease`, `Manifest`, `JobProgress`. No I/O. Of this repository's packages it imports only `internal/constants`, `internal/durability`, `internal/crc32util`, `internal/nzb` and `internal/rarheader`, for types and pure functions (`internal/job/doc.go`). |
+| `internal/job` | the `Job`, its four axes, `Attempt`, `Lease`, `FileTable`, `Manifest`, `JobProgress`. No I/O. Of this repository's packages it imports only `internal/constants`, `internal/durability`, `internal/crc32util`, `internal/nzb` and `internal/rarheader`, for types and pure functions (`internal/job/doc.go`). |
 | `internal/sched` | the scheduling decisions — the two pools, grant and release, `Advance`, `Cancel`, `Settle`, `Retry`, `Park`, and the rendering doors. No registry, no store, no workers. |
 | `internal/dispatch` | the registry in queue order, manifest residency, the tick loop, worker launch and exit, and the queue-state rows. |
 
@@ -24,7 +24,8 @@ and the gap is a bug in this file.
 ## 1. What a job is
 
 A `Job` is an identity (`ID`, `Name`), a `Policy`, a list of `Attempt`s, an
-`Intent`, and — when resident — a `Manifest` and a `JobProgress`.
+`Intent`, and — once attached — a `FileTable` and a `JobProgress`, plus a
+`Manifest` while the job is resident.
 
 `job.New(id, name, Policy)` is the **only** constructor
 (`git grep -n 'func New(' internal/job/` returns one line, in `job.go`).
@@ -1179,18 +1180,22 @@ inputs.
 
 ## 11. Residency: the three tiers
 
-Maintaining a `JobProgress` counter needs a `*Manifest`. Reading one does not.
-The tiering is that boundary made explicit.
+Maintaining a `JobProgress` counter needs a `*Manifest`: the article byte counts
+and message-IDs. Reading one does not. The tiering is that boundary made
+explicit. The per-file structure — subject, size, article count, offsets —
+is the `FileTable`, which is not evictable and is not a tier of its own: it is
+attached with the progress record (`AttachFiles`) and `Evict` leaves it.
 
 | Tier | Needs | May fail? |
 |---|---|---|
 | **Header** — remove, reorder, priority, ID/name lookups | neither | **Never** |
 | **Progress** — all reporting, counters, completion and abort checks; recording a permanent failure, clearing an emitted bit, recording a file's resolved filename, marking a file complete, or changing a file's fetch policy | `JobProgress` | **Never**, once it exists, for an index in range |
-| **Manifest** — dispatch, article indexing, byte accounting | `Manifest` (evictable) | Yes, and must say so |
+| **Manifest** — dispatch, article indexing, article byte counts (the articles only; the file structure is the `FileTable`) | `Manifest` (evictable) | Yes, and must say so |
 
-Counter maintenance needs article byte counts and the file↔article mapping.
-Reads do not, and neither does a per-article bit. The progress record holds
-each file's article range itself (`JobProgress.fileStarts`, built with the
+Counter maintenance needs article byte counts, which only the manifest holds.
+Reads do not, and neither does a per-article bit. The file↔article mapping
+comes from the `FileTable`, and the progress record holds each file's article
+range itself (`JobProgress.fileStarts`, built from that table with the
 record), so a pending count, which needs no byte count, can be derived at any
 residency: a fetch-policy change re-derives its file's count in
 `setFileFetchPolicy`, whether or not the manifest is resident (#903).
@@ -1266,27 +1271,31 @@ anything else keeps its Warn.
 
 ### Always resident, and the one window where progress is not
 
-**Always resident once it exists:** header fields, `JobProgress`, and the
-manifest-derived sizes — `Job.TotalBytes`, `Job.RecoveryBytes` and
-`Job.RecoveryFiles`, held on the `Job`, and the file and article counts
-`Job.NumFiles` and `JobProgress.TotalArticles` read from the `JobProgress`
-sized to the manifest. These are computed once at ingest and never
-change, so they live in the always-resident tier rather than behind a fallible
-handle. `Evict` clears only the manifest, and `AttachFiles` is the only
-writer of the progress pointer
-(`TestProgressPointerWriters_MatchTheEnumerationStatedInProse`).
+**Always resident once it exists:** header fields, the `FileTable`
+(`Job.Files`), `JobProgress`, and the sizes derived from the table —
+`Job.TotalBytes`, `Job.RecoveryBytes` and `Job.RecoveryFiles`, held on the
+`Job`, and the file and article counts `Job.NumFiles` (from the table) and
+`JobProgress.TotalArticles` (from the `JobProgress` sized to it). These are
+computed once, from the table, in `AttachFiles` and never change, so they
+live in the always-resident tier rather than behind a fallible handle. `Evict`
+clears only the manifest, and `AttachFiles` is the only writer of the table
+pointer and of the progress pointer
+(`TestFilesPointerWriters_MatchTheEnumerationStatedInProse`,
+`TestProgressPointerWriters_MatchTheEnumerationStatedInProse`).
 
 The consequence is the point of the whole design: **every reporting path is
 infallible.** Only mutation paths take the fallible handle.
 
-**But `JobProgress` does not exist from ingest for a job restored at
-startup.** `dispatch.restore` rebuilds each job with `job.New` and no content:
-manifest loading is deferred to `Residency.Hydrate` by architectural discipline
-(enforced by `TestDispatchNamesNoManifestType`), so the restore loop does not
-access manifests and does not have the file and article counts sizing needs.
-The record arrives later, at first hydration.
+**But neither the `FileTable` nor `JobProgress` exists from ingest for a job
+restored at startup.** `dispatch.restore` rebuilds each job with `job.New` and
+no content: loading the `job_files` rows and the manifest is deferred to
+`Residency.Hydrate` by architectural discipline (the manifest half is enforced
+by `TestDispatchNamesNoManifestType`; `git grep -n 'FileRows' -- internal/dispatch ':!*_test.go'` returns no
+line, so the restore loop reads no `job_files` row either), so it has neither
+the file and article counts that sizing needs. Both arrive later, at first
+hydration.
 `grep -n 'j\.progress == nil\|j\.progress != nil' internal/job/*.go | grep -v
-_test.go` finds 47 lines, so "no caller checks for their absence" describes an
+_test.go` finds 45 lines, so "no caller checks for their absence" describes an
 intent rather than the code.
 
 That window is why `Job` carries a small set of `restored*` fields for
@@ -1350,7 +1359,8 @@ read that failed on the manifest itself settles the job here.
 The three hydration failure modes are not the same fact and must not be
 treated alike:
 
-- **An unreadable manifest is a fact about the job.** It can never run, and it
+- **An unreadable manifest, or one the `job_files` rows disagree with, is a
+  fact about the job.** It can never run, and it
   is holding resources it can never use, so it is settled `Failed` — which
   returns both pools. Leaving it would strand them, because no later tick
   reaches a different branch for it.
@@ -1519,8 +1529,8 @@ and reads them all, because post-processing may have changed any of them.
 ### Two immutable figures, not one filtered total
 
 A job advertises `total_bytes` and `recovery_bytes`, with `recovery_files`
-alongside. Both are computed once from the manifest and never recomputed;
-neither changes for the life of the job.
+alongside. Both are computed once from the job's `FileTable` (`AttachFiles`) and never
+recomputed; neither changes for the life of the job.
 
 The split key is **recovery volume, not par2 file**. The par2 index is always
 downloaded and therefore counts as content. Conflating the two overstates
@@ -1528,10 +1538,11 @@ recovery capacity.
 
 A *filtered* total would have to answer "does this include volumes we will not
 fetch", and the answer depends on when it is read. Worse, the fetch policy
-lives on `FileProgress` while the byte counts live on the `Manifest`, so a
-filtered total is a property of the pair — and the manifest is evictable while
-progress is not, which is how earlier framings arrived at a figure that meant
-different things depending on residency. Two immutable figures have no such
+lives on `FileProgress` while the byte counts live on the `FileTable`, so a
+filtered total is a property of the pair. Earlier framings, when the byte counts
+lived on the evictable manifest, arrived at a figure that meant different things
+depending on residency. The byte counts no longer move with the manifest, but
+the pairing argument stands: two immutable figures have no such coupling at all. Two immutable figures have no such
 coupling.
 
 `content_bytes` is deliberately **not** stored: it has no consumer and it is
@@ -1548,8 +1559,9 @@ expected  = Σ over files where Fetch == FetchAlways of Bytes
 
 Both derive on the same walk and the same predicate, so they cannot drift, and
 they hold at any residency because they read `FileProgress` alone.
-`FileProgress.Bytes` exists precisely to make that derivation independent of the
-evictable manifest.
+`FileProgress.Bytes` is copied from the `FileTable` when the record is built
+(`fileMetaFromTable`), so the derivation reads the progress record alone and
+needs neither the table nor the evictable manifest.
 
 `FailedBytes` is subtracted per file because a failed article's charge was never
 counted as downloaded but also stopped being "remaining" in any useful sense.
@@ -1562,7 +1574,7 @@ contribution is clamped at zero.
 consumer that turns remaining into a percentage or a downloaded total pairs it
 with a size, and `downloaded = expected - failed - remaining` closes only if
 both exclude the same files. `Job.TotalBytes()` stays the immutable
-whole-manifest total for logging and post-processing display; the consumers
+whole-job total (the `FileTable`'s) for logging and post-processing display; the consumers
 that combine a size with remaining or with failed bytes read `ExpectedBytes()`.
 Getting this wrong is visible rather than silent — a freshly added
 on-demand-par2 job reported non-zero progress, and history over-reported
@@ -1614,6 +1626,7 @@ Per article, against the field types:
 | | per article | 20k-article job |
 |---|---|---|
 | `Manifest` — `articleIDs []string`, `articleBytes`, `articleNumber` | ~86 B | ~1.6 MB |
+| `FileTable` — one entry per file (subject, bytes, article count, recovery flag) and one 8-byte offset | sized by files, not articles; not measured | — |
 | `JobProgress` — `done`/`failed`/`emitted` as bitsets | 0.375 B | ~7.5 KB |
 | `JobProgress.written` — one `durability.WrittenRow` per article of a file whose CRC is not settled | 40 B | up to ~800 KB |
 
@@ -1642,8 +1655,9 @@ nothing, so residency reconciliation drops it on the next tick unless the job
 is paused; a job that settles while carrying `IntentPause` keeps its manifest
 until it is unpaused, retried or removed (Scenario 5.10). For any other settled
 job what remains to reclaim is the three bitsets: **7.5 KB per parked
-20k-article job**, roughly 140 such failures per megabyte, against a manifest
-two orders of magnitude larger that is already gone.
+20k-article job** (the `FileTable` stays too, sized by files), roughly 140 such
+failures per megabyte, against a manifest two orders of magnitude larger that is
+already gone.
 
 The cheap version is also unavailable. `ArticleDone(i)` returns `false` for an
 out-of-range index, so simply dropping the bitsets would make a compacted job
@@ -1684,8 +1698,9 @@ tier a vanished job makes the operation moot.
 
 ### A job's file set is fixed at ingest
 
-The manifest blob and the `job_files` rows are both written once, from the same
-file list, and neither changes shape again for the life of the job.
+The manifest blob (the article list) and the `job_files` rows (the file
+structure) are both written once at ingest, and neither changes shape again for
+the life of the job.
 `file_index` is therefore **stable for the job's entire life**: nothing after
 ingest removes a file, so nothing after ingest renumbers one.
 
@@ -1738,7 +1753,8 @@ size mismatch would panic inside `recompute` on a background goroutine with no
 No write path this process performs can produce a torn pair: the manifest
 blob is written once, before the ingest transaction opens, so a crash between
 them leaves an orphan manifest and no job row rather than a disagreeing pair.
-A mismatch that reaches the guard means a truncated or damaged manifest blob
+A mismatch that reaches the guard means a truncated or damaged manifest blob,
+or a damaged `job_files.article_count`, either of which fails the count check
 (`TestHydrate_RefusesAManifestWhoseCountDisagreesWithTheRows`).
 
 **It is not what detects `job_files` rows altered out of band, beyond their

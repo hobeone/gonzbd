@@ -8,7 +8,7 @@ to be *done*, when that claim may be made, what survives a crash, how a restart
 re-derives its work set, and how a storage fault reaches the user.
 
 `docs/ARCHITECTURE.md` places these packages in the download pipeline.
-`docs/job-lifecycle.md` owns residency and the manifest/progress split, which
+`docs/job-lifecycle.md` owns residency and the file table, manifest and progress tiers, which
 this contract depends on and does not restate.
 
 **This states the contract in the present tense.** Where the code and this
@@ -96,8 +96,10 @@ Two tables in `history.db`, both owned by `durability.Store`
   the decoder's CRC of those bytes. **It is not a durability claim**: a row may
   describe bytes the kernel never flushed. The decoder computes the CRC itself
   whether or not the poster supplied one, so every row has a CRC to verify.
-- **`job_files`** — one row per file: `complete`, `filename` and
-  `fetch_policy`.
+- **`job_files`** — one row per file: its structure (`subject`, `bytes`,
+  `article_count`), written once at admission (§6), and the `complete`,
+  `filename` and `fetch_policy` the recorder updates. The structure is what
+  hydration builds the job's file table from (§3).
 
 `complete=1` means every article of the file is resolved (written or failed)
 and the file was fsynced on a handle that wrote or verified it (§2).
@@ -370,7 +372,7 @@ verifies itself:
   for a hydration that has attached content but not yet installed its
   filenames;
 - `Application.verifyRetry`, for a retried job: it is rebuilt by
-  `BuildIngestJob`, which attaches its manifest, so `Hydrate` would return
+  `BuildIngestJob`, which attaches its files and articles, so `Hydrate` would return
   early and never verify it (see *Retry* below).
 
 A paused job is not hydrated by the tick even while it holds a compute slot
@@ -496,7 +498,7 @@ in between — and only then does the verdict carry `SetComplete`. A stat,
 fsync or truncate error while finishing is a verification fault.
 
 **The finish truncates only a file at its preallocated size** (`preallocSize`,
-the manifest's declared byte count, which `registerFile` also hands the
+the file table's declared byte count, which `registerFile` also hands the
 assembler as `FileInfo.ExpectedSize`). The trim exists to drop the zeros
 preallocation left past the last article (*Pre-allocation*). A file longer
 than its last row's end at any other size holds bytes preallocation did not
@@ -728,7 +730,10 @@ neighbours are refused. A par2 post repairs them; a no-par2 post ends at
 ### 6. The record's rows have one lifecycle rule
 
 **Admission.** `seedJobFiles` → `Store.Admit` inserts every `job_files` row in
-one transaction at submission, before `Dispatcher.Add`. It is a precondition
+one transaction at submission, before `Dispatcher.Add`. It writes each file's
+structure — subject, bytes, article count, from the job's `FileTable` — as well
+as its fetch policy, and leaves `complete` and `filename` empty for the recorder
+to fill in; a row that already exists is left whole. It is a precondition
 for the recorder: an `UPDATE` matching no row is not an error, so a file with
 no seed row would silently persist nothing. A retry re-seeds, inserting only
 missing rows.

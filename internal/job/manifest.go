@@ -18,7 +18,8 @@ import (
 //
 // It is immutable after construction and safe to share by reference — every
 // Job.Manifest caller gets the same pointer — because the only writes to its
-// fields happen in newManifest. newManifest is the sole constructor and
+// fields happen in newManifest (`git grep -n '[&]Manifest{' -- 'internal/*.go'
+// ':!*_test.go'` returns 1 line). newManifest is the sole constructor and
 // refuses an article list whose length is not the table's TotalArticles.
 // NewManifestFromArticles is its exported door; NewManifest is the wrapper
 // that ingest and tests use to build the table and the manifest together from
@@ -230,10 +231,10 @@ func DecodeArticles(r io.Reader) ([]JobArticle, error) {
 		// rule existed at parse time can still contain one.
 		//
 		// Refusing the whole manifest rather than dropping the article
-		// is deliberate: the caller already handles this as a corrupt
-		// manifest, failing the job visibly and setting the file aside,
-		// whereas a silent drop would leave a job quietly short of
-		// articles with nothing to explain it.
+		// is deliberate: Hydrate (internal/app/residency.go) returns the
+		// error and Dispatcher.reconcileResidency (internal/dispatch/tick.go)
+		// settles the job Failed, so it fails visibly, whereas a silent drop
+		// would leave it quietly short of articles with nothing to explain it.
 		if !nzb.MessageIDIsFetchable(a.ID) {
 			return nil, fmt.Errorf("job: manifest article %d: unusable message-id %q", ai, a.ID)
 		}
