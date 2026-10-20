@@ -1,5 +1,5 @@
 pkg ./internal/job/
-run ^(TestFetchPolicyChange_PendingFollowsThePolicy|TestFetchPolicyDoors_OneResidencyRule|TestAttachArticles_RefusesAManifestWithADifferentFileShape)$
+run ^(TestRestoreContent_RefusesASameCountDifferentSplit|TestFetchPolicyChange_PendingFollowsThePolicy|TestFetchPolicyDoors_OneResidencyRule|TestAttachArticles_RefusesAManifestWithADifferentFileShape)$
 
 # #903: setFileFetchPolicy owns the pending counters a policy change moves,
 # the per-article transitions count only a file the job is fetching, and both
@@ -46,6 +46,14 @@ file internal/job/release.go
 	if j.manifest == nil || j.progress == nil {
 		return 0, fmt.Errorf("job %s: %w", j.id, ErrNotResident)
 	}
+--- end
+
+[the forwarder's shape comparison is dropped, so a same-count different split is rebuilt over the job's table]
+file internal/job/content.go
+--- anchor
+		if !slices.Equal(ft.Specs(), m.Files().Specs()) {
+--- replace
+		if !slices.Equal(ft.Specs(), m.Files().Specs()) && false {
 --- end
 
 [the pairing check is dropped, so a manifest of another table attaches]

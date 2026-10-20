@@ -34,6 +34,7 @@ var fieldOwner = map[string]string{
 	"manifest":          "Job",
 	"offsets":           "FileTable",
 	"recoveryByteTotal": "FileTable",
+	"recoveryFileTotal": "FileTable",
 }
 
 // scanWriters parses this package's non-test sources and returns the sorted,
@@ -368,12 +369,12 @@ func TestManifestPointerWriters_MatchTheEnumerationStatedInProse(t *testing.T) {
 
 // TestFileTableWriters_MatchTheEnumerationStatedInProse asserts that
 // newFileTable is the only writer of the FileTable fields this scan can name
-// unambiguously: offsets and recoveryByteTotal (files and totalBytes are also
+// unambiguously: offsets, recoveryByteTotal and recoveryFileTotal (files and totalBytes are also
 // declared by other types, so a by-name scan cannot attribute them). The
 // derived figures are computed in one place, so a table cannot describe a file
 // list its figures were not computed from.
 func TestFileTableWriters_MatchTheEnumerationStatedInProse(t *testing.T) {
-	for _, field := range []string{"offsets", "recoveryByteTotal"} {
+	for _, field := range []string{"offsets", "recoveryByteTotal", "recoveryFileTotal"} {
 		writers := scanWriters(t, field)
 		want := []string{"newFileTable"}
 		if !slices.Equal(writers, want) {

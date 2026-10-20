@@ -38,7 +38,7 @@ func (j *Job) AttachFiles(ft *FileTable) error {
 	// discard every done/failed bit and both stamps with no error — and since
 	// the first attach zeroed the Job-level copy, there would be nothing left
 	// to seed the replacement from either. Callers gate on this today
-	// (residency.Hydrate takes the AttachArticles arm when HasProgress() is
+	// (residency.Hydrate takes the RestoreContent arm, which ends in AttachArticles, when HasProgress() is
 	// true, and the ingest path builds a fresh Job), which is what makes
 	// this an assertion of an invariant rather than a behaviour change.
 	if j.progress != nil || j.fileTable != nil {
@@ -66,7 +66,8 @@ func (j *Job) AttachFiles(ft *FileTable) error {
 
 // AttachArticles installs the article table beside the job's file table and
 // its own progress record. It is the counterpart of Evict, and the only
-// writer of the manifest pointer besides Evict's nil.
+// writer of the manifest pointer besides Evict's nil, which
+// TestManifestPointerWriters_MatchTheEnumerationStatedInProse pins.
 //
 // The record is recomputed in place, under the same lock its writers take, and
 // never replaced. Writes that need no manifest — MarkArticleFailed,
@@ -102,6 +103,10 @@ func (j *Job) AttachArticles(m *Manifest) error {
 
 // AttachContent attaches a job's files and articles together: AttachFiles on
 // m's table, then AttachArticles on m. It writes no field itself.
+// It takes contentMu twice, so a reader between the two calls sees a job with
+// a table and progress but no manifest, which looks evicted; harmless today
+// because ingest attaches before the job is visible and Hydrate holds the
+// hydrating claim.
 func (j *Job) AttachContent(m *Manifest) error {
 	if m == nil {
 		return fmt.Errorf("job %s: AttachContent: nil manifest", j.id)
@@ -507,7 +512,7 @@ func (j *Job) ForEachUnfinishedArticle(fn func(fileIdx int, artIdx int32, id str
 				continue
 			}
 			//nolint:gosec // G115: article index is guaranteed non-negative and fits in int32
-			if !fn(fi, int32(i), m.ArticleID(i), m.ArticleBytes(i), m.ArticleNumber(i), m.FileSubject(fi)) {
+			if !fn(fi, int32(i), m.ArticleID(i), m.ArticleBytes(i), m.ArticleNumber(i), m.Files().Subject(fi)) {
 				return nil
 			}
 		}

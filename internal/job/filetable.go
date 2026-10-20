@@ -9,9 +9,9 @@ package job
 // figures, isPar2Recovery), so a table cannot describe a file list its
 // figures were not computed from. NewFileTable is the exported door to it.
 // TestFileTableWriters_MatchTheEnumerationStatedInProse pins the writers of
-// offsets and recoveryByteTotal; totalBytes and files share a name with
-// fields of other types, which a by-name scan cannot tell apart, so those two
-// rest on the same function writing all four.
+// offsets, recoveryByteTotal and recoveryFileTotal; totalBytes and files share
+// a name with fields of other types, which a by-name scan cannot tell apart,
+// so those two rest on the same function writing all five.
 //
 // IsRecoveryVolume is the one predicate for recovery capacity: a subject
 // matching the ".volNNN+MM.par2" convention, not the broader name-based
