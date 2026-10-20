@@ -80,7 +80,8 @@ func newAppResidency(lookup func(string) (*job.Job, bool), dir string, store rec
 	}
 }
 
-// Hydrate loads the manifest and attaches it. It may block on disk I/O; the
+// Hydrate makes the job's articles resident, and its file table too when it
+// has none. It may block on disk I/O; the
 // dispatcher calls it with no lock held (ports.go).
 //
 // A job with no file table yet (one restored at startup) gets it from its
@@ -88,8 +89,10 @@ func newAppResidency(lookup func(string) (*job.Job, bool), dir string, store rec
 // article list in its manifest file. Its written articles are then verified
 // first (verifyJobFiles), and the verdicts committed, before anything is
 // attached: if either fails, nothing is attached — not the file table either —
-// and the next hydration starts again. A job that already has a file table has
-// run in this process, and gets its articles back alone (Job.AttachArticles).
+// and the next hydration starts again. The branch keys on Job.Files() != nil:
+// a job holding a table was ingested or hydrated in this process, its progress
+// is the authoritative record, and it gets its articles back alone
+// (Job.AttachArticles).
 // So a job Hydrate attached was verified first. Other jobs gain progress
 // without Hydrate: a freshly ingested job has no rows to verify, and a retry
 // verifies its rebuilt job itself (Application.verifyRetry). A verification

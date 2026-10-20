@@ -2989,8 +2989,8 @@ func (app *Application) retryHistoryJob(ctx context.Context, jobID string, allow
 // A retried job is built by BuildIngestJob, which attaches its manifest, so
 // Hydrate would return early and never verify it; this is its verification.
 //
-//  1. Shape check: every row must name an article inside its file's range of
-//     the re-parsed manifest. On a mismatch every row of the job is deleted,
+//  1. Shape check: every row must name an article inside its file's range in
+//     the rebuilt job's file table. On a mismatch every row of the job is deleted,
 //     unread.
 //  2. complete is cleared on every file, because post-processing may have
 //     repaired, moved or deleted the bytes since they were written. The

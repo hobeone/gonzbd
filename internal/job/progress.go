@@ -170,8 +170,8 @@ type FileProgress struct {
 	// Fetch records whether this file will be downloaded. See FetchPolicy.
 	Fetch   FetchPolicy
 	Pending int
-	// Bytes is the file's NZB-claimed size, copied from the manifest when the
-	// file is first seen so RemainingBytes derives from progress alone and
+	// Bytes is the file's NZB-claimed size, copied from the FileTable when the
+	// file is first seen (fileMetaFromTable) so RemainingBytes derives from progress alone and
 	// keeps working after the manifest is evicted.
 	//
 	Bytes int64
@@ -209,11 +209,11 @@ type FileProgress struct {
 	// to content. Carried per file, like Bytes and FailedBytes, so
 	// ContentFailedBytes derives from progress alone at any residency.
 	//
-	// Note this is broader than the manifest's own per-file par2-recovery
-	// flag, which marks only volumes. The index matters here precisely because
+	// Note this is broader than the FileTable's own per-file par2-recovery
+	// flag (IsPar2Recovery), which marks only volumes. The index matters here precisely because
 	// it is not a recovery volume: it is fetched, so it can fail, and its
 	// failure is not damage. Classification is by subject, done once from the
-	// manifest when the file is first seen.
+	// FileTable when the file is first seen.
 	IsPar2 bool
 	// There is deliberately no WriteCursor or MaxWritten here.
 	//
@@ -470,11 +470,9 @@ func (p *JobProgress) ArticlesFailed() int {
 //
 // Derives from per-file state rather than re-reading the manifest, so it stays
 // correct after the manifest is evicted — IsPar2 was classified from the
-// manifest's subject when the file was first seen, and the classification
-// stays on FileProgress.
-//
-// There is no residency at which progress exists without having had a
-// manifest to classify from, so the classification is always available.
+// FileTable's subject when the file was first seen (fileMetaFromTable, called
+// from newJobProgress), and the classification stays on FileProgress. Progress
+// is built from a table, so every file has one.
 func (p *JobProgress) ContentFailedBytes() int64 {
 	if p == nil {
 		return 0
@@ -596,7 +594,7 @@ func (p *JobProgress) sizeFigures() (expected, remaining int64) {
 // computes both from one walk so their exclusion sets cannot drift apart.
 //
 // It is therefore NOT Job.TotalBytes(), which is the immutable
-// whole-manifest total and still includes deferred recovery volumes. See
+// whole-job total (the FileTable's) and still includes deferred recovery volumes. See
 // docs/job-lifecycle.md's byte-accounting section, which
 // records that a job's advertised expectation moving as par2 decisions are
 // made is a deliberate consequence.

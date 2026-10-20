@@ -1180,8 +1180,8 @@ inputs.
 
 ## 11. Residency: the three tiers
 
-Maintaining a `JobProgress` counter needs a `*Manifest`: the article byte counts
-and message-IDs. Reading one does not. The tiering is that boundary made
+Maintaining a `JobProgress` counter needs a `*Manifest`: the article byte counts.
+Reading one does not. The tiering is that boundary made
 explicit. The per-file structure — subject, size, article count, offsets —
 is the `FileTable`, which is not evictable and is not a tier of its own: it is
 attached with the progress record (`AttachFiles`) and `Evict` leaves it.
@@ -1192,7 +1192,8 @@ attached with the progress record (`AttachFiles`) and `Evict` leaves it.
 | **Progress** — all reporting, counters, completion and abort checks; recording a permanent failure, clearing an emitted bit, recording a file's resolved filename, marking a file complete, or changing a file's fetch policy | `JobProgress` | **Never**, once it exists, for an index in range |
 | **Manifest** — dispatch, article indexing, article byte counts (the articles only; the file structure is the `FileTable`) | `Manifest` (evictable) | Yes, and must say so |
 
-Counter maintenance needs article byte counts, which only the manifest holds.
+Counter maintenance needs article byte counts, which live in the manifest's
+`articleBytes` (the table holds per-file sizes, not per-article).
 Reads do not, and neither does a per-article bit. The file↔article mapping
 comes from the `FileTable`, and the progress record holds each file's article
 range itself (`JobProgress.fileStarts`, built from that table with the
@@ -1276,7 +1277,11 @@ anything else keeps its Warn.
 `Job.TotalBytes`, `Job.RecoveryBytes` and `Job.RecoveryFiles`, held on the
 `Job`, and the file and article counts `Job.NumFiles` (from the table) and
 `JobProgress.TotalArticles` (from the `JobProgress` sized to it). These are
-computed once, from the table, in `AttachFiles` and never change, so they
+computed once from the table in `AttachFiles`, except that
+`Job.RecoveryBytes` is also seeded by `SetRecoveryBytes` at restore
+(`dispatch.go:1040`), before any table exists; `AttachFiles` supersedes it
+(`TestRecoveryBytesWriters_MatchTheEnumerationStatedInProse` pins the two
+writers). None changes afterwards, so they
 live in the always-resident tier rather than behind a fallible handle. `Evict`
 clears only the manifest, and `AttachFiles` is the only writer of the table
 pointer and of the progress pointer
@@ -1484,9 +1489,10 @@ Outstanding. `docs/durability-contract.md` §3 is the contract.
 
 Rows index articles **globally**, so placing them needs the file boundaries.
 Those come from the `FileTable`'s offsets, the prefix sum it builds over its
-own file list (`internal/job/filetable.go`). No per-file width is stored:
-`Hydrate` builds the table from the job's `job_files` rows (`fileTableFromRows`)
-before it verifies anything, so the boundaries are always already in hand.
+own file list (`internal/job/filetable.go`). The per-file width they are summed from is
+`job_files.article_count`, written once at admission: `Hydrate` builds the table
+from the job's `job_files` rows (`fileTableFromRows`) before it verifies
+anything, so the boundaries are always already in hand.
 
 This is why there is no cheaper non-resident replay. A job that has not been
 hydrated has no `JobProgress` at all, so it reports its header's full byte count
@@ -1542,8 +1548,7 @@ lives on `FileProgress` while the byte counts live on the `FileTable`, so a
 filtered total is a property of the pair. Earlier framings, when the byte counts
 lived on the evictable manifest, arrived at a figure that meant different things
 depending on residency. The byte counts no longer move with the manifest, but
-the pairing argument stands: two immutable figures have no such coupling at all. Two immutable figures have no such
-coupling.
+the pairing argument stands: two immutable figures have no such coupling at all.
 
 `content_bytes` is deliberately **not** stored: it has no consumer and it is
 exactly `TotalBytes - RecoveryBytes` from two scalars every job already carries.
@@ -1639,10 +1644,17 @@ settled at completion, or when it is untrusted.
 `done`/`failed`/`emitted` are **bitsets, not `[]bool`** — three `[]bool` spend
 three bytes to hold three bits, and at 20k articles that is 60 KB against 7.5.
 
-The bitsets are therefore roughly 0.4% of what eviction reclaims. Keeping it
-resident for hundreds of jobs costs a few hundred KB; keeping manifests
-resident for the same queue costs hundreds of MB. **That asymmetry is the whole
-justification for evicting one and not the other.**
+The bitsets are therefore roughly 0.4% of what eviction reclaims. The
+`FileTable` is paid once per job and never evicted, by design. Its cost is
+per file, from the field list in `internal/job/filetable.go`: a `fileEntry`
+(string header 16 B, `bytes` 8 B, `articleCount` 8 B, `isPar2Recovery` padded
+to 8 B = 40 B) plus one 8 B `offsets` entry, plus the subject's bytes, so
+48 B + len(subject) per file. At 1000 files with 100-byte subjects that is
+≈148 KB (derived from the layout, not measured), against 7.5 KB of bitsets
+for a 20k-article job. So the table is not small next to the progress record;
+what holds is that the manifest (≈86 B/article, measured) dwarfs both, and
+**that asymmetry — manifest against table plus progress — is the whole
+justification for evicting the manifest and nothing else.**
 
 ### Terminal compaction: measured and declined
 

@@ -191,7 +191,7 @@ func (s *ScriptStage) Run(ctx context.Context, job *Job) error {
 		APIKey:      s.APIKey,
 		APIURL:      s.APIURL,
 		// ExpectedBytes, not TotalBytes(): TotalBytes() is the immutable
-		// whole-manifest total and still includes a discarded (FetchNever)
+		// whole-job total and still includes a discarded (FetchNever)
 		// or still-deferred (FetchIfNeeded) recovery volume that will never
 		// reach disk. ExpectedBytes excludes both, matching what
 		// buildHistoryEntry reports for the same job (see

@@ -134,7 +134,7 @@ func TestBuildSlot_FreshOnDemandPar2JobReportsZeroPercent(t *testing.T) {
 	disp, j := newOnDemandPar2Job(t)
 
 	// Guard the fixture against the bug this test exists to catch: under
-	// the old pairing (Size = job.TotalBytes(), the whole-manifest total
+	// the old pairing (Size = job.TotalBytes(), the whole-job total
 	// of 11_000) a fresh job would already show >0% downloaded even though
 	// nothing has been fetched.
 	if got, want := j.TotalBytes(), int64(11_000); got != want {
