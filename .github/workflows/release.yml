@@ -4,7 +4,10 @@
 #   1. Run the full test suite (Go + UI).
 #   2. Build the Docker image with version/commit/date baked in.
 #   3. Push the image to GHCR with version tags (v0.3.0, v0.3, latest).
-#   4. Create a GitHub Release with the Go binary attached.
+#   4. Create a GitHub Release with the Go binary attached. The body is
+#      docs/releases/<tag>.md when that file exists at the tagged commit, so it
+#      has to be committed before the tag is pushed; otherwise GitHub generates
+#      the notes from merged PR titles.
 
 name: Release
 
@@ -86,6 +89,14 @@ jobs:
           # Major.minor for the floating tag (e.g. "0.3")
           MINOR_TAG=$(echo "$VERSION" | grep -oE '^[0-9]+\.[0-9]+')
           echo "minor_tag=$MINOR_TAG" >> "$GITHUB_OUTPUT"
+          NOTES_FILE="docs/releases/${GITHUB_REF_NAME}.md"
+          if [ -f "$NOTES_FILE" ]; then
+            echo "notes_file=$NOTES_FILE" >> "$GITHUB_OUTPUT"
+            echo "generate_notes=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "notes_file=" >> "$GITHUB_OUTPUT"
+            echo "generate_notes=true" >> "$GITHUB_OUTPUT"
+          fi
 
       - name: Build Go binary (linux/amd64)
         env:
@@ -143,7 +154,8 @@ jobs:
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v3
         with:
-          generate_release_notes: true
+          body_path: ${{ steps.meta.outputs.notes_file }}
+          generate_release_notes: ${{ steps.meta.outputs.generate_notes }}
           files: |
             gonzbd-linux-amd64
             gonzbd-linux-arm64
