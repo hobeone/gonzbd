@@ -124,6 +124,39 @@ func TestAppResidency_EvictCancelsTheHydrationThatReplacesTheOneItCancelled(t *t
 	}
 }
 
+// A first hydration cancelled while it reads the manifest has built the file
+// table from the rows, but must attach nothing: a table left on the job would
+// send the next hydration down the articles-only branch and skip verification.
+func TestHydrate_CancelledDuringArticleReadAttachesNothing(t *testing.T) {
+	t.Parallel()
+	env := newLREnv(t)
+	orig, restored, a2 := restartedUnhydrated(t, env, "cancelread", 3, 2)
+	mdir := manifestDir(env.admin)
+	if err := os.Remove(filepath.Join(mdir, orig.ID()+".json.gz")); err != nil {
+		t.Fatalf("remove the manifest: %v", err)
+	}
+	w := blockingManifest(t, mdir, orig.ID())
+
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	hydrated := make(chan error, 1)
+	go func() { hydrated <- a2.residency.Hydrate(ctx, restored.ID()) }()
+	waitDrained(t, w)
+	cancel()
+
+	select {
+	case err := <-hydrated:
+		if !errors.Is(err, context.Canceled) {
+			t.Errorf("Hydrate = %v, want context.Canceled", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("Hydrate did not return after its context was cancelled")
+	}
+	if restored.Files() != nil || restored.Resident() || restored.HasProgress() {
+		t.Error("a hydration cancelled during the article read left a file table, progress or manifest on the job")
+	}
+}
+
 // blockingManifest makes id's manifest in dir a FIFO holding half a gzip
 // stream, so a read of it blocks mid-decode as one on a stalled remote mount
 // does. It returns the FIFO's writer, opened O_RDWR so the open does not wait

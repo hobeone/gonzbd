@@ -45,11 +45,69 @@ run TestAppResidency_HydrateThenEvict
 [the files and articles are attached before the record is verified]
 file internal/app/residency.go
 run ^(TestVerifyAndAttach_MissingDirectoryParksTheJob|TestLooseRecord_ZeroedRangeIsRefetched)$
+# The mutation moves both attaches above the verification.
 --- anchor
 	res, err := verifyJobFiles(ctx, m.Files(), files, rows, locate, false)
+	if err != nil {
+		f := storagefault.Classify("verify", "", err)
+		if vf, ok := errors.AsType[*errVerifyFault](err); ok {
+			f = storagefault.Classify("verify", vf.File, vf.Err)
+		}
+		return r.fault(ctx, j, f, err)
+	}
+	if len(res.Verdicts) > 0 {
+		if err := r.commit(ctx, j, res.Verdicts); err != nil {
+			return r.fault(ctx, j, storagefault.Classify("commit verdicts", "", err), err)
+		}
+	}
+	if j.State().State == job.Fetching {
+		cleanUnrecordedFetchingFiles(j.Name(), files, locate, r.log)
+	}
+	if err := j.AttachFiles(m.Files()); err != nil {
+		return err
+	}
+	if err := j.AttachArticles(m); err != nil {
+		return err
+	}
 --- replace
-	if err := j.AttachContent(m); err != nil {
+	if err := j.AttachFiles(m.Files()); err != nil {
+		return err
+	}
+	if err := j.AttachArticles(m); err != nil {
 		return err
 	}
 	res, err := verifyJobFiles(ctx, m.Files(), files, rows, locate, false)
+	if err != nil {
+		f := storagefault.Classify("verify", "", err)
+		if vf, ok := errors.AsType[*errVerifyFault](err); ok {
+			f = storagefault.Classify("verify", vf.File, vf.Err)
+		}
+		return r.fault(ctx, j, f, err)
+	}
+	if len(res.Verdicts) > 0 {
+		if err := r.commit(ctx, j, res.Verdicts); err != nil {
+			return r.fault(ctx, j, storagefault.Classify("commit verdicts", "", err), err)
+		}
+	}
+	if j.State().State == job.Fetching {
+		cleanUnrecordedFetchingFiles(j.Name(), files, locate, r.log)
+	}
+--- end
+
+# A first hydration cancelled while it reads the articles must have attached
+# nothing.
+[the file table is attached before the articles are read]
+file internal/app/residency.go
+run TestHydrate_CancelledDuringArticleReadAttachesNothing
+--- anchor
+		if ft, err = fileTableFromRows(files); err != nil {
+			return fmt.Errorf("residency: hydrate %s: %w", id, err)
+		}
+--- replace
+		if ft, err = fileTableFromRows(files); err != nil {
+			return fmt.Errorf("residency: hydrate %s: %w", id, err)
+		}
+		if err := j.AttachFiles(ft); err != nil {
+			return err
+		}
 --- end

@@ -37,8 +37,8 @@ func (j *Job) AttachFiles(ft *FileTable) error {
 	// discard every done/failed bit and both stamps with no error — and since
 	// the first attach zeroed the Job-level copy, there would be nothing left
 	// to seed the replacement from either. Callers gate on this today
-	// (residency.Hydrate takes the AttachArticles-only arm when HasProgress() is
-	// true, and the ingest path builds a fresh Job), which is what makes
+	// (residency.Hydrate takes the AttachArticles-only arm when j.Files() != nil,
+	// the `if hasFiles {` branch in internal/app/residency.go, and the ingest path builds a fresh Job), which is what makes
 	// this an assertion of an invariant rather than a behaviour change.
 	if j.progress != nil || j.fileTable != nil {
 		return fmt.Errorf("job %s: AttachFiles: files already attached; use AttachArticles to install a manifest alongside existing progress", j.id)

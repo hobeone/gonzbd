@@ -620,8 +620,9 @@ func (c *Conn) Fetch(ctx context.Context, messageID string) ([]byte, error) {
 // The restore path is covered by a check rather than by that argument.
 // internal/job's DecodeArticles reads a resumed job's article list straight
 // from disk and cannot know which build wrote it, so it re-applies
-// nzb.MessageIDIsFetchable and refuses the list outright if any ID fails. Without that, a manifest persisted before the parse-time
-// rule existed would replay an unchecked ID into the command line below.
+// nzb.MessageIDIsFetchable and refuses the list outright if any ID fails.
+// Without that, a manifest persisted before the parse-time rule existed
+// would replay an unchecked ID into the command line below.
 //
 // The contract is therefore: a Message-ID handed to Fetch or Stat is already
 // safe to interpolate. See docs/article-validation-contract.md, which argues
