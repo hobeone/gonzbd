@@ -114,3 +114,33 @@ sole writers of their fields, which is the owner property the design wants;
 the composite wrapper writes nothing itself. ~90 test sites and the ingest
 path call it, and churning them buys nothing.
 **Cost if wrong:** one exported composite function the design said to delete.
+
+### D13 — Nothing attaches before the record verifies
+
+**Call:** `Hydrate` builds the `FileTable` locally and `verifyAndAttach`
+calls `AttachFiles` then `AttachArticles` only after verification and
+commit. The stage-1 plan had `AttachFiles` run before `verifyJobFiles` and
+chose the articles-only branch on "the job already had progress".
+**Why:** a hydration that faults after attaching the table would leave the
+job with a table and progress, so the next `Hydrate` would take the
+articles-only branch and never verify — `docs/durability-contract.md` §3
+broken. Pinned by `TestVerifyAndAttach_MissingDirectoryParksTheJob` and
+`TestHydrate_CancelledDuringArticleReadAttachesNothing`.
+**Consequence for stage 2:** once the startup pass attaches a table to every
+queued job, "has a table" no longer means "ran in this process"; the
+articles-only branch must key on the Verified flag, not on `Files() != nil`.
+**Cost if wrong:** none for stage 1; behaviour matches the former
+`RestoreContent` / `AttachContent` split.
+
+### D14 — The queue API lists files for a job evicted within this process
+
+**Call:** `api.firstIncompleteFile` and `api.buildQueueFiles` read
+`j.Files()` instead of the fallible `j.Manifest()`. `Job.Evict` keeps the
+table, so an evicted job now reports its file list where it reported
+nothing. The only visible behaviour change in stage 1.
+**Why:** the table is the always-resident tier the design asks for, and
+reading file structure must not depend on manifest residency.
+`screenUnwanted` moved the same way but both production callers run right
+after `BuildIngestJob`, so its change is unreachable.
+**Cost if wrong:** a `j.Resident()` gate at the two API sites restores the
+old output.
