@@ -26,7 +26,7 @@ A high-performance automated Usenet binary downloader written in Go.
 
 ## Requirements
 
-- Go 1.27.2 or later (see `go.mod`).
+- Go at the version in the `go` line of `go.mod`, or later.
 - Node.js 18+ (build-time only, for the Svelte UI).
 - Optional at runtime:
   - `par2` — parity verify and repair.
