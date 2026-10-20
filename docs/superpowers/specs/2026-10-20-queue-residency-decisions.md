@@ -171,3 +171,29 @@ would make `DO UPDATE` necessary is a parser change across builds, which
 Standing Rule 1 waives.
 **Cost if wrong:** one SQL clause. Stage 2, which makes `job_files` the
 restore source for every queued job, revisits this.
+
+### D17 — `AttachFiles(ft, seed)`
+
+**Call:** the door gains a `[]FileSeed` parameter. `nil` is ingest and the
+composite door (every file Verified); non-nil is the restore pass.
+**Why:** the design wrote this signature; stage 1 landed the one-argument form
+so each commit built; one door keeps one writer.
+**Cost if wrong:** every `AttachFiles(` caller gains `, nil`.
+
+### D18 — `Hydrate` requires an attached table
+
+**Call:** after the restore pass every registered job has a table (no store
+means no restored job), so the stage-1 `fileTableFromRows` branch inside
+`Hydrate` is unreachable and becomes an error. `fileTableFromRows` moves to
+the restore pass; the articles-only branch keys on `AllVerified()` (D13).
+**Why:** Standing Rule 1: a guard whose only justification is a state that
+cannot occur is deleted.
+**Cost if wrong:** tests that hydrate a bare job must seed a table first.
+
+### D19 — The restore read is its own row type
+
+**Call:** `durability.SeedRow{FileRow; Recorded int}` from one query over every
+job; `FileRow`/`FileRows` are unchanged.
+**Why:** a field meaningful only on one read path must not sit on the shared
+type.
+**Cost if wrong:** one small type.
