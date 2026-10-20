@@ -51,6 +51,12 @@ jobs:
         working-directory: ui
         run: bun run build
 
+      # The same tools ci.yml installs before its Go tests. Without them the
+      # tests that need an archive tool skip, so a release would be gated on
+      # less than a CI run is.
+      - name: Install archive tools (unrar, rar, par2, p7zip)
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends unrar rar par2 p7zip-full
+
       - name: Go tests
         run: go test -race ./...
 
