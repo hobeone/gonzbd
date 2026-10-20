@@ -141,17 +141,12 @@ func TestMigrations_SchemaShape(t *testing.T) {
 		}
 	})
 
-	// The manifest's own fields, which this table used to duplicate. Each was
-	// written on every checkpoint and read by nothing: the manifest is loaded
-	// before any job_files row is, so a copy here could only ever be the stale
-	// one.
+	// Manifest fields this table used to duplicate on every checkpoint and
+	// read nowhere. subject, bytes and article_count are NOT among them: they
+	// are written once at admission and are the per-file structure the table
+	// owns (checked below); date and is_par2_recovery are still derived.
 	t.Run("job_files does not duplicate the manifest", func(t *testing.T) {
-		// article_count is grouped here because it is manifest-derived too:
-		// hi-lo of the manifest's FileRange. The crash harness needs per-file
-		// counts and takes them from the fixture it builds and serves, which
-		// is a stronger comparison than reading back the daemon's own copy of
-		// a structure the test already knows.
-		for _, col := range []string{"subject", "date", "bytes", "is_par2_recovery", "article_count"} {
+		for _, col := range []string{"date", "is_par2_recovery"} {
 			var n int
 			if err := db.QueryRow(
 				`SELECT COUNT(*) FROM pragma_table_info('job_files') WHERE name = ?`, col,
@@ -170,7 +165,12 @@ func TestMigrations_SchemaShape(t *testing.T) {
 	// assembler, and fetch_policy chosen by the on-demand par2 policy. Losing
 	// any of them loses information no other artifact holds.
 	t.Run("job_files keeps the results nothing else records", func(t *testing.T) {
-		for _, col := range []string{"filename", "complete", "fetch_policy"} {
+		for _, col := range []string{
+			"filename", "complete", "fetch_policy",
+			// The per-file structure, written once by Store.Admit so a
+			// restored job can be listed without opening its manifest.
+			"subject", "bytes", "article_count",
+		} {
 			var n int
 			if err := db.QueryRow(
 				`SELECT COUNT(*) FROM pragma_table_info('job_files') WHERE name = ?`, col,

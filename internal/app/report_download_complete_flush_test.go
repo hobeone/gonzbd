@@ -37,7 +37,7 @@ func TestReportDownloadComplete_RecordsTheFileBeforeTheReport(t *testing.T) {
 
 	// Admit seeds the job_files row the flush's UPDATE lands on; the fixture
 	// adds its job to the dispatcher directly, so it seeds the row itself.
-	if err := durability.NewStore(repo.DB()).Admit(t.Context(), f.j.ID(), []uint8{uint8(job.FetchAlways)}); err != nil {
+	if err := durability.NewStore(repo.DB()).Admit(t.Context(), f.j.ID(), []durability.AdmitFile{{FetchPolicy: uint8(job.FetchAlways)}}); err != nil {
 		t.Fatalf("Admit: %v", err)
 	}
 

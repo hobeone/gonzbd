@@ -434,7 +434,7 @@ func TestDropJobAlreadyInHistory_CancellationAfterRemoveStillClearsDurability(t 
 	}
 	seedDurability(t, application, j.ID())
 	if _, err := repo.DB().ExecContext(ctx,
-		`INSERT OR REPLACE INTO job_files (job_id, file_index, complete) VALUES (?, 0, 0)`, j.ID()); err != nil {
+		`INSERT OR REPLACE INTO job_files (job_id, file_index, subject, bytes, article_count, complete) VALUES (?, 0, '', 0, 0, 0)`, j.ID()); err != nil {
 		t.Fatalf("seed job files: %v", err)
 	}
 	if nr, nf := durabilityRowCounts(t, application, j.ID()); nr != 1 || nf != 1 {
@@ -494,7 +494,7 @@ func TestDropJobAlreadyInHistory_KeepsEverythingWhenTheDispatcherRemoveFails(t *
 	}
 	seedDurability(t, application, j.ID())
 	if _, err := repo.DB().ExecContext(ctx,
-		`INSERT OR REPLACE INTO job_files (job_id, file_index, complete) VALUES (?, 0, 0)`, j.ID()); err != nil {
+		`INSERT OR REPLACE INTO job_files (job_id, file_index, subject, bytes, article_count, complete) VALUES (?, 0, '', 0, 0, 0)`, j.ID()); err != nil {
 		t.Fatalf("seed job files: %v", err)
 	}
 	mpath := filepath.Join(manifestDir(adminDir), j.ID()+".json.gz")

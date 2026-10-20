@@ -19,7 +19,7 @@ func TestDelete_LeavesTheJobsDurabilityRows(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, q := range []string{
-		`INSERT INTO job_files (job_id, file_index) VALUES ('job-1',0)`,
+		`INSERT INTO job_files (job_id, file_index, subject, bytes, article_count) VALUES ('job-1',0,'',0,0)`,
 		`INSERT INTO written_articles (job_id, file_idx, art_idx, offset, length, crc32)
 		 VALUES ('job-1',0,0,0,100,7)`,
 	} {

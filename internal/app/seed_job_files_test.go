@@ -66,7 +66,7 @@ func TestSeedJobFiles_OneRowPerFile(t *testing.T) {
 		return job.FetchAlways
 	}
 
-	if err := seedJobFiles(t.Context(), durability.NewStore(db), "job-a", 4, fetch); err != nil {
+	if err := seedJobFiles(t.Context(), durability.NewStore(db), "job-a", blankSpecs(4), fetch); err != nil {
 		t.Fatalf("seedJobFiles: %v", err)
 	}
 
@@ -116,7 +116,7 @@ func TestSeedJobFiles_IsIdempotent(t *testing.T) {
 	t.Parallel()
 	db := openHistoryTestDB(t)
 
-	if err := seedJobFiles(t.Context(), durability.NewStore(db), "job-b", 3, fetchAlwaysForAll); err != nil {
+	if err := seedJobFiles(t.Context(), durability.NewStore(db), "job-b", blankSpecs(3), fetchAlwaysForAll); err != nil {
 		t.Fatalf("first seed: %v", err)
 	}
 	if _, err := db.Exec(
@@ -125,7 +125,7 @@ func TestSeedJobFiles_IsIdempotent(t *testing.T) {
 	); err != nil {
 		t.Fatalf("simulate recorder write: %v", err)
 	}
-	if err := seedJobFiles(t.Context(), durability.NewStore(db), "job-b", 3, fetchAlwaysForAll); err != nil {
+	if err := seedJobFiles(t.Context(), durability.NewStore(db), "job-b", blankSpecs(3), fetchAlwaysForAll); err != nil {
 		t.Fatalf("second seed: %v", err)
 	}
 
@@ -169,7 +169,7 @@ BEGIN SELECT RAISE(ABORT, 'injected fault'); END`); err != nil {
 		t.Fatalf("create trigger: %v", err)
 	}
 
-	err := seedJobFiles(t.Context(), durability.NewStore(db), "job-c", 6, fetchAlwaysForAll)
+	err := seedJobFiles(t.Context(), durability.NewStore(db), "job-c", blankSpecs(6), fetchAlwaysForAll)
 	if err == nil {
 		t.Fatal("seedJobFiles returned nil, want the injected fault reported")
 	}
@@ -186,7 +186,7 @@ func TestSeedJobFiles_ZeroFilesCommits(t *testing.T) {
 	t.Parallel()
 	db := openHistoryTestDB(t)
 
-	if err := seedJobFiles(t.Context(), durability.NewStore(db), "job-d", 0, fetchAlwaysForAll); err != nil {
+	if err := seedJobFiles(t.Context(), durability.NewStore(db), "job-d", blankSpecs(0), fetchAlwaysForAll); err != nil {
 		t.Fatalf("seedJobFiles with no files: %v", err)
 	}
 	if n := countSeeded(t, db, "job-d"); n != 0 {
@@ -202,10 +202,14 @@ func TestSeedJobFiles_CancelledContextSeedsNothing(t *testing.T) {
 	ctx, cancel := context.WithCancel(t.Context())
 	cancel()
 
-	if err := seedJobFiles(ctx, durability.NewStore(db), "job-e", 3, fetchAlwaysForAll); err == nil {
+	if err := seedJobFiles(ctx, durability.NewStore(db), "job-e", blankSpecs(3), fetchAlwaysForAll); err == nil {
 		t.Fatal("seedJobFiles returned nil for a cancelled context, want an error")
 	}
 	if n := countSeeded(t, db, "job-e"); n != 0 {
 		t.Errorf("job_files rows = %d, want 0", n)
 	}
 }
+
+// blankSpecs returns n structure-less file specs, for tests of the seed's row
+// count and fetch policies rather than of the structure it copies.
+func blankSpecs(n int) []job.FileSpec { return make([]job.FileSpec, n) }

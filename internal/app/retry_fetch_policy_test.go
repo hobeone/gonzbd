@@ -72,8 +72,8 @@ func seedCompletedFile(t *testing.T, db *sql.DB, downloadDir, jobName, jobID str
 		t.Fatal(err)
 	}
 	if _, err := db.Exec(
-		`INSERT INTO job_files (job_id, file_index, complete, filename, fetch_policy)
-		 VALUES (?, ?, 1, ?, ?)`,
+		`INSERT INTO job_files (job_id, file_index, subject, bytes, article_count, complete, filename, fetch_policy)
+		 VALUES (?, ?, '', 0, 0, 1, ?, ?)`,
 		jobID, fileIdx, filename, int(job.FetchAlways)); err != nil {
 		t.Fatalf("seed job_files row: %v", err)
 	}
@@ -109,8 +109,8 @@ func seedJobFilesRow(t *testing.T, db *sql.DB, jobID string, fileIndex int, comp
 		c = 1
 	}
 	if _, err := db.Exec(
-		`INSERT INTO job_files (job_id, file_index, complete, filename, fetch_policy)
-		 VALUES (?, ?, ?, '', ?)`,
+		`INSERT INTO job_files (job_id, file_index, subject, bytes, article_count, complete, filename, fetch_policy)
+		 VALUES (?, ?, '', 0, 0, ?, '', ?)`,
 		jobID, fileIndex, c, int(fetch)); err != nil {
 		t.Fatalf("seed job_files row: %v", err)
 	}

@@ -783,7 +783,7 @@ func (app *Application) AddJob(ctx context.Context, j *job.Job, hdr dispatch.Hea
 	// add.
 	if app.durable != nil {
 		if m, err := j.Manifest(); err == nil && m != nil {
-			if err := seedJobFiles(ctx, app.durable, j.ID(), m.NumFiles(), j.FileFetchPolicy); err != nil {
+			if err := seedJobFiles(ctx, app.durable, j.ID(), m.Files().Specs(), j.FileFetchPolicy); err != nil {
 				return err
 			}
 		}
@@ -861,15 +861,20 @@ func (app *Application) removeNZBBackupIn(dir, jobID, nzbBackup string) {
 const addPersistTimeout = 10 * time.Second
 
 // seedJobFiles seeds a job's job_files rows through the durability store,
-// translating each file's job.FetchPolicy to the store's plain type. See
-// durability.Store.Admit for why the seed must exist before the
+// translating each file's structure and job.FetchPolicy to the store's plain
+// types. See durability.Store.Admit for why the seed must exist before the
 // recorder's first write, and why it is one transaction.
-func seedJobFiles(ctx context.Context, st durabilityStore, jobID string, numFiles int, fetch func(int) job.FetchPolicy) error {
-	policies := make([]uint8, numFiles)
-	for i := range numFiles {
-		policies[i] = uint8(fetch(i))
+func seedJobFiles(ctx context.Context, st durabilityStore, jobID string, specs []job.FileSpec, fetch func(int) job.FetchPolicy) error {
+	files := make([]durability.AdmitFile, len(specs))
+	for i, s := range specs {
+		files[i] = durability.AdmitFile{
+			Subject:      s.Subject,
+			Bytes:        s.Bytes,
+			ArticleCount: s.ArticleCount,
+			FetchPolicy:  uint8(fetch(i)),
+		}
 	}
-	return st.Admit(ctx, jobID, policies)
+	return st.Admit(ctx, jobID, files)
 }
 
 // RemoveJob cancels and removes a job from the queue.
@@ -2924,7 +2929,7 @@ func (app *Application) retryHistoryJob(ctx context.Context, jobID string, allow
 	// drops state for a job the dispatcher does not hold yet. A file the
 	// verification finished keeps complete = 1.
 	if app.durable != nil {
-		if err := seedJobFiles(ctx, app.durable, jobID, m.NumFiles(), j.FileFetchPolicy); err != nil {
+		if err := seedJobFiles(ctx, app.durable, jobID, m.Files().Specs(), j.FileFetchPolicy); err != nil {
 			return fmt.Errorf("app: retry %s: seed job_files: %w", jobID, err)
 		}
 		// context.Background(): a client disconnect mid-request must not

@@ -128,8 +128,8 @@ func newResumeFixture(t *testing.T) *resumeFixture {
 		t.Fatalf("store.Save: %v", err)
 	}
 	_, err = repo.DB().ExecContext(t.Context(),
-		`INSERT INTO job_files (job_id, file_index, complete, fetch_policy, filename)
-		VALUES (?, ?, ?, ?, ?)`,
+		`INSERT INTO job_files (job_id, file_index, subject, bytes, article_count, complete, fetch_policy, filename)
+		VALUES (?, ?, '', 0, 0, ?, ?, ?)`,
 		j.ID(), 0, 0, int(job.FetchAlways), resumeFileName,
 	)
 	if err != nil {

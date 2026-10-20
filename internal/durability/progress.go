@@ -17,13 +17,25 @@ var ErrIncomplete = errors.New("durability: read incomplete")
 // job.FetchPolicy, because internal/job imports internal/durability; the
 // adapter in internal/app converts at the boundary.
 type FileRow struct {
-	FileIndex   int
-	Complete    bool
-	FetchPolicy uint8
-	Filename    string
+	FileIndex    int
+	Subject      string
+	Bytes        int64
+	ArticleCount int
+	Complete     bool
+	FetchPolicy  uint8
+	Filename     string
 }
 
-// Admit seeds one job_files row per file, fetch[i] being file i's policy.
+// AdmitFile is what Admit writes for one file: its NZB-derived structure and
+// its fetch policy. Position in the slice is the file index.
+type AdmitFile struct {
+	Subject      string
+	Bytes        int64
+	ArticleCount int
+	FetchPolicy  uint8
+}
+
+// Admit seeds one job_files row per file, files[i] being file i.
 //
 // It is a precondition for the recorder's writes (ApplyRecord), not an
 // optimisation: they update job_files rows by (job_id, file_index) and insert
@@ -36,11 +48,11 @@ type FileRow struct {
 // cost is: each autocommit is its own WAL commit, so a thousand-file NZB paid
 // a thousand of them at submission.
 //
-// Only fetch_policy is authored here. It is fully determined before this is
-// called; complete and filename are RESULTS, seeded empty for the recorder to
-// fill in. A row that already exists is left alone, so a retry re-seeding a
-// job keeps the progress it retained.
-func (s *Store) Admit(ctx context.Context, jobID string, fetch []uint8) error {
+// subject, bytes, article_count and fetch_policy are authored here; each is
+// fully determined before this is called. complete and filename are RESULTS,
+// seeded empty for the recorder to fill in. A row that already exists is left
+// alone whole, so a retry re-seeding a job keeps the progress it retained.
+func (s *Store) Admit(ctx context.Context, jobID string, files []AdmitFile) error {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return fmt.Errorf("durability: begin job_files seed %s: %w", jobID, err)
@@ -49,16 +61,16 @@ func (s *Store) Admit(ctx context.Context, jobID string, fetch []uint8) error {
 
 	stmt, err := tx.PrepareContext(ctx, `
 INSERT INTO job_files
-  (job_id, file_index, complete, fetch_policy, filename)
-VALUES (?, ?, 0, ?, '')
+  (job_id, file_index, subject, bytes, article_count, complete, fetch_policy, filename)
+VALUES (?, ?, ?, ?, ?, 0, ?, '')
 ON CONFLICT(job_id, file_index) DO NOTHING`)
 	if err != nil {
 		return fmt.Errorf("durability: prepare job_files seed %s: %w", jobID, err)
 	}
 	defer func() { _ = stmt.Close() }()
 
-	for i, f := range fetch {
-		if _, err := stmt.ExecContext(ctx, jobID, i, int(f)); err != nil {
+	for i, f := range files {
+		if _, err := stmt.ExecContext(ctx, jobID, i, f.Subject, f.Bytes, f.ArticleCount, int(f.FetchPolicy)); err != nil {
 			return fmt.Errorf("durability: insert job_file %s index %d: %w", jobID, i, err)
 		}
 	}
@@ -76,7 +88,7 @@ ON CONFLICT(job_id, file_index) DO NOTHING`)
 // whole job's file metadata for one bad row.
 func (s *Store) FileRows(ctx context.Context, jobID string) ([]FileRow, error) {
 	rows, err := s.db.QueryContext(ctx,
-		`SELECT file_index, filename, complete, fetch_policy FROM job_files WHERE job_id = ? ORDER BY file_index`, jobID)
+		`SELECT file_index, subject, bytes, article_count, filename, complete, fetch_policy FROM job_files WHERE job_id = ? ORDER BY file_index`, jobID)
 	if err != nil {
 		return nil, fmt.Errorf("durability: load job_files %s: %w", jobID, err)
 	}
@@ -87,7 +99,7 @@ func (s *Store) FileRows(ctx context.Context, jobID string) ([]FileRow, error) {
 	for rows.Next() {
 		var r FileRow
 		var complete, fetch int
-		if err := rows.Scan(&r.FileIndex, &r.Filename, &complete, &fetch); err != nil {
+		if err := rows.Scan(&r.FileIndex, &r.Subject, &r.Bytes, &r.ArticleCount, &r.Filename, &complete, &fetch); err != nil {
 			errs = append(errs, fmt.Errorf("durability: scan job_files %s: %w: %w", jobID, ErrIncomplete, err))
 			continue
 		}

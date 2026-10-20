@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/hobeone/gonzbd/internal/durability"
 	"github.com/hobeone/gonzbd/internal/history"
 )
 
@@ -26,13 +27,13 @@ type blockingAdmitStore struct {
 	release chan struct{}
 }
 
-func (s *blockingAdmitStore) Admit(ctx context.Context, jobID string, fetch []uint8) error {
+func (s *blockingAdmitStore) Admit(ctx context.Context, jobID string, files []durability.AdmitFile) error {
 	first := false
 	s.once.Do(func() { first = true; close(s.entered) })
 	if first {
 		<-s.release
 	}
-	return s.durabilityStore.Admit(ctx, jobID, fetch)
+	return s.durabilityStore.Admit(ctx, jobID, files)
 }
 
 // blockRetryInAdmit swaps the application's durability store for one that

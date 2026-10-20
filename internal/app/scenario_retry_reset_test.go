@@ -75,7 +75,7 @@ func TestRetry_ResetsDownloadStats(t *testing.T) {
 		t.Fatal(err)
 	}
 	if _, err := h.repo.DB().ExecContext(ctx,
-		`INSERT INTO job_files (job_id, file_index, complete, filename, fetch_policy) VALUES (?, 0, 0, 'file.bin', 0)`,
+		`INSERT INTO job_files (job_id, file_index, subject, bytes, article_count, complete, filename, fetch_policy) VALUES (?, 0, '', 0, 0, 0, 'file.bin', 0)`,
 		jobID); err != nil {
 		t.Fatalf("seed job_files: %v", err)
 	}

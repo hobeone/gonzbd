@@ -225,7 +225,7 @@ func TestRemoveJob_DisconnectAfterDispatcherRemoveStillClearsDurability(t *testi
 	// because a fixture that silently stops seeding turns this into a test
 	// that asserts nothing (#547).
 	if _, err := repo.DB().ExecContext(ctx,
-		`INSERT INTO job_files (job_id, file_index, complete) VALUES (?, 0, 0)`, j.ID()); err != nil {
+		`INSERT INTO job_files (job_id, file_index, subject, bytes, article_count, complete) VALUES (?, 0, '', 0, 0, 0)`, j.ID()); err != nil {
 		t.Fatalf("seed job files: %v", err)
 	}
 	seedWritten(t, realStore(t, application), j.ID(), []durability.WrittenRow{

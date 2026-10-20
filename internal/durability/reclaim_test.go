@@ -53,7 +53,7 @@ func seedReclaimStates(t *testing.T) *sql.DB {
 	db := repo.DB()
 	st := NewStore(db)
 	for _, s := range reclaimStates {
-		if err := st.Admit(ctx, s.id, []uint8{0}); err != nil {
+		if err := st.Admit(ctx, s.id, admitPolicies(0)); err != nil {
 			t.Fatal(err)
 		}
 		if err := st.ApplyRecord(ctx, []RecordBatch{{JobID: s.id, Rows: []WrittenRow{{FileIdx: 0, ArtIdx: 0, Offset: 0, Length: 10, CRC32: 1}}}}); err != nil {
@@ -237,7 +237,7 @@ func TestReclaim_ChunksLargeIDLists(t *testing.T) {
 	for i := range reclaimChunk*2 + 2 {
 		ids = append(ids, fmt.Sprintf("bulk-%04d", i))
 	}
-	if err := st.Admit(ctx, ids[0], []uint8{0}); err != nil {
+	if err := st.Admit(ctx, ids[0], admitPolicies(0)); err != nil {
 		t.Fatal(err)
 	}
 	ids = append(ids, "neither")
