@@ -1656,8 +1656,8 @@ record, which holds one `FileProgress` per file (72 B, from `unsafe.Sizeof`
 on the struct as laid out) and an 8 B `fileStarts` entry beside the bitset
 bits. Per file, then, the table is 48 B + len(subject) and the progress record
 is about 80 B plus its share of the bitsets (derived, not measured): the same
-order, so neither is small next to the bitsets alone. What holds is that the manifest (≈86 B/article, measured) dwarfs both, and
-**that asymmetry — manifest against table plus progress — is the whole
+order, so neither is small next to the bitsets alone. What holds is that the
+manifest (≈86 B/article, measured) dwarfs both, and **that asymmetry — manifest against table plus progress — is the whole
 justification for evicting the manifest and nothing else.**
 
 ### Terminal compaction: measured and declined

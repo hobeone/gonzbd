@@ -67,7 +67,7 @@ type JobProgress struct {
 	// each Set and Clear.
 	done, failed, emitted bitset
 	files                 []FileProgress
-	// fileStarts[fi]..fileStarts[fi+1] is file fi's global article range, the
+	// fileStarts[fi]..fileStarts[fi+1] is file fi's global article range,
 	// the same prefix sum FileTable.Range reports, computed a second time
 	// here (decision D15) and held on the progress tier so that a write
 	// needing only the file of an article runs at any residency.
