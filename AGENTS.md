@@ -140,8 +140,9 @@ articles, or the whole file or job, it is a violation of this rule and it is
 real work.
 
 **A post with no par2 does not weaken this — it is the case that needs it
-most.** Without this bound, a no-recovery post loses a download; with it, it
-loses a hole.
+most.** The bound caps what a misjudged article costs; it does not keep a
+no-par2 post alive past a lost one, which ends FAILED under NN1 (see
+`docs/article-validation-contract.md`).
 
 **It takes an injection carve-out, like rule 1 does.** The bound never justifies
 weakening a check whose absence would let a value reach a protocol, a path, a

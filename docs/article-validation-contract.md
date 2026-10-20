@@ -208,8 +208,15 @@ to it.** Its bytes are then unrecoverable — a risk the poster took by not
 posting recovery volumes, and not one this project can retire. The rule is
 unchanged: one bad article still costs only its own bytes. What changes is the
 consequence to the user, which is exactly the argument for capping the blast
-radius rather than relaxing it. Without the bound a no-recovery post loses a
-download; with it, it loses a hole.
+radius rather than relaxing it: without the bound, misjudging one article can
+cost its neighbours or the file, and nothing can win those bytes back.
+
+The bound caps what a misjudged article costs; it does not keep a no-par2 post
+alive past a lost one. A post with no par2 that loses content bytes reaches
+`RepairNoCapacity` and ends FAILED, because a file is never delivered as
+complete when it is not (NN1, `durability-contract.md` § "Non-negotiables and
+invariant labels"). Its record is kept, and a retry re-fetches only what failed
+(`job-lifecycle.md` § "3. Attempts").
 
 **It is not a licence to validate less.** Reject fast and reject cheaply; the
 bound is on the *consequence*, not on the checking. In particular it never
