@@ -224,9 +224,9 @@ CREATE TABLE dispatch_jobs (
     -- par2 reads packets rather than filenames, so zero here means "nothing
     -- recognized", never "nothing to repair with".
     --
-    -- Derived from the manifest (Manifest.RecoveryBytes) rather than measured
-    -- here, but persisted rather than recomputed on load, because a
-    -- non-resident job has no manifest and because zero is not a missing
+    -- Derived from the job's file table (FileTable.RecoveryBytes) rather than
+    -- measured here, but persisted rather than recomputed on load, because a
+    -- restarted job has no file table until it is first hydrated and because zero is not a missing
     -- reading -- it is a definite claim of no repair capacity, which the UI
     -- renders as "No repair data" and both abort gates read as grounds to call
     -- a job hopeless. That must not be reachable from a degraded read.
