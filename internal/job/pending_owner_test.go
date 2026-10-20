@@ -12,7 +12,7 @@ func heldVolumeManifest() *Manifest {
 		{Subject: `"a.rar" yEnc (1/2)`, Bytes: 200, Articles: []JobArticle{
 			{ID: "<a1@x>", Bytes: 100, Number: 1}, {ID: "<a2@x>", Bytes: 100, Number: 2},
 		}},
-		{Subject: `"a.vol0+1.par2" yEnc (1/3)`, Bytes: 300, IsPar2Recovery: true, Articles: []JobArticle{
+		{Subject: `"a.vol0+1.par2" yEnc (1/3)`, Bytes: 300, Articles: []JobArticle{
 			{ID: "<p1@x>", Bytes: 100, Number: 1}, {ID: "<p2@x>", Bytes: 100, Number: 2}, {ID: "<p3@x>", Bytes: 100, Number: 3},
 		}},
 	})
@@ -197,7 +197,7 @@ func TestAttachArticles_RefusesAManifestWithADifferentFileShape(t *testing.T) {
 		{Subject: `"a.rar" yEnc (1/3)`, Bytes: 300, Articles: []JobArticle{
 			{ID: "<a1@x>", Bytes: 100, Number: 1}, {ID: "<a2@x>", Bytes: 100, Number: 2}, {ID: "<a3@x>", Bytes: 100, Number: 3},
 		}},
-		{Subject: `"a.vol0+1.par2" yEnc (1/2)`, Bytes: 200, IsPar2Recovery: true, Articles: []JobArticle{
+		{Subject: `"a.vol0+1.par2" yEnc (1/2)`, Bytes: 200, Articles: []JobArticle{
 			{ID: "<p1@x>", Bytes: 100, Number: 1}, {ID: "<p2@x>", Bytes: 100, Number: 2},
 		}},
 	})

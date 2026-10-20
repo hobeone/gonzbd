@@ -62,7 +62,7 @@ func TestMarkNotDone_RefusesAPermanentlyFailedArticle(t *testing.T) {
 func TestFileMetaFromTable_ProjectsCountsBytesAndPar2(t *testing.T) {
 	m := NewManifest([]JobFile{
 		{Subject: "movie.part1.rar", Bytes: 200, Articles: []JobArticle{{ID: "<1@x>", Bytes: 100}, {ID: "<2@x>", Bytes: 100}}},
-		{Subject: "movie.vol00+01.par2", Bytes: 50, Articles: []JobArticle{{ID: "<3@x>", Bytes: 50}}, IsPar2Recovery: true},
+		{Subject: "movie.vol00+01.par2", Bytes: 50, Articles: []JobArticle{{ID: "<3@x>", Bytes: 50}}},
 	})
 
 	got := fileMetaFromTable(m.Files())

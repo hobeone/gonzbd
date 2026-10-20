@@ -12,10 +12,10 @@ import (
 func newInterleavedRecoveryJob(t *testing.T) *Job {
 	t.Helper()
 	m := NewManifest([]JobFile{
-		{Subject: "a.vol00+01.par2", Bytes: 100, IsPar2Recovery: true,
+		{Subject: "a.vol00+01.par2", Bytes: 100,
 			Articles: []JobArticle{{ID: "<v0@x>", Bytes: 100, Number: 1}}},
 		{Subject: "a.bin", Bytes: 100, Articles: []JobArticle{{ID: "<d0@x>", Bytes: 100, Number: 1}}},
-		{Subject: "a.vol01+02.par2", Bytes: 100, IsPar2Recovery: true,
+		{Subject: "a.vol01+02.par2", Bytes: 100,
 			Articles: []JobArticle{{ID: "<v1@x>", Bytes: 100, Number: 1}}},
 	})
 	j := New("j", "j", PolicyFromPP(3))

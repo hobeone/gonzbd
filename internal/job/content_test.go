@@ -87,10 +87,8 @@ func TestJob_ContentMethods(t *testing.T) {
 			},
 		},
 		{
-			Subject:        "file2.vol01+01.par2",
-			Bytes:          100,
-			IsPar2Recovery: true,
-			Deferred:       true,
+			Subject: "file2.vol01+01.par2",
+			Bytes:   100,
 			Articles: []JobArticle{
 				{ID: "<3@x>", Bytes: 100, Number: 3},
 			},
@@ -209,10 +207,8 @@ func TestJob_AdditionalMethods(t *testing.T) {
 			},
 		},
 		{
-			Subject:        "f2.vol01+01.par2",
-			Bytes:          100,
-			IsPar2Recovery: true,
-			Deferred:       true,
+			Subject: "f2.vol01+01.par2",
+			Bytes:   100,
 			Articles: []JobArticle{
 				{ID: "<art3@x>", Bytes: 100, Number: 3},
 			},
@@ -708,10 +704,8 @@ func TestJob_ProgressAccessors(t *testing.T) {
 			},
 		},
 		{
-			Subject:        "data.vol01+01.par2",
-			Bytes:          60,
-			IsPar2Recovery: true,
-			Deferred:       true,
+			Subject: "data.vol01+01.par2",
+			Bytes:   60,
 			Articles: []JobArticle{
 				{ID: "<p1@x>", Bytes: 60, Number: 3},
 			},

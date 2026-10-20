@@ -22,7 +22,7 @@ func buildRestoredTestJob(t *testing.T, reason string, released bool) *job.Job {
 		{Subject: "release.rar", Bytes: 500, Articles: []job.JobArticle{
 			{ID: "d0@t", Bytes: 500, Number: 1},
 		}},
-		{Subject: "x.vol000+01.par2", Bytes: 500, IsPar2Recovery: true, Deferred: true,
+		{Subject: "x.vol000+01.par2", Bytes: 500,
 			Articles: []job.JobArticle{{ID: "p0@t", Bytes: 500, Number: 1}}},
 	}
 	job.SortJobFiles(files)

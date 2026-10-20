@@ -43,16 +43,6 @@ type JobFile struct {
 	Subject  string
 	Articles []JobArticle
 	Bytes    int64
-	// IsPar2Recovery is not read by NewManifest: the FileTable derives the
-	// classification from Subject with IsRecoveryVolume, so a caller cannot
-	// supply one that disagrees with it.
-	IsPar2Recovery bool
-	// Deferred marks a file whose articles are intentionally held back from
-	// dispatch (on-demand par2: recovery volumes not downloaded until repair
-	// is shown to be needed). NewManifest does not read it: the Manifest
-	// carries no fetch policy, and the builder applies it after
-	// AttachContent, through SetFileFetchPolicy with FetchIfNeeded.
-	Deferred bool
 }
 
 // JobArticle is the intermediate, NZB-parsed shape of a single article,
@@ -121,9 +111,7 @@ func newManifest(ft *FileTable, articles []JobArticle) (*Manifest, error) {
 func (m *Manifest) Files() *FileTable { return m.ft }
 
 // isPar2File reports whether subject names a par2 file (index or recovery
-// volume). It has two callers: IsPar2File, which internal/app's
-// BuildIngestJob pairs with IsRecoveryVolume to decide
-// JobFile.IsPar2Recovery, and fileMetaFromTable, which classifies
+// volume). IsPar2File wraps it, and fileMetaFromTable classifies
 // FileProgress.IsPar2 with it. A FileTable's own figures do not use it — see
 // FileTable for why a name-based test is the wrong predicate for repair
 // capacity.

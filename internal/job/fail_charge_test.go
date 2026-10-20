@@ -202,7 +202,7 @@ func TestMarkArticleFailedCharge_ChangesNoFetchPolicy(t *testing.T) {
 		t.Helper()
 		m := NewManifest([]JobFile{
 			{Subject: "data", Bytes: 100, Articles: []JobArticle{{ID: "<d0@x>", Bytes: 100, Number: 1}}},
-			{Subject: "vol01+02.par2", Bytes: 100, IsPar2Recovery: true,
+			{Subject: "vol01+02.par2", Bytes: 100,
 				Articles: []JobArticle{{ID: "<p0@x>", Bytes: 100, Number: 1}}},
 		})
 		j := New("j", "j", PolicyFromPP(1))
@@ -398,7 +398,7 @@ func TestCheckEarlyAbort_SparesAJobWhoseDamageFitsRecovery(t *testing.T) {
 		return out
 	}
 	vol := func(bytes int64, n int) JobFile {
-		return JobFile{Subject: "data.vol00+10.par2", Bytes: bytes, IsPar2Recovery: true, Articles: arts("v", n)}
+		return JobFile{Subject: "data.vol00+10.par2", Bytes: bytes, Articles: arts("v", n)}
 	}
 	cases := []struct {
 		name      string
@@ -517,7 +517,7 @@ func TestCheckEarlyAbort_SparingLeavesTheLatchUnset(t *testing.T) {
 	}
 	m := NewManifest([]JobFile{
 		{Subject: "data.bin", Bytes: 2000, Articles: arts},
-		{Subject: "data.vol00+10.par2", Bytes: 1500, IsPar2Recovery: true,
+		{Subject: "data.vol00+10.par2", Bytes: 1500,
 			Articles: []JobArticle{{ID: "<lv@x>", Bytes: 1500, Number: 1}}},
 	})
 	j := New("latch", "latch", PolicyFromPP(3))

@@ -144,3 +144,17 @@ reading file structure must not depend on manifest residency.
 after `BuildIngestJob`, so its change is unreachable.
 **Cost if wrong:** a `j.Resident()` gate at the two API sites restores the
 old output.
+
+### D15 — The article prefix sum is computed twice
+
+**Call:** `newJobProgressSized` (`internal/job/progress.go`) rebuilds the
+article prefix sum into `JobProgress.fileStarts` that `newFileTable`
+(`internal/job/filetable.go`) already owns. Stage 1 leaves the duplicate;
+the field comment no longer calls it the table's own sum.
+**Why:** design §5 defers sharing one slice between the two tiers. Both are
+built from the same per-file article counts in one pass each, so they cannot
+disagree until one of them is changed.
+**Cost if wrong:** a second computation of one figure, against Standing Design
+Rule 2. If a change makes the two diverge, `fileRange` and `FileTable.Range`
+disagree on a file's span; sharing the table's slice removes the second
+computation.

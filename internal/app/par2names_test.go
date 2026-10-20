@@ -15,7 +15,7 @@ func TestResolvedName(t *testing.T) {
 
 	m := job.NewManifest([]job.JobFile{
 		{Subject: "subject-name.bin", Bytes: 100, Articles: []job.JobArticle{{ID: "<1@x>", Bytes: 100}}},
-		{Subject: "data.vol000+01.par2", Bytes: 100, IsPar2Recovery: true, Articles: []job.JobArticle{{ID: "<2@x>", Bytes: 100}}},
+		{Subject: "data.vol000+01.par2", Bytes: 100, Articles: []job.JobArticle{{ID: "<2@x>", Bytes: 100}}},
 	})
 	j := job.New("resolved-name-job", "resolved-name-job", job.Policy{})
 	if err := j.AttachContent(m); err != nil {
@@ -41,7 +41,7 @@ func TestAssembledFiles(t *testing.T) {
 
 	m := job.NewManifest([]job.JobFile{
 		{Subject: "subject-name.bin", Bytes: 100, Articles: []job.JobArticle{{ID: "<1@x>", Bytes: 100}}},
-		{Subject: "data.vol000+01.par2", Bytes: 100, IsPar2Recovery: true, Articles: []job.JobArticle{{ID: "<2@x>", Bytes: 100}}},
+		{Subject: "data.vol000+01.par2", Bytes: 100, Articles: []job.JobArticle{{ID: "<2@x>", Bytes: 100}}},
 	})
 	j := job.New("assembled-files-job", "assembled-files-job", job.Policy{})
 	if err := j.AttachContent(m); err != nil {

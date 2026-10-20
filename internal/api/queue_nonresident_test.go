@@ -16,7 +16,7 @@ func newEvictedJob(t *testing.T) (*job.Job, dispatch.Row) {
 	files := []job.JobFile{
 		{Subject: "movie.part01.rar", Bytes: 100, Articles: []job.JobArticle{{ID: "a0@t", Bytes: 100, Number: 1}}},
 		{Subject: "movie.part02.rar", Bytes: 100, Articles: []job.JobArticle{{ID: "a1@t", Bytes: 100, Number: 1}}},
-		{Subject: "movie.vol01+02.par2", Bytes: 50, IsPar2Recovery: true, Articles: []job.JobArticle{{ID: "a2@t", Bytes: 50, Number: 1}}},
+		{Subject: "movie.vol01+02.par2", Bytes: 50, Articles: []job.JobArticle{{ID: "a2@t", Bytes: 50, Number: 1}}},
 	}
 	m := job.NewManifest(files)
 	j := job.New("j1", "movie.nzb", job.Policy{})
@@ -98,7 +98,7 @@ func newOnDemandPar2Job(t *testing.T) (*dispatch.Dispatcher, *job.Job) {
 		{Subject: "content.rar", Bytes: 10_000, Articles: []job.JobArticle{{ID: "c1@t", Bytes: 10_000, Number: 1}}},
 		// Recovery-volume subject: matches isRecoveryVolume's
 		// \.vol\d+[-+]\d+\.par2 pattern, so NewJob marks it deferred.
-		{Subject: "content.vol000+01.par2", Bytes: 1_000, IsPar2Recovery: true, Deferred: true, Articles: []job.JobArticle{{ID: "v1@t", Bytes: 1_000, Number: 1}}},
+		{Subject: "content.vol000+01.par2", Bytes: 1_000, Articles: []job.JobArticle{{ID: "v1@t", Bytes: 1_000, Number: 1}}},
 	}
 	m := job.NewManifest(files)
 	j := job.New("j-par2", "par2.nzb", job.Policy{})

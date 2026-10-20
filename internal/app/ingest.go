@@ -116,14 +116,10 @@ func BuildIngestJob(cfg *config.Config, parsed *nzb.NZB, filename string, opts t
 
 	files := make([]job.JobFile, 0, len(parsed.Files))
 	for _, pf := range parsed.Files {
-		isPar2 := job.IsPar2File(pf.Subject)
-		isRecovery := isPar2 && job.IsRecoveryVolume(pf.Subject)
 		jf := job.JobFile{
-			Subject:        pf.Subject,
-			Bytes:          pf.Bytes,
-			Articles:       make([]job.JobArticle, 0, len(pf.Articles)),
-			IsPar2Recovery: isRecovery,
-			Deferred:       isRecovery && onDemandPar2,
+			Subject:  pf.Subject,
+			Bytes:    pf.Bytes,
+			Articles: make([]job.JobArticle, 0, len(pf.Articles)),
 		}
 		for _, pa := range pf.Articles {
 			jf.Articles = append(jf.Articles, job.JobArticle{
@@ -141,8 +137,10 @@ func BuildIngestJob(cfg *config.Config, parsed *nzb.NZB, filename string, opts t
 	if err := j.AttachContent(manifest); err != nil {
 		return nil, dispatch.Header{}, fmt.Errorf("create job %q: %w", filename, err)
 	}
-	for fi, jf := range files {
-		if jf.Deferred {
+	// The FileTable is the one classifier of recovery volumes, so the fetch
+	// policy is read from it once it is attached.
+	for fi := range files {
+		if onDemandPar2 && j.Files().IsPar2Recovery(fi) {
 			_ = j.SetFileFetchPolicy(fi, job.FetchIfNeeded) //nolint:errcheck // AttachContent above made the job resident and fi ranges over its files, the setter's two refusals
 		}
 	}

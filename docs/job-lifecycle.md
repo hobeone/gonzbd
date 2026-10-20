@@ -1651,8 +1651,12 @@ per file, from the field list in `internal/job/filetable.go`: a `fileEntry`
 to 8 B = 40 B) plus one 8 B `offsets` entry, plus the subject's bytes, so
 48 B + len(subject) per file. At 1000 files with 100-byte subjects that is
 ≈148 KB (derived from the layout, not measured), against 7.5 KB of bitsets
-for a 20k-article job. So the table is not small next to the progress record;
-what holds is that the manifest (≈86 B/article, measured) dwarfs both, and
+for a 20k-article job. That comparison leaves out the rest of the progress
+record, which holds one `FileProgress` per file (72 B, from `unsafe.Sizeof`
+on the struct as laid out) and an 8 B `fileStarts` entry beside the bitset
+bits. Per file, then, the table is 48 B + len(subject) and the progress record
+is about 80 B plus its share of the bitsets (derived, not measured): the same
+order, so neither is small next to the bitsets alone. What holds is that the manifest (≈86 B/article, measured) dwarfs both, and
 **that asymmetry — manifest against table plus progress — is the whole
 justification for evicting the manifest and nothing else.**
 
@@ -1762,10 +1766,17 @@ Together they stand where `describesSameJobAs` stood: a `Manifest`/`JobProgress`
 size mismatch would panic inside `recompute` on a background goroutine with no
 `recover`, so it is reported instead of tolerated.
 
-No write path this process performs can produce a torn pair: the manifest
-blob is written once, before the ingest transaction opens, so a crash between
-them leaves an orphan manifest and no job row rather than a disagreeing pair.
-A mismatch that reaches the guard means a truncated or damaged manifest blob,
+The ingest path cannot produce a torn pair: the manifest blob is written once,
+before the ingest transaction opens, so a crash between them leaves an orphan
+manifest and no job row rather than a disagreeing pair. The exception is a
+retry. Its re-seed goes through `Admit`, whose `ON CONFLICT` clause
+(`git grep -n '^ON CONFLICT' -- internal/durability/progress.go` finds 1 line)
+leaves an existing row whole, so the retry keeps the `subject`, `bytes` and
+`article_count` the first parse wrote and pairs them with a manifest built from
+a second parse of the backed-up NZB. Within one build that parse yields the same
+structure, so the pair agrees. A parser change across builds would break that,
+Standing Design Rule 1 waives that case, and stage 2, which builds a table for
+every queued job at restore, revisits it. A mismatch that reaches the guard means a truncated or damaged manifest blob,
 or a damaged `job_files.article_count`, either of which fails the count check
 (`TestHydrate_RefusesAManifestWhoseCountDisagreesWithTheRows`).
 

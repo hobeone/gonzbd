@@ -68,10 +68,11 @@ type JobProgress struct {
 	done, failed, emitted bitset
 	files                 []FileProgress
 	// fileStarts[fi]..fileStarts[fi+1] is file fi's global article range, the
-	// file table's own prefix sum (FileTable.Range) held on the progress
-	// tier so that a write needing only the file of an article runs at any
-	// residency. newJobProgressSized builds it and nothing changes it after,
-	// so a clone shares it.
+	// the same prefix sum FileTable.Range reports, computed a second time
+	// here (decision D15) and held on the progress tier so that a write
+	// needing only the file of an article runs at any residency.
+	// newJobProgressSized builds it and nothing changes it after, so a clone
+	// shares it.
 	fileStarts []int
 	// fetchChanges counts the files whose fetchChanged is set, so a take
 	// from a job with none returns without walking its files.

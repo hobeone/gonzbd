@@ -20,7 +20,7 @@ func releaseJob(t *testing.T, vols []heldVol) *Job {
 	files = append(files, JobFile{Subject: "data.rar", Bytes: 100, Articles: []JobArticle{{ID: "<d@x>", Bytes: 100, Number: 1}}})
 	for i, v := range vols {
 		files = append(files, JobFile{
-			Subject: v.name, Bytes: v.bytes, IsPar2Recovery: true, Deferred: true,
+			Subject: v.name, Bytes: v.bytes,
 			Articles: []JobArticle{{ID: fmt.Sprintf("<v%d@x>", i), Bytes: int(v.bytes), Number: 1}},
 		})
 	}
@@ -132,9 +132,9 @@ func TestRecoveryReleased(t *testing.T) {
 		m := NewManifest([]JobFile{
 			{Subject: "data.rar", Bytes: 100, Articles: art("<d@x>")},
 			{Subject: "x.par2", Bytes: 100, Articles: art("<i@x>")},
-			{Subject: "x.vol00+01.par2", Bytes: 100, IsPar2Recovery: true, Articles: art("<v0@x>")},
-			{Subject: "x.vol01+02.par2", Bytes: 100, IsPar2Recovery: true, Articles: art("<v1@x>")},
-			{Subject: "x.vol03+04.par2", Bytes: 100, IsPar2Recovery: true, Articles: art("<v2@x>")},
+			{Subject: "x.vol00+01.par2", Bytes: 100, Articles: art("<v0@x>")},
+			{Subject: "x.vol01+02.par2", Bytes: 100, Articles: art("<v1@x>")},
+			{Subject: "x.vol03+04.par2", Bytes: 100, Articles: art("<v2@x>")},
 		})
 		j := New("rr", "rr", Policy{})
 		if err := j.AttachContent(m); err != nil {
@@ -202,10 +202,10 @@ func TestFetchedRecoveryBlocks(t *testing.T) {
 		// RecoveryVolumeBlocks reads the same pattern, so a name the table does
 		// not classify as a volume cannot declare blocks either.
 		{Subject: "x.par2", Bytes: 100, Articles: art("<i@x>")},
-		{Subject: "x.vol00+01.par2", Bytes: 100, IsPar2Recovery: true, Articles: art("<v0@x>")},
-		{Subject: "x.vol01+02.par2", Bytes: 100, IsPar2Recovery: true, Articles: art("<v1@x>")},
-		{Subject: "x.vol03+04.par2", Bytes: 100, IsPar2Recovery: true, Articles: art("<v2@x>")},
-		{Subject: "x.vol07-08.par2", Bytes: 100, IsPar2Recovery: true, Articles: art("<v3@x>")},
+		{Subject: "x.vol00+01.par2", Bytes: 100, Articles: art("<v0@x>")},
+		{Subject: "x.vol01+02.par2", Bytes: 100, Articles: art("<v1@x>")},
+		{Subject: "x.vol03+04.par2", Bytes: 100, Articles: art("<v2@x>")},
+		{Subject: "x.vol07-08.par2", Bytes: 100, Articles: art("<v3@x>")},
 	})
 	tests := []struct {
 		name string

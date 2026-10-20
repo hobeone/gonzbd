@@ -95,13 +95,9 @@ func buildTestJob(t *testing.T, onDemandPar2 bool, specs []fileSpec) *job.Job {
 	t.Helper()
 	files := make([]job.JobFile, 0, len(specs))
 	for fi, f := range specs {
-		isPar2 := job.IsPar2File(f.subject)
-		isRecovery := isPar2 && job.IsRecoveryVolume(f.subject)
 		jf := job.JobFile{
-			Subject:        f.subject,
-			Bytes:          f.bytes,
-			IsPar2Recovery: isRecovery,
-			Deferred:       isRecovery && onDemandPar2,
+			Subject: f.subject,
+			Bytes:   f.bytes,
 		}
 		for ai, a := range f.articles {
 			jf.Articles = append(jf.Articles, job.JobArticle{
@@ -120,8 +116,8 @@ func buildTestJob(t *testing.T, onDemandPar2 bool, specs []fileSpec) *job.Job {
 	if err := j.AttachContent(m); err != nil {
 		t.Fatalf("AttachContent: %v", err)
 	}
-	for fi, jf := range files {
-		if jf.Deferred {
+	for fi := range files {
+		if onDemandPar2 && m.Files().IsPar2Recovery(fi) {
 			if err := j.SetFileFetchPolicy(fi, job.FetchIfNeeded); err != nil {
 				t.Fatalf("SetFileFetchPolicy: %v", err)
 			}

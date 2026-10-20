@@ -11,7 +11,9 @@ import (
 // that does not wrap it returned nothing usable.
 var ErrIncomplete = errors.New("durability: read incomplete")
 
-// FileRow is one job_files row: a file's persisted download progress.
+// FileRow is one job_files row: a file's NZB-derived structure (subject, bytes,
+// article count), its fetch policy, and its persisted outcome (complete,
+// filename).
 //
 // FetchPolicy is job.FetchPolicy's underlying type. This package cannot name
 // job.FetchPolicy, because internal/job imports internal/durability; the
@@ -52,6 +54,12 @@ type AdmitFile struct {
 // fully determined before this is called. complete and filename are RESULTS,
 // seeded empty for the recorder to fill in. A row that already exists is left
 // alone whole, so a retry re-seeding a job keeps the progress it retained.
+// That includes the structure columns: a retry keeps the subject, bytes and
+// article_count the first parse wrote (`git grep -n '^ON CONFLICT' --
+// internal/durability/progress.go` finds 1 line). Within one build the
+// re-parse of the backed-up NZB yields the same structure; a parser change
+// across builds is the case Standing Design Rule 1 waives, and stage 2
+// revisits it.
 func (s *Store) Admit(ctx context.Context, jobID string, files []AdmitFile) error {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -83,9 +91,9 @@ ON CONFLICT(job_id, file_index) DO NOTHING`)
 // FileRows returns a job's job_files rows, ordered by file index.
 //
 // A row that fails to scan is skipped and the rest are still returned, with
-// the error wrapping ErrIncomplete: that file keeps whatever default the
-// caller's fresh progress record gave it, which is better than dropping the
-// whole job's file metadata for one bad row.
+// the error wrapping ErrIncomplete. The skipped row is a gap in the file
+// indices, which the file-table build from these rows (fileTableFromRows)
+// refuses; the rows returned are for a caller that wants to inspect them.
 func (s *Store) FileRows(ctx context.Context, jobID string) ([]FileRow, error) {
 	rows, err := s.db.QueryContext(ctx,
 		`SELECT file_index, subject, bytes, article_count, filename, complete, fetch_policy FROM job_files WHERE job_id = ? ORDER BY file_index`, jobID)
