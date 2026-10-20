@@ -158,3 +158,16 @@ disagree until one of them is changed.
 Rule 2. If a change makes the two diverge, `fileRange` and `FileTable.Range`
 disagree on a file's span; sharing the table's slice removes the second
 computation.
+
+### D16 — A retry keeps the first parse's `job_files` structure
+
+**Call:** `Store.Admit` keeps `ON CONFLICT DO NOTHING`, so a retry's
+re-seed leaves the subject, bytes and article count the first parse wrote.
+The assumption is stated at `Admit` and in `docs/job-lifecycle.md` §14, not
+enforced.
+**Why:** within one build, re-parsing the backed-up NZB yields the same
+structure, so the rows cannot disagree with the table. The only state that
+would make `DO UPDATE` necessary is a parser change across builds, which
+Standing Rule 1 waives.
+**Cost if wrong:** one SQL clause. Stage 2, which makes `job_files` the
+restore source for every queued job, revisits this.
