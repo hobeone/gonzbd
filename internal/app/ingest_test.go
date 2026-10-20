@@ -65,11 +65,11 @@ func TestBuildIngestJob_HappyPath(t *testing.T) {
 	if m.NumFiles() != 3 {
 		t.Errorf("NumFiles = %d, want 3", m.NumFiles())
 	}
-	if m.TotalBytes() != 500 {
-		t.Errorf("TotalBytes = %d, want 500", m.TotalBytes())
+	if m.Files().TotalBytes() != 500 {
+		t.Errorf("TotalBytes = %d, want 500", m.Files().TotalBytes())
 	}
-	if m.RecoveryBytes() != 100 {
-		t.Errorf("Par2Bytes = %d, want 100", m.RecoveryBytes())
+	if m.Files().RecoveryBytes() != 100 {
+		t.Errorf("Par2Bytes = %d, want 100", m.Files().RecoveryBytes())
 	}
 }
 

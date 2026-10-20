@@ -1256,7 +1256,7 @@ later reader can tell a decision from an oversight.
    measurement as part of this work.
 
    **Caveat found in review, and it is a genuine conflict with decision 1.**
-   `ExpectedSize` is `Manifest.FileBytes(fileIdx)`, which traces back to the sum
+   `ExpectedSize` is `FileTable.Bytes(fileIdx)`, which traces back to the sum
    of the segments that *survived* parsing. A1 already rejects today, so only the
    **newly** rejecting rules — A2a, A3, A4 and A7 — shrink the sum; the counted
    rows (A2b, A5, A6) leave it untouched, since their segments are still

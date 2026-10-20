@@ -26,7 +26,7 @@ file internal/job/progress.go
 [a file that is not a recovery volume is counted]
 file internal/job/progress.go
 --- anchor
-		if !m.FileIsPar2Recovery(fi) {
+		if !m.IsPar2Recovery(fi) {
 			continue
 --- replace
 		if false {

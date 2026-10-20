@@ -839,9 +839,9 @@ func (p *JobProgress) restorePar2ReleaseReason(reason string) {
 }
 
 // RecoveryClassifier says which of a job's files are par2 recovery volumes.
-// *Manifest satisfies it.
+// *FileTable satisfies it.
 type RecoveryClassifier interface {
-	FileIsPar2Recovery(fi int) bool
+	IsPar2Recovery(fi int) bool
 }
 
 // RecoveryReleased counts the job's recovery volumes, as m classifies them:
@@ -855,7 +855,7 @@ func (p *JobProgress) RecoveryReleased(m RecoveryClassifier) (fetched, held, tot
 		return 0, 0, 0
 	}
 	for fi := range p.files {
-		if !m.FileIsPar2Recovery(fi) {
+		if !m.IsPar2Recovery(fi) {
 			continue
 		}
 		total++

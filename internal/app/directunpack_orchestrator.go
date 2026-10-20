@@ -66,7 +66,7 @@ func (o *directUnpackOrchestrator) maybeStart(fc FileComplete) {
 	if mErr != nil || fc.FileIdx < 0 || fc.FileIdx >= m.NumFiles() {
 		return
 	}
-	filename := m.FileSubject(fc.FileIdx)
+	filename := m.Files().Subject(fc.FileIdx)
 	setname, vol := directunpack.AnalyzeRarFilename(filename)
 	if vol == 0 {
 		return // not a RAR volume
@@ -136,7 +136,7 @@ func (o *directUnpackOrchestrator) maybeStart(fc FileComplete) {
 		// Provide all filenames so the DU can compute total volume counts.
 		allNames := make([]string, m.NumFiles())
 		for i := range m.NumFiles() {
-			allNames[i] = m.FileSubject(i)
+			allNames[i] = m.Files().Subject(i)
 		}
 		du.SetAllFilenames(allNames)
 		o.unpackers[fc.JobID] = du

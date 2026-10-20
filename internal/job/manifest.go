@@ -133,16 +133,6 @@ func isPar2File(subject string) bool {
 // NumFiles returns the number of files in the manifest.
 func (m *Manifest) NumFiles() int { return m.ft.NumFiles() }
 
-// FileSubject returns the NZB subject line for file fileIdx. Forwards to Files().
-func (m *Manifest) FileSubject(fileIdx int) string { return m.ft.Subject(fileIdx) }
-
-// FileBytes returns the NZB-claimed byte count for file fileIdx. Forwards to Files().
-func (m *Manifest) FileBytes(fileIdx int) int64 { return m.ft.Bytes(fileIdx) }
-
-// FileIsPar2Recovery reports whether file fileIdx is a par2 recovery volume.
-// Forwards to Files().
-func (m *Manifest) FileIsPar2Recovery(fileIdx int) bool { return m.ft.IsPar2Recovery(fileIdx) }
-
 // FileRange returns the [lo, hi) global article index range owned by
 // file fileIdx.
 func (m *Manifest) FileRange(fileIdx int) (lo, hi int) { return m.ft.Range(fileIdx) }
@@ -185,19 +175,6 @@ func (m *Manifest) ArticleBytes(i int) int { return m.articleBytes[i] }
 
 // ArticleNumber returns the part number of global article index i.
 func (m *Manifest) ArticleNumber(i int) int { return m.articleNumber[i] }
-
-// TotalBytes returns the sum of all files' claimed byte counts. Forwards to
-// Files().
-func (m *Manifest) TotalBytes() int64 { return m.ft.TotalBytes() }
-
-// RecoveryBytes returns the summed size of the par2 recovery volumes.
-// Forwards to Files(); FileTable documents what the figure does and does not
-// establish.
-func (m *Manifest) RecoveryBytes() int64 { return m.ft.RecoveryBytes() }
-
-// RecoveryFiles returns the count of par2 recovery volumes, excluding the
-// index. Forwards to Files().
-func (m *Manifest) RecoveryFiles() int { return m.ft.RecoveryFiles() }
 
 // manifestJSONArticle is one article's on-disk shape.
 type manifestJSONArticle struct {

@@ -112,7 +112,7 @@ func persistCompleteJob(t *testing.T, repo *history.Repository, adminDir string,
 		if _, err := repo.DB().ExecContext(t.Context(),
 			`INSERT INTO job_files (job_id, file_index, subject, bytes, article_count, complete, fetch_policy, filename)
 			VALUES (?, ?, ?, ?, ?, ?, ?, '')`,
-			j.ID(), fi, m.FileSubject(fi), m.FileBytes(fi), hi-lo, complete, int(fetch)); err != nil {
+			j.ID(), fi, m.Files().Subject(fi), m.Files().Bytes(fi), hi-lo, complete, int(fetch)); err != nil {
 			t.Fatalf("insert job_files: %v", err)
 		}
 		if complete == 1 {

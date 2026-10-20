@@ -93,7 +93,7 @@ func (app *Application) unwantedFilingOwed(j *job.Job) (dispatch.Row, bool) {
 // approved says the job comes already approved — a retry of an approved
 // entry, or one the user asked to run with allow_unwanted — and such a job
 // is not checked. Otherwise the check reads the filenames the NZB names
-// (Manifest.FileSubject) against the live rules. Under ActionPause a
+// (FileTable.Subject) against the live rules. Under ActionPause a
 // blocked job's intent is set to pause; under ActionFail too, so it does not
 // launch before the caller files it, and the failure message is returned.
 //
@@ -116,13 +116,13 @@ func (app *Application) screenUnwanted(j *job.Job, hdr *dispatch.Header, approve
 	if rules.Action() == unwanted.ActionOff {
 		return "", nil
 	}
-	m, err := j.Manifest()
-	if err != nil {
-		return "", fmt.Errorf("unwanted-extension check: read the job's file list: %w", err)
+	ft := j.Files()
+	if ft == nil {
+		return "", fmt.Errorf("unwanted-extension check: read the job's file list: %w", job.ErrNotResident)
 	}
-	names := make([]string, m.NumFiles())
+	names := make([]string, ft.NumFiles())
 	for i := range names {
-		names[i] = m.FileSubject(i)
+		names[i] = ft.Subject(i)
 	}
 	found := rules.Find(names)
 	if len(found) == 0 && !priorBlock {

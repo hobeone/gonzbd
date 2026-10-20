@@ -319,7 +319,7 @@ func TestBuildDownloadFileList_Par2Summary(t *testing.T) {
 		if mErr != nil {
 			t.Fatalf("Manifest: %v", mErr)
 		}
-		if f, h, n := qjob.Progress().RecoveryReleased(m); f != 1 || h != 1 || n != 2 {
+		if f, h, n := qjob.Progress().RecoveryReleased(m.Files()); f != 1 || h != 1 || n != 2 {
 			t.Fatalf("fixture guard: RecoveryReleased = (%d, %d, %d), want (1, 1, 2)", f, h, n)
 		}
 		job := &Job{DownloadDir: dir, Job: qjob}

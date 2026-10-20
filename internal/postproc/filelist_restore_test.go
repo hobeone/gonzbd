@@ -39,7 +39,7 @@ func buildRestoredTestJob(t *testing.T, reason string, released bool) *job.Job {
 	// whose verdict released nothing still holds them.
 	if !released {
 		for fi := range m.NumFiles() {
-			if m.FileIsPar2Recovery(fi) {
+			if m.Files().IsPar2Recovery(fi) {
 				if err := j.SetFileFetchPolicy(fi, job.FetchIfNeeded); err != nil {
 					t.Fatalf("SetFileFetchPolicy: %v", err)
 				}

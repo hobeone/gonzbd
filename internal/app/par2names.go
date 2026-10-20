@@ -15,9 +15,8 @@ import (
 // restart's verification would read a top-level path that does not exist.
 // Relocation belongs to post-processing, where nothing re-derives a verdict
 // from these names afterwards.
-type manifestReader interface {
-	FileSubject(fileIdx int) string
-	FileBytes(fileIdx int) int64
+type fileNames interface {
+	Subject(fileIdx int) string
 	NumFiles() int
 }
 
@@ -26,8 +25,8 @@ type progressReader interface {
 	FileAssembledCRC32(fileIdx int) uint32
 }
 
-func resolvedName(m manifestReader, p progressReader, fi int) string {
-	name := m.FileSubject(fi)
+func resolvedName(ft fileNames, p progressReader, fi int) string {
+	name := ft.Subject(fi)
 	if fn := p.FileFilename(fi); fn != "" {
 		name = fn
 	}
@@ -44,11 +43,11 @@ func resolvedName(m manifestReader, p progressReader, fi int) string {
 // not tile it gapless from offset 0, or that has a failed article, reads as
 // CRC 0, which is R23's "unavailable" rather than a CRC of zero, and
 // par2Verdict treats it conservatively.
-func assembledFiles(m manifestReader, p progressReader) []par2.AssembledFile {
-	files := make([]par2.AssembledFile, m.NumFiles())
-	for fi := range m.NumFiles() {
+func assembledFiles(ft fileNames, p progressReader) []par2.AssembledFile {
+	files := make([]par2.AssembledFile, ft.NumFiles())
+	for fi := range ft.NumFiles() {
 		files[fi] = par2.AssembledFile{
-			FileName: resolvedName(m, p, fi),
+			FileName: resolvedName(ft, p, fi),
 			CRC32:    p.FileAssembledCRC32(fi),
 		}
 	}

@@ -524,7 +524,7 @@ func (p *pipeline) handleSuccessResult(ctx context.Context, res *downloader.Arti
 
 // registerFile ensures the assembler knows the destination path and part
 // count for a file before any of its articles are written. Subsequent calls are
-// no-ops. It names the file from the manifest's FileSubject, the filename the
+// no-ops. It names the file from the file table's Subject, the filename the
 // NZB parser already extracted from the subject line, so par2 files already
 // have their .par2 extension when the repair stage scans the directory.
 //
@@ -613,7 +613,7 @@ func (p *pipeline) registerFileAttempt(j *job.Job, m *job.Manifest, fileIdx int)
 		}
 	} else {
 		// First time resolving this file; registerFile records the name below.
-		loc = p.newJobFileLocation(name, m.FileSubject(fileIdx))
+		loc = p.newJobFileLocation(name, m.Files().Subject(fileIdx))
 	}
 
 	// Count only unfinished articles — on resume/retry, already-done

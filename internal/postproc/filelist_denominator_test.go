@@ -12,7 +12,7 @@ import (
 //
 // The history record derives completeness from JobProgress.ExpectedBytes() —
 // the bytes the job set out to fetch, which excludes recovery volumes it has
-// decided not to download. The stage log divided by Manifest.TotalBytes(),
+// decided not to download. The stage log divided by FileTable.TotalBytes(),
 // which counts them. For a job with both held-back volumes and real failures
 // the two disagreed, and the stage log's figure was the smaller one because
 // its denominator included bytes the job never intended to fetch.
@@ -45,7 +45,7 @@ func TestBuildDownloadFileList_FailurePercentSharesHistoryDenominator(t *testing
 
 	p := qjob.Progress()
 
-	expected, total, failed := p.ExpectedBytes(), m.TotalBytes(), p.FailedBytes()
+	expected, total, failed := p.ExpectedBytes(), m.Files().TotalBytes(), p.FailedBytes()
 	if failed == 0 {
 		t.Fatal("fixture failed to produce failed bytes; the rest of this test would be vacuous")
 	}

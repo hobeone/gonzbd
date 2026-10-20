@@ -46,13 +46,13 @@ func evictNZBWithRecoveryVolume(nPayload, nRecovery int) []byte {
 	return []byte(b.String())
 }
 
-// recoveryFileIndexIn returns the one manifest index FileIsPar2Recovery
+// recoveryFileIndexIn returns the one file index IsPar2Recovery
 // reports true for, failing the test if there is not exactly one.
 func recoveryFileIndexIn(t *testing.T, m *job.Manifest) int {
 	t.Helper()
 	idx := -1
 	for i := range m.NumFiles() {
-		if m.FileIsPar2Recovery(i) {
+		if m.Files().IsPar2Recovery(i) {
 			if idx != -1 {
 				t.Fatalf("manifest has more than one recovery volume: %d and %d", idx, i)
 			}

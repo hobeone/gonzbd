@@ -58,7 +58,7 @@ func SeedFileCRC(t testing.TB, j *job.Job, fileIdx int, crc uint32) {
 		t.Fatalf("SeedFileCRC: manifest of %s: %v", j.ID(), err)
 	}
 	lo, hi := m.FileRange(fileIdx)
-	size := m.FileBytes(fileIdx)
+	size := m.Files().Bytes(fileIdx)
 	for i := lo; i < hi; i++ {
 		row := durability.WrittenRow{FileIdx: fileIdx, ArtIdx: int32(i), Offset: size} //nolint:gosec // G115: bounded by NumArticles
 		if i == lo {

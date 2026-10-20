@@ -34,7 +34,7 @@ func buildDownloadFileList(j *Job) []string {
 
 	// On-demand par2 stats. Only the counts come from here — the byte figure
 	// comes from JobProgress below.
-	fetchedVols, heldVols, recoveryVols := p.RecoveryReleased(m)
+	fetchedVols, heldVols, recoveryVols := p.RecoveryReleased(m.Files())
 
 	// The bytes this job held back, derived rather than summed here. Summing
 	// them locally was a second implementation of the figure JobProgress
@@ -56,7 +56,7 @@ func buildDownloadFileList(j *Job) []string {
 	// starts at the FetchAlways zero. If that
 	// ever changes, heldVols and heldBytes stop describing the same set and the
 	// line printing both goes wrong before anything else does.
-	heldBytes := m.TotalBytes() - p.ExpectedBytes()
+	heldBytes := m.Files().TotalBytes() - p.ExpectedBytes()
 
 	// Download duration header.
 	var dlDuration time.Duration
@@ -205,7 +205,7 @@ func buildFileCompletionLines(j *Job) []string {
 	incomplete := 0
 	fileLines := make([]string, 0, numFiles)
 	for fi := range numFiles {
-		name := m.FileSubject(fi)
+		name := m.Files().Subject(fi)
 		if fn := p.FileFilename(fi); fn != "" {
 			name = fn
 		}

@@ -1859,7 +1859,7 @@ func (app *Application) maybeReleaseRecoveryVolumes(ctx context.Context, j *job.
 			// post-fetch assessment sizes the rest. If that volume did not
 			// parse, or the directory could not be read, every held volume
 			// is released.
-			fetched, _, _ := prog.RecoveryReleased(m)
+			fetched, _, _ := prog.RecoveryReleased(m.Files())
 			switch {
 			case sErr != nil:
 				reason = fmt.Sprintf("no usable par2 index found (err: %v)", sErr)
@@ -1872,7 +1872,7 @@ func (app *Application) maybeReleaseRecoveryVolumes(ctx context.Context, j *job.
 			app.log.Info("on-demand par2: no usable par2 index to verify against",
 				"job", jobID, "dir", dir, "err", sErr, "reason", reason)
 		default:
-			a, aErr := par2.AssessWithOptions(dir, sets, assembledFiles(m, prog), app.log, parseOpts)
+			a, aErr := par2.AssessWithOptions(dir, sets, assembledFiles(m.Files(), prog), app.log, parseOpts)
 			if aErr != nil {
 				outcome = outcomeRepair
 				reason = fmt.Sprintf("could not match downloaded files against the par2 index (err: %v)", aErr)

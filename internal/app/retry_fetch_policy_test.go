@@ -80,13 +80,13 @@ func seedCompletedFile(t *testing.T, db *sql.DB, downloadDir, jobName, jobID str
 	app.SeedWritten(t, durability.NewStore(db), jobID, rows)
 }
 
-// recoveryFileIndex returns the one manifest index FileIsPar2Recovery
+// recoveryFileIndex returns the one file index IsPar2Recovery
 // reports true for, failing the test if there is not exactly one.
 func recoveryFileIndex(t *testing.T, m *job.Manifest) int {
 	t.Helper()
 	idx := -1
 	for i := range m.NumFiles() {
-		if m.FileIsPar2Recovery(i) {
+		if m.Files().IsPar2Recovery(i) {
 			if idx != -1 {
 				t.Fatalf("manifest has more than one recovery volume: %d and %d", idx, i)
 			}

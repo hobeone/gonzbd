@@ -179,7 +179,7 @@ func TestRecoveryReleased(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			j, m := build(t)
 			tc.prep(t, j)
-			f, h, n := j.Progress().RecoveryReleased(m)
+			f, h, n := j.Progress().RecoveryReleased(m.Files())
 			if f != tc.fetched || h != tc.held || n != tc.total {
 				t.Errorf("RecoveryReleased = (%d, %d, %d), want (%d, %d, %d)", f, h, n, tc.fetched, tc.held, tc.total)
 			}

@@ -126,7 +126,7 @@ func (q *QuickCheckStage) assess(job *Job, sets []par2.Set, log *slog.Logger) (p
 			p := job.Progress()
 			files = make([]par2.AssembledFile, m.NumFiles())
 			for fi := range m.NumFiles() {
-				name := m.FileSubject(fi)
+				name := m.Files().Subject(fi)
 				if fn := p.FileFilename(fi); fn != "" {
 					name = fn
 				}

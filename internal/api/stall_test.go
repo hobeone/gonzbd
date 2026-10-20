@@ -60,7 +60,7 @@ func addTestDispatcherJob(t *testing.T, disp *dispatch.Dispatcher, name string) 
 	if err := disp.Add(context.Background(), j, dispatch.Header{
 		Name:     name,
 		Filename: name + ".nzb",
-		Bytes:    m.TotalBytes(),
+		Bytes:    m.Files().TotalBytes(),
 	}); err != nil {
 		t.Fatalf("Add: %v", err)
 	}

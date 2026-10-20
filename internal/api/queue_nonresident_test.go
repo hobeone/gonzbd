@@ -32,7 +32,7 @@ func newEvictedJob(t *testing.T) (*job.Job, dispatch.Row) {
 		Header: dispatch.Header{
 			Name:     "movie.nzb",
 			Filename: "movie.nzb",
-			Bytes:    m.TotalBytes(),
+			Bytes:    m.Files().TotalBytes(),
 		},
 		View: job.RenderView{
 			StateView: job.StateView{State: job.Fetching},
@@ -76,16 +76,16 @@ func TestBuildSlot_NonResidentJob(t *testing.T) {
 	}
 }
 
-// CurrentFile names the file being downloaded, which requires per-file
-// subjects from the manifest. A non-resident job is by definition not
-// downloading, so the field is empty rather than costing a disk read on
-// every poll.
-func TestBuildSlot_NonResidentJobHasNoCurrentFile(t *testing.T) {
+// CurrentFile names the first unfinished file, read from the file table and
+// progress record. A job with no file table attached has nothing to name, so
+// the field is empty.
+func TestBuildSlot_JobWithoutFileTableHasNoCurrentFile(t *testing.T) {
 	t.Parallel()
-	j, row := newEvictedJob(t)
+	_, row := newEvictedJob(t)
+	bare := job.New("bare", "bare.nzb", job.Policy{})
 
-	if got := buildSlot(row, j, false, 0, 0, nil, "").CurrentFile; got != "" {
-		t.Errorf("CurrentFile = %q, want empty for a non-resident job", got)
+	if got := buildSlot(row, bare, false, 0, 0, nil, "").CurrentFile; got != "" {
+		t.Errorf("CurrentFile = %q, want empty for a job with no file table", got)
 	}
 }
 
@@ -112,7 +112,7 @@ func newOnDemandPar2Job(t *testing.T) (*dispatch.Dispatcher, *job.Job) {
 	if err := disp.Add(context.Background(), j, dispatch.Header{
 		Name:     "par2.nzb",
 		Filename: "par2.nzb",
-		Bytes:    m.TotalBytes(),
+		Bytes:    m.Files().TotalBytes(),
 	}); err != nil {
 		t.Fatalf("Add: %v", err)
 	}
