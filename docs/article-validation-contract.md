@@ -100,8 +100,8 @@ durability contract's checks.
 a security invariant.** Where the state an older build persisted could, if
 trusted, hand an attacker something — rather than merely produce a stale
 figure or a missing field — the guard stays and the rule does not excuse it.
-There is exactly one such case today. `Manifest.UnmarshalJSON` re-applies
-`nzb.MessageIDIsFetchable` to every article ID it reads, because
+There is exactly one such case today. `job.DecodeArticles` re-applies
+`nzb.MessageIDIsFetchable` to every article ID it reads from a manifest file, because
 `internal/nntp` no longer validates Message-IDs at all (§5.A) and a manifest
 written before that parse-time rule existed can still carry a CR or LF — which
 is a command injection, not a formatting difference.
@@ -115,8 +115,8 @@ it is:
   → the rule does not apply, keep the guard and say why at the check.
 
 This is why §5.A can say "do not add a uniqueness check to `Manifest`
-construction" while `UnmarshalJSON` gained a *fetchability* check in the same
-release. A duplicate Message-ID resolves a lookup to the wrong article, which
+construction" while the manifest decoder (then `Manifest.UnmarshalJSON`, now
+`job.DecodeArticles`) gained a *fetchability* check in the same release. A duplicate Message-ID resolves a lookup to the wrong article, which
 is a correctness bug the ground rule genuinely does dispose of. A Message-ID
 carrying CRLF writes attacker-chosen bytes to a socket. Only the second earns
 a second enforcement point.
@@ -159,10 +159,12 @@ them; they are kept here because the shape recurs, not as open findings.
   truth that can disagree with the first, and under the no-backcompat rule there
   is no reason to keep the stored copy.
 
-The remedy for both was the same and was cheap: `UnmarshalJSON` decodes to the
-public `[]JobFile` shape and delegates to `newManifest` — it ends
-`*m = *newManifest(files)` (`internal/job/manifest.go:358`). One derivation, one
-owner, and the persisted `TotalBytes` field is no longer read at all.
+The remedy for both was the same and was cheap: the decoder handed its result
+to `newManifest` rather than filling the fields itself. One derivation, one
+owner, and the persisted `TotalBytes` field was no longer read at all. The
+manifest file has since become the article list alone (`Manifest.MarshalJSON`,
+`job.DecodeArticles`), so no per-file figure is persisted beside the articles
+and `NewManifestFromArticles` is the only door to `newManifest`.
 
 > **When a check and an owner would both work, take the owner.** A check must be
 > called at every site that could violate the invariant, and the failure mode of
@@ -231,7 +233,7 @@ the blast radius of getting an article's disposition wrong is really confined to
 that article. A Message-ID carrying CRLF fails both — the first because a
 manifest written before the parse-time rule existed can still carry it, the
 second because the cost lands on a socket rather than on one article's bytes —
-which is why `Manifest.UnmarshalJSON` keeps its fetchability check under either
+which is why `job.DecodeArticles` keeps its fetchability check under either
 rule.
 
 #### The worked example: what it did to this cluster
@@ -704,14 +706,14 @@ since narrowed the key from the job ID to the job instance, which still
 separates two jobs.
 
 **A7 holds for restored jobs too, and this is a ground-rule consequence rather
-than an enforcement.** `Manifest.UnmarshalJSON` replays stored article IDs
-verbatim and re-checks nothing, so an earlier draft recorded that the invariant
+than an enforcement.** the manifest decoder was once taken to replay stored article IDs
+verbatim and re-check nothing, so an earlier draft recorded that the invariant
 was "real for new jobs and untrue for old ones until the queue drains", and kept
 `messageIDIndex` working for the latter. The no-backcompat rule deletes that
 population outright: every manifest on disk was written by a parser that
 enforces A7. **Do not add a uniqueness check to `Manifest` construction** — it
 would guard a state that no longer occurs, on a structure F2 has deleted. (The
-*fetchability* check `UnmarshalJSON` does carry is a different matter, and the
+*fetchability* check `job.DecodeArticles` does carry is a different matter, and the
 Ground rules' security carve-out states why: a duplicate ID is a correctness
 bug the no-backcompat rule disposes of, a CRLF-bearing ID is an injection it
 does not.)
@@ -724,7 +726,7 @@ enforces the second half: it fails if non-test code outside `internal/nzb`
 names `nzb.Article` at all. It does not catch a write to an article already
 in a `File.Articles` slice, since the fields are exported (#404).
 Preserving that is what makes `newManifest` the right sole owner (Ground rules)
-— an `UnmarshalJSON` that builds the manifest by its own separate path is one
+— a decoder that builds the manifest by its own separate path is one
 edit away from being able to violate an invariant its sibling constructor
 cannot.
 
@@ -1045,7 +1047,7 @@ already thrown away.
 | F4 | split control messages out of `WriteRequest` | the `FileIdx` sentinels, the `JobID == ""` discrimination, the "control message convention" comment class |
 | F5 | ✅ **done** — carry the requested Message-ID on `pendingCmd` and match it in `runReader` | makes B1 structural rather than an assertion — see §5.B |
 | F6 | ✅ **done** — fold `NZB.MD5`'s digest over **accepted** article IDs, at the acceptance point | the digest-ordering rule, A1's carve-out, and the whole class "a new rejection silently changes every document's identity" — see §8, decision 1 |
-| F7 | ✅ **done** — `Manifest.UnmarshalJSON` delegates to `newManifest` | the second constructor, and the persisted `total_bytes` as a source of truth. Landed with the A-block because deleting `validateMessageID` rests on every in-process Manifest deriving its state from one owner |
+| F7 | ✅ **done** — the manifest decoder (then `Manifest.UnmarshalJSON`, now `job.DecodeArticles` with `NewManifestFromArticles`) delegates to `newManifest` | the second constructor, and the persisted `total_bytes` as a source of truth. Landed with the A-block because deleting `validateMessageID` rests on every in-process Manifest deriving its state from one owner |
 
 **Implementation planning for these lives in their issues, not here.** Each
 carries a blast radius, an ordering constraint and a red-green argument that are

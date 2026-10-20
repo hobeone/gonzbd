@@ -99,7 +99,7 @@ func (f *verifyFixture) rowAt(art int, off int64) durability.WrittenRow {
 
 func (f *verifyFixture) run(t *testing.T, ctx context.Context, rows []durability.WrittenRow, retry bool) (verifyResult, error) {
 	t.Helper()
-	return verifyJobFiles(ctx, f.m, f.files, rows, f.resolve, retry)
+	return verifyJobFiles(ctx, f.m.Files(), f.files, rows, f.resolve, retry)
 }
 
 func pick(rows []durability.WrittenRow, idx ...int) []durability.WrittenRow {
@@ -859,17 +859,17 @@ func TestFileFinishable(t *testing.T) {
 		{Subject: "empty.bin"},
 	})
 	all := func(int) bool { return true }
-	if !fileFinishable(m, 0, job.FetchAlways, false, all) {
+	if !fileFinishable(m.Files(), 0, job.FetchAlways, false, all) {
 		t.Fatal("fixture guard: a fully resolved FetchAlways file is not finishable, so every negative below passes for the wrong reason")
 	}
 	for name, got := range map[string]bool{
-		"an unresolved article": fileFinishable(m, 0, job.FetchAlways, false, func(i int) bool { return i != 1 }),
-		"already complete":      fileFinishable(m, 0, job.FetchAlways, true, all),
-		"an on-demand volume":   fileFinishable(m, 0, job.FetchIfNeeded, false, all),
-		"a discarded volume":    fileFinishable(m, 0, job.FetchNever, false, all),
-		"a file of no articles": fileFinishable(m, 1, job.FetchAlways, false, all),
-		"an out-of-range file":  fileFinishable(m, 2, job.FetchAlways, false, all),
-		"a negative file":       fileFinishable(m, -1, job.FetchAlways, false, all),
+		"an unresolved article": fileFinishable(m.Files(), 0, job.FetchAlways, false, func(i int) bool { return i != 1 }),
+		"already complete":      fileFinishable(m.Files(), 0, job.FetchAlways, true, all),
+		"an on-demand volume":   fileFinishable(m.Files(), 0, job.FetchIfNeeded, false, all),
+		"a discarded volume":    fileFinishable(m.Files(), 0, job.FetchNever, false, all),
+		"a file of no articles": fileFinishable(m.Files(), 1, job.FetchAlways, false, all),
+		"an out-of-range file":  fileFinishable(m.Files(), 2, job.FetchAlways, false, all),
+		"a negative file":       fileFinishable(m.Files(), -1, job.FetchAlways, false, all),
 		"no manifest":           fileFinishable(nil, 0, job.FetchAlways, false, all),
 	} {
 		if got {
@@ -963,22 +963,22 @@ func TestFinishIfResolved(t *testing.T) {
 	fr := f.files[0]
 	every := fileReadback{verified: f.rows}
 
-	if ok, err := finishIfResolved(t.Context(), f.m, fr, f.loc(), fileReadback{deleteAll: true}, false); ok || err != nil {
+	if ok, err := finishIfResolved(t.Context(), f.m.Files(), fr, f.loc(), fileReadback{deleteAll: true}, false); ok || err != nil {
 		t.Errorf("untrusted file: finished=%v err=%v, want neither", ok, err)
 	}
-	if ok, err := finishIfResolved(t.Context(), f.m, fr, f.loc(), fileReadback{}, false); ok || err != nil {
+	if ok, err := finishIfResolved(t.Context(), f.m.Files(), fr, f.loc(), fileReadback{}, false); ok || err != nil {
 		t.Errorf("nothing verified: finished=%v err=%v, want neither", ok, err)
 	}
 	ctx, cancel := context.WithCancel(t.Context())
 	cancel()
-	if ok, err := finishIfResolved(ctx, f.m, fr, f.loc(), every, false); ok || !errors.Is(err, context.Canceled) {
+	if ok, err := finishIfResolved(ctx, f.m.Files(), fr, f.loc(), every, false); ok || !errors.Is(err, context.Canceled) {
 		t.Errorf("cancelled: finished=%v err=%v, want a context error", ok, err)
 	}
 	missing := jobFile{Dir: filepath.Dir(f.path), Name: "missing.bin"}
-	if ok, err := finishIfResolved(t.Context(), f.m, fr, missing, every, false); ok || err == nil {
+	if ok, err := finishIfResolved(t.Context(), f.m.Files(), fr, missing, every, false); ok || err == nil {
 		t.Errorf("finish fails: finished=%v err=%v, want the error", ok, err)
 	}
-	if ok, err := finishIfResolved(t.Context(), f.m, fr, f.loc(), every, false); !ok || err != nil {
+	if ok, err := finishIfResolved(t.Context(), f.m.Files(), fr, f.loc(), every, false); !ok || err != nil {
 		t.Errorf("every article verified: finished=%v err=%v, want finished", ok, err)
 	}
 }
@@ -1103,7 +1103,7 @@ func TestCleanUnrecordedRetryFiles(t *testing.T) {
 		return jobFile{Dir: dir, Name: fn}, nil
 	}
 
-	cleanUnrecordedRetryFiles("job-test", m, files, fsutil.SanitizeOptions{}, locate, nil)
+	cleanUnrecordedRetryFiles("job-test", m.Files(), files, fsutil.SanitizeOptions{}, locate, nil)
 
 	if _, err := os.Stat(recordedPath); err != nil {
 		t.Errorf("recorded.bin was unexpectedly removed: %v", err)

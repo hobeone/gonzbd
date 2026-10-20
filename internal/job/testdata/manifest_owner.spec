@@ -1,5 +1,5 @@
 pkg ./internal/job/
-run ^(TestNewManifestFromArticles_RefusesAnArticleCountTheTableDoesNotHave|TestAttachArticles_RefusesAManifestFromAnotherTable|TestManifestRefusesAnUnfetchableMessageIDFromDisk)$
+run ^(TestNewManifestFromArticles_RefusesAnArticleCountTheTableDoesNotHave|TestAttachArticles_RefusesAManifestFromAnotherTable|TestDecodeArticles_RefusesAnUnfetchableMessageID)$
 
 [the article-count check is dropped from the constructor]
 file internal/job/manifest.go
@@ -17,10 +17,10 @@ file internal/job/content.go
 	if false {
 --- end
 
-[the Message-ID re-check is dropped from UnmarshalJSON]
+[the Message-ID re-check is dropped from DecodeArticles]
 file internal/job/manifest.go
 --- anchor
-			if !nzb.MessageIDIsFetchable(a.ID) {
+		if !nzb.MessageIDIsFetchable(a.ID) {
 --- replace
-			if !nzb.MessageIDIsFetchable(a.ID) && false {
+		if !nzb.MessageIDIsFetchable(a.ID) && false {
 --- end

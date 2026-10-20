@@ -165,7 +165,7 @@ func TestDeregister_IsTotal(t *testing.T) {
 // TestBeginRemovalLocked_IsTheSoleConstructor pins that the marker and the
 // token are raised together. They were minted at two sites before review
 // caught it, which is the two-constructors smell Rule 2 names — the same shape
-// that let newManifest and UnmarshalJSON diverge over totalBytes.
+// that let newManifest and the former UnmarshalJSON diverge over totalBytes.
 func TestBeginRemovalLocked_IsTheSoleConstructor(t *testing.T) {
 	d := newTestDispatcher(t)
 	if err := d.Add(context.Background(), job.New("j1", "n", job.Policy{}), Header{}); err != nil {

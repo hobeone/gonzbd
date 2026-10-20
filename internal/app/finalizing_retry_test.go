@@ -256,10 +256,10 @@ func TestRetryHistoryJob_AFinalizerStartingAfterTheClaimKeepsItsState(t *testing
 	if oErr != nil {
 		t.Errorf("the finalizer's manifest is gone after the refused retry: %v", oErr)
 	} else {
-		disk, dErr := decodeManifest(f)
+		disk, dErr := decodeArticles(f)
 		_ = f.Close()
-		if dErr != nil || disk.NumFiles() != m.NumFiles() {
-			t.Errorf("the finalizer's manifest was rewritten by the refused retry: %d files (err %v), want %d", disk.NumFiles(), dErr, m.NumFiles())
+		if dErr != nil || len(disk) != m.NumArticles() {
+			t.Errorf("the finalizer's manifest was rewritten by the refused retry: %d articles (err %v), want %d", len(disk), dErr, m.NumArticles())
 		}
 	}
 	if got := jobFilesCount(t, application, id); got != rows {

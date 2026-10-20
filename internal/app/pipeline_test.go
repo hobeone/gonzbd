@@ -243,8 +243,8 @@ func TestPipeline_HandleFailureResult_UnregisterableFileIsNotForwarded(t *testin
 		t.Errorf("OnWriteFault fired for a failure whose file was never registered: %s", f)
 	}
 
-	if err := j.RestoreContent(m); err != nil {
-		t.Fatalf("RestoreContent: %v", err)
+	if err := j.AttachArticles(m); err != nil {
+		t.Fatalf("AttachArticles: %v", err)
 	}
 	if j.Progress().ArticleFailed(0) {
 		t.Error("article 0 was marked failed without being forwarded to its file")

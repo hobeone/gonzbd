@@ -29,7 +29,7 @@ var bitsetWriters = map[string][]string{
 
 	"emitted.Set": {"markEmitted"},
 	// ClearArticleEmitted clears the bit alone only while the manifest is
-	// evicted, leaving the counters to RestoreContent's recompute.
+	// evicted, leaving the counters to AttachArticles' recompute.
 	"emitted.Clear": {"ClearArticleEmitted", "clearEmitted", "markDone", "resetForReload", "setFailedBits"},
 }
 

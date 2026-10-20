@@ -12,7 +12,7 @@ import (
 // for the content tier: nothing may produce a (Manifest, JobProgress) pair
 // except AttachContent, so the two can never describe different jobs.
 //
-// newManifest and Manifest.UnmarshalJSON populating the same fields by two
+// newManifest and the former Manifest.UnmarshalJSON populating the same fields by two
 // paths is the defect this shape exists to prevent — they had already
 // diverged over totalBytes (see the spec's Rule 2, "Two constructors for one
 // type").
@@ -854,7 +854,7 @@ func TestJobFileFetchPolicy_ReadsWithoutCloningProgress(t *testing.T) {
 // evictedThreeArticleJob builds a job with one 300-byte file of three 100-byte
 // articles and no par2: articles 0 and 1 done, article 2 dispatched (its
 // Emitted bit set) when the manifest is evicted. It returns the manifest so a
-// test can re-hydrate with RestoreContent, as appResidency.Hydrate does with
+// test can re-hydrate with AttachArticles, as appResidency.Hydrate does with
 // the one it re-reads from disk.
 func evictedThreeArticleJob(t *testing.T) (*Job, *Manifest) {
 	t.Helper()
@@ -1034,7 +1034,7 @@ func TestClearArticleEmitted_ReturnsAnEvictedArticleToOutstanding(t *testing.T) 
 // that needs no manifest and landed between the two went to the record the
 // install replaced: a failed bit lost, an article left Emitted, a stamp or a
 // par2 reason gone. This drives each such write in that position and requires
-// all of them after RestoreContent.
+// all of them after AttachArticles.
 func TestAttachArticles_KeepsWritesMadeWhileEvicted(t *testing.T) {
 	j, m := evictedThreeArticleJob(t)
 	if err := j.MarkArticleEmitted(1); err == nil {

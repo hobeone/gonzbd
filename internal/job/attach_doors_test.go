@@ -77,59 +77,6 @@ func TestAttachArticles_RequiresFiles(t *testing.T) {
 	}
 }
 
-func restoreFixture(t *testing.T, counts ...int) (*Job, *Manifest) {
-	t.Helper()
-	specs := make([]FileSpec, 0, len(counts))
-	var arts []JobArticle
-	for fi, n := range counts {
-		specs = append(specs, FileSpec{Subject: string(rune('a'+fi)) + ".bin", Bytes: int64(n) * 100, ArticleCount: n})
-		for k := range n {
-			arts = append(arts, JobArticle{ID: "<x@x>", Bytes: 100, Number: k + 1})
-		}
-	}
-	m, err := NewManifestFromArticles(NewFileTable(specs), arts)
-	if err != nil {
-		t.Fatalf("NewManifestFromArticles: %v", err)
-	}
-	j := New("j", "j", Policy{})
-	if err := j.AttachContent(m); err != nil {
-		t.Fatalf("AttachContent: %v", err)
-	}
-	return j, m
-}
-
-// RestoreContent is the production hydration door: the manifest it receives
-// was read from disk with a table of its own. A same-total manifest that
-// splits the articles differently between files must be refused, or its
-// articles would index against the wrong files.
-func TestRestoreContent_RefusesASameCountDifferentSplit(t *testing.T) {
-	j, _ := restoreFixture(t, 3, 1)
-	j.Evict()
-	_, other := restoreFixture(t, 1, 3)
-	if err := j.RestoreContent(other); err == nil {
-		t.Fatal("RestoreContent accepted a manifest that splits the same 4 articles differently")
-	}
-	if j.Resident() {
-		t.Error("a refused RestoreContent left the job resident")
-	}
-}
-
-func TestRestoreContent_AcceptsEqualSpecsFromAnotherTable(t *testing.T) {
-	j, _ := restoreFixture(t, 3, 1)
-	j.Evict()
-	_, same := restoreFixture(t, 3, 1)
-	if err := j.RestoreContent(same); err != nil {
-		t.Fatalf("RestoreContent: %v", err)
-	}
-	m, err := j.Manifest()
-	if err != nil {
-		t.Fatalf("Manifest: %v", err)
-	}
-	if m.Files() != j.Files() {
-		t.Error("the restored manifest is not indexed over the job's own table")
-	}
-}
-
 // Re-attaching the same manifest after Evict recomputes the counters in place
 // from the bits written while evicted, and refuses a second attach while the
 // manifest is still resident.

@@ -27,6 +27,7 @@ func TestAppResidency_EvictEndsAHydrationBlockedInItsManifestRead(t *testing.T) 
 	w := blockingManifest(t, dir, "abc123")
 
 	j := job.New("abc123", "test", job.PolicyFromPP(3))
+	attachTestFiles(t, j)
 	r := newAppResidency(func(string) (*job.Job, bool) { return j, true }, dir, nil, nil)
 	hydrated := make(chan error, 1)
 	go func() { hydrated <- r.Hydrate(context.Background(), "abc123") }()
@@ -78,7 +79,7 @@ func TestAppResidency_EvictCancelsTheHydrationThatReplacesTheOneItCancelled(t *t
 	ready2 := make(chan struct{})
 	second := make(chan error, 1)
 	go func() {
-		_, err := r.readManifest(ctx2, "abc123")
+		_, err := r.readArticles(ctx2, "abc123")
 		second <- err
 		r.mu.Lock()
 		delete(r.cancels, "abc123")
@@ -141,7 +142,7 @@ func blockingManifest(t *testing.T, dir, id string) *os.File {
 	t.Cleanup(func() { _ = w.Close() })
 	var buf bytes.Buffer
 	zw := gzip.NewWriter(&buf)
-	if _, err := zw.Write([]byte(`{"files":[{"subject":"test.rar","bytes":100,"articles":[{"id":"m1","bytes":100,"number":1}]}]}`)); err != nil {
+	if _, err := zw.Write([]byte(`{"articles":[{"id":"m1","bytes":100,"number":1}]}`)); err != nil {
 		t.Fatalf("gzip write: %v", err)
 	}
 	if err := zw.Close(); err != nil {

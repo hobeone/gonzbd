@@ -19,9 +19,20 @@ import (
 	"github.com/hobeone/gonzbd/internal/storagefault"
 )
 
+// attachTestFiles gives j the one-file, one-article table writeTestManifest's
+// manifest is built over. A job that already has a file table hydrates from
+// its manifest alone, which is the shape these tests exercise with no record
+// store.
+func attachTestFiles(t *testing.T, j *job.Job) {
+	t.Helper()
+	if err := j.AttachFiles(job.NewFileTable([]job.FileSpec{{Subject: "test.rar", Bytes: 100, ArticleCount: 1}})); err != nil {
+		t.Fatalf("AttachFiles: %v", err)
+	}
+}
+
 func writeTestManifest(t *testing.T, path string, _ *job.Job) {
 	t.Helper()
-	content := `{"files":[{"subject":"test.rar","bytes":100,"articles":[{"id":"m1","bytes":100,"number":1}]}]}`
+	content := `{"articles":[{"id":"m1","bytes":100,"number":1}]}`
 	var buf bytes.Buffer
 	zw := gzip.NewWriter(&buf)
 	if _, err := zw.Write([]byte(content)); err != nil {
@@ -42,6 +53,7 @@ func TestAppResidency_HydrateThenEvict(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
 	j := job.New("abc123", "test", job.PolicyFromPP(3))
+	attachTestFiles(t, j)
 	writeTestManifest(t, filepath.Join(dir, "abc123.json.gz"), j)
 
 	r := newAppResidency(func(id string) (*job.Job, bool) {
@@ -87,7 +99,7 @@ func TestAppResidency_HydrateThenEvict(t *testing.T) {
 		t.Fatal("re-Hydrate must leave the job resident")
 	}
 	if !j.Progress().ArticleDone(0) {
-		t.Fatal("re-hydration re-zeroed progress counters instead of preserving them via RestoreContent")
+		t.Fatal("re-hydration re-zeroed progress counters instead of preserving them via AttachArticles")
 	}
 }
 
@@ -98,6 +110,7 @@ func TestAppResidency_RehydrationKeepsAFailureRecordedWhileEvicted(t *testing.T)
 	t.Parallel()
 	dir := t.TempDir()
 	j := job.New("abc123", "test", job.PolicyFromPP(3))
+	attachTestFiles(t, j)
 	writeTestManifest(t, filepath.Join(dir, "abc123.json.gz"), j)
 	r := newAppResidency(func(id string) (*job.Job, bool) {
 		if id == "abc123" {
@@ -175,6 +188,7 @@ func TestAppResidency_HydrateWaitsForAHydrationInFlight(t *testing.T) {
 	dir := t.TempDir()
 	newJob := func() *job.Job {
 		j := job.New("abc123", "test", job.PolicyFromPP(3))
+		attachTestFiles(t, j)
 		writeTestManifest(t, filepath.Join(dir, "abc123.json.gz"), j)
 		return j
 	}
@@ -201,9 +215,12 @@ func TestAppResidency_HydrateWaitsForAHydrationInFlight(t *testing.T) {
 		r, finish := inFlight(j)
 		done := make(chan error, 1)
 		go func() { done <- r.Hydrate(context.Background(), "abc123") }()
-		m := job.NewManifest([]job.JobFile{{Subject: "test.rar", Bytes: 100, Articles: []job.JobArticle{{ID: "m1", Bytes: 100, Number: 1}}}})
-		if err := j.AttachContent(m); err != nil {
-			t.Fatalf("AttachContent: %v", err)
+		m, err := job.NewManifestFromArticles(j.Files(), []job.JobArticle{{ID: "m1", Bytes: 100, Number: 1}})
+		if err != nil {
+			t.Fatalf("NewManifestFromArticles: %v", err)
+		}
+		if err := j.AttachArticles(m); err != nil {
+			t.Fatalf("AttachArticles: %v", err)
 		}
 		finish()
 		if err := <-done; err != nil {
@@ -314,8 +331,10 @@ func TestAppResidency_HydrateLeavesNoCancelBehind(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
 	attached := job.New("abc123", "test", job.PolicyFromPP(3))
+	attachTestFiles(t, attached)
 	writeTestManifest(t, filepath.Join(dir, "abc123.json.gz"), attached)
 	missing := job.New("def456", "test", job.PolicyFromPP(3)) // no manifest written
+	attachTestFiles(t, missing)
 	jobs := map[string]*job.Job{"abc123": attached, "def456": missing}
 	r := newAppResidency(func(id string) (*job.Job, bool) {
 		j, found := jobs[id]

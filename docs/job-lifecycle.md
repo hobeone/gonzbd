@@ -33,7 +33,7 @@ persisted job by calling `New` and then replaying it forward through the
 exported doors along `replayPath` (`internal/dispatch/dispatch.go`). A second
 constructor was escalated under the Decision Protocol and declined — Standing
 Design Rule 2 names it as the first smell, and `newManifest` /
-`Manifest.UnmarshalJSON` are the worked example that had already diverged over
+the since-deleted `Manifest.UnmarshalJSON` are the worked example that had already diverged over
 `totalBytes` before anyone noticed.
 
 ### Policy, not a PP level
@@ -1210,7 +1210,7 @@ strands an article.
 With the manifest evicted, `ClearArticleEmitted` writes the bit alone and
 `MarkArticleFailed` writes the bits and the failure's charge, so a reduced
 charge (#432) survives; both leave the counters to
-the `recompute` in `RestoreContent` at the next hydration. Until then
+the `recompute` in `AttachArticles` at the next hydration. Until then
 `FailedBytes`, `PendingArticles` and `ArticlesFailed` lag the bits. A failure
 changes no fetch policy at any residency; held volumes wait for the
 Assessing-time verdict in `maybeReleaseRecoveryVolumes`.
@@ -1221,7 +1221,7 @@ server set retries them, and a job the reload finds evicted holds failures
 recorded through `MarkArticleFailed` at any residency; skipping it kept them
 failed for the rest of the process. Evicted, it resets the emitted and failed
 bits alone, using the file ranges the progress record holds, and leaves the
-counters to the same `recompute` in `RestoreContent`.
+counters to the same `recompute` in `AttachArticles`.
 
 **Residency is not derived from position.** Either you hold a manifest or you
 do not, and `Job.Manifest() (*Manifest, error)` makes every dependence on one a
@@ -1272,7 +1272,7 @@ manifest-derived sizes — `Job.TotalBytes`, `Job.RecoveryBytes` and
 `Job.NumFiles` and `JobProgress.TotalArticles` read from the `JobProgress`
 sized to the manifest. These are computed once at ingest and never
 change, so they live in the always-resident tier rather than behind a fallible
-handle. `Evict` clears only the manifest, and `AttachContent` is the only
+handle. `Evict` clears only the manifest, and `AttachFiles` is the only
 writer of the progress pointer
 (`TestProgressPointerWriters_MatchTheEnumerationStatedInProse`).
 
@@ -1292,18 +1292,19 @@ intent rather than the code.
 That window is why `Job` carries a small set of `restored*` fields for
 progress-tier state recovered from the queue-state row before the record exists
 — the download stamps and the par2 release reason.
-The Job-level accessors read them while `progress` is nil; `AttachContent`
+The Job-level accessors read them while `progress` is nil; `AttachFiles`
 seeds the fresh record from them **through the ordinary restore doors** and
 zeroes them, so the two are never both authoritative and the stamp filter is
 not reimplemented. Without that seeding those writes were simply dropped, and
 the next persist wrote the zeroes back over the stored row.
 
-`AttachContent` refuses a second attach rather than silently replacing a live
+`AttachFiles` refuses a second attach rather than silently replacing a live
 record: it builds a *fresh* `JobProgress`, so a re-attach would discard every
 done/failed bit and both stamps with no error — and since the first attach
 zeroed the Job-level copies, there would be nothing left to seed the
-replacement from either. `RestoreContent` is the door for a job that has run
-before, and it verifies `describesSameJobAs` rather than trusting the caller.
+replacement from either. `AttachArticles` is the door for a job that has run
+before, and it checks that the manifest was built from the job's own file table
+(by pointer) rather than trusting the caller.
 It re-attaches the manifest beside the job's own record and recomputes that
 record in place, under the lock its writers take. It never installs a copy:
 writes that need no manifest land on the record at any residency, and a copy
@@ -1472,10 +1473,10 @@ a permanent failure in an incomplete file is not persisted and comes back
 Outstanding. `docs/durability-contract.md` §3 is the contract.
 
 Rows index articles **globally**, so placing them needs the file boundaries.
-Those come from `Manifest.fileArticleOffsets`, the prefix sum `newManifest`
-builds over the manifest's own file list (`internal/job/manifest.go`). No
-per-file width is stored: verification runs inside `Hydrate` after
-`readManifest`, so the boundaries are always already in hand.
+Those come from the `FileTable`'s offsets, the prefix sum it builds over its
+own file list (`internal/job/filetable.go`). No per-file width is stored:
+`Hydrate` builds the table from the job's `job_files` rows (`fileTableFromRows`)
+before it verifies anything, so the boundaries are always already in hand.
 
 This is why there is no cheaper non-resident replay. A job that has not been
 hydrated has no `JobProgress` at all, so it reports its header's full byte count
@@ -1502,7 +1503,7 @@ cannot complete for a reason about the device, nothing is attached, the job is
 parked until the user resumes that job, and the next hydration starts again — so a job a hydration attached
 was verified first (a freshly ingested job has no rows to verify, and a retry
 verifies its rebuilt job itself in `verifyRetry`), and a later eviction and
-re-hydration (`RestoreContent`) has nothing to re-check.
+re-hydration (`AttachArticles` alone) has nothing to re-check.
 
 It reads every incomplete file with rows whatever the job's position, because a
 crash can leave a file finished but not yet flagged `complete=1` in a job that
@@ -1726,23 +1727,27 @@ land. All of it existed because dropping a file renumbered every
 
 ### The size guard, and what it does not cover
 
-`describesSameJobAs` compares article and file counts and is `RestoreContent`'s
-guard. Its purpose is unchanged: a `Manifest`/`JobProgress` size mismatch would
-panic inside `recompute` on a background goroutine with no `recover`, so it is
-reported instead of tolerated.
+The guard is `NewManifestFromArticles`' count check, backed by
+`AttachArticles`' pairing check. A manifest is built only over a `FileTable`
+and refused if its article count is not that table's `TotalArticles`;
+`AttachArticles` then refuses one built over a table other than the job's own.
+Together they stand where `describesSameJobAs` stood: a `Manifest`/`JobProgress`
+size mismatch would panic inside `recompute` on a background goroutine with no
+`recover`, so it is reported instead of tolerated.
 
-Its cause has changed. No write path this process performs can produce a torn
-pair: the manifest blob is written once, before the ingest transaction opens,
-so a crash between them leaves an orphan manifest and no job row rather than a
-disagreeing pair. A mismatch that reaches the guard now means a truncated or
-damaged manifest blob.
+No write path this process performs can produce a torn pair: the manifest
+blob is written once, before the ingest transaction opens, so a crash between
+them leaves an orphan manifest and no job row rather than a disagreeing pair.
+A mismatch that reaches the guard means a truncated or damaged manifest blob
+(`TestHydrate_RefusesAManifestWhoseCountDisagreesWithTheRows`).
 
-**It is not what detects `job_files` rows altered out of band.** The restore
-path fills the progress record by `file_index` under a bounds check and never
-resizes it, so rows deleted or renumbered outside this process still satisfy
-the size check and silently attach one file's metadata and outcomes to another
-file's slot — no error, no log. What a manifest/`job_files` disagreement should
-do is open (§17).
+**It is not what detects `job_files` rows altered out of band, beyond their
+totals.** `fileTableFromRows` refuses rows that skip or repeat a file index, and
+the count check refuses rows whose article counts no longer add up to the
+manifest's. Rows that were swapped or renumbered with the same totals still
+build a table, and attach one file's subject and outcomes to another file's
+slot — no error, no log. What a manifest/`job_files` disagreement should do
+is open (§17).
 
 ---
 

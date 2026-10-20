@@ -125,10 +125,13 @@ func seedCompletedJob(t *testing.T, repo *history.Repository, adminDir, id, name
 	if err := store.Save(t.Context(), p); err != nil {
 		t.Fatalf("store.Save: %v", err)
 	}
+	// The structure hydration builds the file table from: what the manifest's
+	// table holds, as ingest's seedJobFiles writes it.
+	lo, hi := m.FileRange(0)
 	_, err = repo.DB().ExecContext(t.Context(),
 		`INSERT INTO job_files (job_id, file_index, subject, bytes, article_count, complete, fetch_policy, filename)
-		VALUES (?, ?, '', 0, 0, ?, ?, ?)`,
-		j.ID(), 0, 1, int(job.FetchAlways), "recovery.bin",
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+		j.ID(), 0, m.FileSubject(0), m.FileBytes(0), hi-lo, 1, int(job.FetchAlways), "recovery.bin",
 	)
 	if err != nil {
 		t.Fatalf("insert job_files: %v", err)

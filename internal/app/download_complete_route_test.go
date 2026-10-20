@@ -106,14 +106,16 @@ func persistCompleteJob(t *testing.T, repo *history.Repository, adminDir string,
 		if fi == vol {
 			complete, fetch = 0, job.FetchIfNeeded
 		}
+		// The structure hydration builds the file table from: what the
+		// manifest's table holds, as ingest's seedJobFiles writes it.
+		lo, hi := m.FileRange(fi)
 		if _, err := repo.DB().ExecContext(t.Context(),
 			`INSERT INTO job_files (job_id, file_index, subject, bytes, article_count, complete, fetch_policy, filename)
-			VALUES (?, ?, '', 0, 0, ?, ?, '')`,
-			j.ID(), fi, complete, int(fetch)); err != nil {
+			VALUES (?, ?, ?, ?, ?, ?, ?, '')`,
+			j.ID(), fi, m.FileSubject(fi), m.FileBytes(fi), hi-lo, complete, int(fetch)); err != nil {
 			t.Fatalf("insert job_files: %v", err)
 		}
 		if complete == 1 {
-			lo, _ := m.FileRange(fi)
 			app.SeedWritten(t, durability.NewStore(repo.DB()), j.ID(), []durability.WrittenRow{
 				{FileIdx: fi, ArtIdx: int32(lo), Offset: 0, Length: 1024, //nolint:gosec // G115: fixture index
 					CRC32: crc32.ChecksumIEEE(make([]byte, 1024))},

@@ -228,7 +228,7 @@ func resolveCrashJob(ctx context.Context, db *sql.DB, explicitID, releaseName st
 	return "", "", fmt.Errorf("no job matching release %q found in dispatch_jobs", releaseName)
 }
 
-func readGzipQueueManifest(manifestFile string) (*job.Manifest, error) {
+func readGzipQueueManifest(manifestFile string) ([]job.JobArticle, error) {
 	f, err := os.Open(manifestFile) //nolint:gosec // manifest path within adminDir
 	if err != nil {
 		return nil, err
@@ -239,27 +239,23 @@ func readGzipQueueManifest(manifestFile string) (*job.Manifest, error) {
 	if err != nil {
 		return nil, fmt.Errorf("open gzip queue manifest %s: %w", manifestFile, err)
 	}
-	data, readErr := io.ReadAll(gz)
+	arts, decodeErr := job.DecodeArticles(gz)
 	_ = gz.Close() //nolint:errcheck // best effort close
-	if readErr != nil {
-		return nil, fmt.Errorf("read gzip queue manifest %s: %w", manifestFile, readErr)
+	if decodeErr != nil {
+		return nil, fmt.Errorf("read gzip queue manifest %s: %w", manifestFile, decodeErr)
 	}
-	var jm job.Manifest
-	if err := json.Unmarshal(data, &jm); err != nil {
-		return nil, fmt.Errorf("unmarshal queue manifest %s: %w", manifestFile, err)
-	}
-	return &jm, nil
+	return arts, nil
 }
 
 func resolveArticleIDs(adminDir, jobID string, m *ReleaseManifest) (func(artIdx int) (string, bool), error) {
 	manifestFile := filepath.Join(adminDir, "queue", "manifests", jobID+".json.gz")
-	jm, err := readGzipQueueManifest(manifestFile)
+	arts, err := readGzipQueueManifest(manifestFile)
 	if err == nil {
 		return func(artIdx int) (string, bool) {
-			if artIdx < 0 || artIdx >= jm.NumArticles() {
+			if artIdx < 0 || artIdx >= len(arts) {
 				return "", false
 			}
-			id := jm.ArticleID(artIdx)
+			id := arts[artIdx].ID
 			return id, id != ""
 		}, nil
 	}

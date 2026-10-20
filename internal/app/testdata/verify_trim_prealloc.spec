@@ -25,7 +25,7 @@ file internal/app/verify.go
 [the finish is not told the preallocated size]
 file internal/app/verify.go
 --- anchor
-	if err := finishFileByPath(loc, maxEnd, preallocSize(m, f.FileIndex)); err != nil {
+	if err := finishFileByPath(loc, maxEnd, preallocSize(ft, f.FileIndex)); err != nil {
 --- replace
 	if err := finishFileByPath(loc, maxEnd, 0); err != nil {
 --- end

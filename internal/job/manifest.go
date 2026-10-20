@@ -3,6 +3,7 @@ package job
 import (
 	"encoding/json"
 	"fmt"
+	"io"
 	"sort"
 	"strings"
 
@@ -17,15 +18,14 @@ import (
 //
 // It is immutable after construction and safe to share by reference — every
 // Job.Manifest caller gets the same pointer — because the only writes to its
-// fields happen in newManifest (UnmarshalJSON reaches it too, replacing the
-// whole value rather than editing fields). newManifest is the sole
-// constructor and refuses an article list whose length is not the table's
-// TotalArticles. NewManifestFromArticles is its exported door; NewManifest is
-// the wrapper that ingest and tests use to build the table and the manifest
-// together from []JobFile.
+// fields happen in newManifest. newManifest is the sole constructor and
+// refuses an article list whose length is not the table's TotalArticles.
+// NewManifestFromArticles is its exported door; NewManifest is the wrapper
+// that ingest and tests use to build the table and the manifest together from
+// []JobFile.
 //
-// The JSON form is nested files carrying their articles; a later change makes
-// it articles-only.
+// The JSON form is the article list alone (MarshalJSON, DecodeArticles); the
+// file structure is rebuilt from the job_files rows.
 type Manifest struct {
 	ft            *FileTable
 	articleIDs    []string // flat, global article index
@@ -34,8 +34,7 @@ type Manifest struct {
 }
 
 // JobFile is the intermediate, NZB-parsed shape NewManifest converts into a
-// FileTable and a Manifest; internal/app's BuildIngestJob builds it, and
-// UnmarshalJSON decodes to it. It is not part of Job's runtime state —
+// FileTable and a Manifest; internal/app's BuildIngestJob builds it. It is not part of Job's runtime state —
 // construction scaffolding only.
 //
 //nolint:revive // stutter is preserved for consistency during queue -> job transition
@@ -94,7 +93,7 @@ func NewManifestFromArticles(ft *FileTable, articles []JobArticle) (*Manifest, e
 //
 // NewManifestFromArticles is its only caller (`git grep -n 'newManifes[t](' --
 // '*.go' ':!*_test.go'` returns 2 lines: that call and this declaration), and
-// NewManifest and UnmarshalJSON reach it through that door, so every Manifest
+// NewManifest reaches it through that door, so every Manifest
 // in the process has its arrays sized against its table here and nowhere else.
 func newManifest(ft *FileTable, articles []JobArticle) (*Manifest, error) {
 	if ft == nil {
@@ -200,110 +199,71 @@ func (m *Manifest) RecoveryBytes() int64 { return m.ft.RecoveryBytes() }
 // index. Forwards to Files().
 func (m *Manifest) RecoveryFiles() int { return m.ft.RecoveryFiles() }
 
-// manifestJSONArticle is one article's on-disk shape within a manifestJSONFile.
+// manifestJSONArticle is one article's on-disk shape.
 type manifestJSONArticle struct {
 	ID     string `json:"id"`
 	Bytes  int    `json:"bytes"`
 	Number int    `json:"number"`
 }
 
-// manifestJSONFile is one file's on-disk shape, nesting its articles —
-// clearer to read than Manifest's internal flat parallel-array
-// representation, and free to differ from it since there is no
-// wire-format compatibility requirement on this persistence format.
-type manifestJSONFile struct {
-	Subject        string                `json:"subject"`
-	Bytes          int64                 `json:"bytes"`
-	IsPar2Recovery bool                  `json:"is_par2_recovery,omitempty"`
-	Articles       []manifestJSONArticle `json:"articles"`
-}
-
-// manifestJSON is Manifest's on-disk shape.
-//
-// No summary figure is persisted: the total and the recovery pair are all
-// recomputed on load by NewFileTable from the per-file bytes and subjects
-// this format carries. A derived value that is also
-// stored is a second source of truth, and the stored copy is the one that
-// drifts. encoding/json ignores keys with no matching field, so a stray
-// total_bytes in a blob is read by no one.
+// manifestJSON is the on-disk shape of a job's manifest file: the flat article
+// list, in global article order, and nothing else. The file structure —
+// subjects, sizes, article counts — lives in the job_files rows and is
+// rebuilt as a FileTable before the articles are read (DecodeArticles then
+// NewManifestFromArticles), so the file carries no figure that a table could
+// disagree with.
 type manifestJSON struct {
-	Files []manifestJSONFile `json:"files"`
+	Articles []manifestJSONArticle `json:"articles"`
 }
 
 // MarshalJSON implements json.Marshaler.
 func (m *Manifest) MarshalJSON() ([]byte, error) {
-	files := make([]manifestJSONFile, m.NumFiles())
-	for fi := range files {
-		lo, hi := m.FileRange(fi)
-		articles := make([]manifestJSONArticle, 0, hi-lo)
-		for i := lo; i < hi; i++ {
-			articles = append(articles, manifestJSONArticle{
-				ID:     m.articleIDs[i],
-				Bytes:  m.articleBytes[i],
-				Number: m.articleNumber[i],
-			})
-		}
-		files[fi] = manifestJSONFile{
-			Subject:        m.ft.Subject(fi),
-			Bytes:          m.ft.Bytes(fi),
-			IsPar2Recovery: m.ft.IsPar2Recovery(fi),
-			Articles:       articles,
+	articles := make([]manifestJSONArticle, len(m.articleIDs))
+	for i := range articles {
+		articles[i] = manifestJSONArticle{
+			ID:     m.articleIDs[i],
+			Bytes:  m.articleBytes[i],
+			Number: m.articleNumber[i],
 		}
 	}
-	return json.Marshal(manifestJSON{Files: files})
+	return json.Marshal(manifestJSON{Articles: articles})
 }
 
-// UnmarshalJSON implements json.Unmarshaler.
+// DecodeArticles reads the flat article list a Manifest marshals to.
 //
-// It decodes to the same []JobFile shape NewManifest takes and delegates to
-// it, rather than populating the fields itself. NewManifest reaches the one
-// constructor, which owns a Manifest's arrays and its table's derived state; a
-// second constructor filling the same fields by its own code path is one edit
-// away from disagreeing with the first, and the two had already diverged over
-// totalBytes — this path trusted the persisted total while the constructor
-// derived it from the files. Deriving on load means no stored total exists to
-// drift from the file list it would summarise.
+// It returns the articles rather than a Manifest because a Manifest cannot be
+// built without its FileTable (NewManifestFromArticles), which the caller
+// holds and this package's JSON does not carry.
 //
 // It also re-checks each Message-ID, which is the sole thing here that does
 // not trust this package's own earlier output — see the comment at the check
 // for why a persisted ID is not self-evidently safe.
-func (m *Manifest) UnmarshalJSON(data []byte) error {
+func DecodeArticles(r io.Reader) ([]JobArticle, error) {
 	var mj manifestJSON
-	if err := json.Unmarshal(data, &mj); err != nil {
-		return err
+	if err := json.NewDecoder(r).Decode(&mj); err != nil {
+		return nil, err
 	}
-	files := make([]JobFile, len(mj.Files))
-	for fi, f := range mj.Files {
-		articles := make([]JobArticle, len(f.Articles))
-		for ai, a := range f.Articles {
-			// A Message-ID read back from disk is re-checked, which is the
-			// one place this package does not simply trust its own earlier
-			// output. internal/nntp interpolates the ID into a command line
-			// and no longer validates it, so an ID carrying CR or LF is a
-			// command-injection vector — and a manifest written before that
-			// rule existed at parse time can still contain one.
-			//
-			// Refusing the whole manifest rather than dropping the article
-			// is deliberate: the caller already handles this as a corrupt
-			// manifest, failing the job visibly and setting the file aside,
-			// whereas a silent drop would leave a job quietly short of
-			// articles with nothing to explain it.
-			if !nzb.MessageIDIsFetchable(a.ID) {
-				return fmt.Errorf("job: manifest file %d article %d: unusable message-id %q",
-					fi, ai, a.ID)
-			}
-			// Convertible because the two shapes are field-for-field
-			// identical; adding a field to either one breaks this line
-			// rather than silently dropping it.
-			articles[ai] = JobArticle(a)
+	articles := make([]JobArticle, len(mj.Articles))
+	for ai, a := range mj.Articles {
+		// A Message-ID read back from disk is re-checked, which is the
+		// one place this package does not simply trust its own earlier
+		// output. internal/nntp interpolates the ID into a command line
+		// and no longer validates it, so an ID carrying CR or LF is a
+		// command-injection vector — and a manifest written before that
+		// rule existed at parse time can still contain one.
+		//
+		// Refusing the whole manifest rather than dropping the article
+		// is deliberate: the caller already handles this as a corrupt
+		// manifest, failing the job visibly and setting the file aside,
+		// whereas a silent drop would leave a job quietly short of
+		// articles with nothing to explain it.
+		if !nzb.MessageIDIsFetchable(a.ID) {
+			return nil, fmt.Errorf("job: manifest article %d: unusable message-id %q", ai, a.ID)
 		}
-		files[fi] = JobFile{
-			Subject:        f.Subject,
-			Bytes:          f.Bytes,
-			IsPar2Recovery: f.IsPar2Recovery,
-			Articles:       articles,
-		}
+		// Convertible because the two shapes are field-for-field
+		// identical; adding a field to either one breaks this line
+		// rather than silently dropping it.
+		articles[ai] = JobArticle(a)
 	}
-	*m = *NewManifest(files)
-	return nil
+	return articles, nil
 }

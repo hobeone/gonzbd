@@ -32,7 +32,7 @@ file internal/app/verify.go
 [a hydration verifies as a retry does]
 file internal/app/residency.go
 --- anchor
-	res, err := verifyJobFiles(ctx, m, files, rows, locate, false)
+	res, err := verifyJobFiles(ctx, m.Files(), files, rows, locate, false)
 --- replace
-	res, err := verifyJobFiles(ctx, m, files, rows, locate, true)
+	res, err := verifyJobFiles(ctx, m.Files(), files, rows, locate, true)
 --- end

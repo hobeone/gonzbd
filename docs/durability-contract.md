@@ -333,18 +333,20 @@ row's CRC, or because its file was `complete=1`** (and not reset by a retry).
 
 Verification runs **before** the job's content is attached, and its outcome
 decides whether attaching happens at all. `appResidency.Hydrate`, on the branch
-where the job has no progress yet (`verifyAndAttach`):
+where the job has no file table yet (`verifyAndAttach`):
 
-1. reads the job's `job_files` and `written_articles` rows;
+1. reads the job's `job_files` and `written_articles` rows, builds the file
+   table from the `job_files` rows (`fileTableFromRows`) and the manifest from
+   that table and the article list in the manifest file;
 2. calls `verifyJobFiles`, which reads bytes and returns a verdict without
    touching the job or a row;
 3. commits the verdict's deletes and `complete` changes through `recorder.apply`;
-4. only then calls `Job.AttachContent` and installs what was verified
-   (`installVerification`).
+4. only then calls `Job.AttachFiles` and `Job.AttachArticles` and installs what
+   was verified (`installVerification`).
 
 If any step fails or is cancelled, nothing is attached and the next hydration
 starts again from step 1. So **a job `Hydrate` attached was verified first**,
-and `Hydrate`'s early `RestoreContent` for a job with progress is sound: the
+and `Hydrate`'s early `AttachArticles` for a job with a file table is sound: the
 other ways a job gains progress verify too, or have nothing to verify — a
 freshly ingested job has no rows, and a retry verifies its rebuilt job itself
 (`verifyRetry`).
@@ -1525,7 +1527,7 @@ recorded here so the next reader does not mistake them for design.
    paused jobs' verifier and the `Shutdown` step that joins it (limitation
    1); a manifest read or removal on the filesystem hosting `admin_dir`
    blocks its caller, except a hydration's manifest read, which its caller
-   abandons when its context ends (`appResidency.readManifest`) and leaves
+   abandons when its context ends (`appResidency.readArticles`) and leaves
    to return on its own goroutine.
    The bounded waits are the callers' (`closeHandlesTimeout`,
    `untrustTimeout`, `recorderFlushTimeout`, the disk probe, Shutdown's step

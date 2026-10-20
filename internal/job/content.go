@@ -3,7 +3,6 @@ package job
 import (
 	"errors"
 	"fmt"
-	"slices"
 	"time"
 
 	"github.com/hobeone/gonzbd/internal/durability"
@@ -38,7 +37,7 @@ func (j *Job) AttachFiles(ft *FileTable) error {
 	// discard every done/failed bit and both stamps with no error — and since
 	// the first attach zeroed the Job-level copy, there would be nothing left
 	// to seed the replacement from either. Callers gate on this today
-	// (residency.Hydrate takes the RestoreContent arm, which ends in AttachArticles, when HasProgress() is
+	// (residency.Hydrate takes the AttachArticles-only arm when HasProgress() is
 	// true, and the ingest path builds a fresh Job), which is what makes
 	// this an assertion of an invariant rather than a behaviour change.
 	if j.progress != nil || j.fileTable != nil {
@@ -104,46 +103,16 @@ func (j *Job) AttachArticles(m *Manifest) error {
 // AttachContent attaches a job's files and articles together: AttachFiles on
 // m's table, then AttachArticles on m. It writes no field itself.
 // It takes contentMu twice, so a reader between the two calls sees a job with
-// a table and progress but no manifest, which looks evicted; harmless today
-// because ingest attaches before the job is visible and Hydrate holds the
-// hydrating claim.
+// a table and progress but no manifest, which looks evicted; harmless for
+// ingest, which attaches before the job is visible. Hydrate does not call it:
+// it calls AttachFiles and AttachArticles itself, under the hydrating claim it
+// takes at `r.hydrating.TryClaim(id)` in internal/app/residency.go.
 func (j *Job) AttachContent(m *Manifest) error {
 	if m == nil {
 		return fmt.Errorf("job %s: AttachContent: nil manifest", j.id)
 	}
 	if err := j.AttachFiles(m.Files()); err != nil {
 		return err
-	}
-	return j.AttachArticles(m)
-}
-
-// RestoreContent re-attaches a manifest read back from disk, for callers
-// outside this package that have not yet moved to AttachFiles/AttachArticles
-// (`git grep -n 'RestoreContent(' -- '*.go' ':!internal/job'` finds them). A
-// manifest read from disk was built with a table of its own, so it is
-// re-indexed over the job's table when the two describe the same files, and
-// refused when they do not. A later change migrates the callers and deletes
-// this forwarder. It writes no field itself.
-func (j *Job) RestoreContent(m *Manifest) error {
-	if m == nil {
-		return fmt.Errorf("job %s: RestoreContent: nil manifest", j.id)
-	}
-	ft := j.Files()
-	if ft == nil {
-		return fmt.Errorf("job %s: RestoreContent: no file table to restore onto; use AttachContent", j.id)
-	}
-	if m.Files() != ft {
-		if !slices.Equal(ft.Specs(), m.Files().Specs()) {
-			return fmt.Errorf("job %s: RestoreContent: manifest describes different files", j.id)
-		}
-		articles := make([]JobArticle, m.NumArticles())
-		for i := range articles {
-			articles[i] = JobArticle{ID: m.ArticleID(i), Bytes: m.ArticleBytes(i), Number: m.ArticleNumber(i)}
-		}
-		var err error
-		if m, err = NewManifestFromArticles(ft, articles); err != nil {
-			return fmt.Errorf("job %s: RestoreContent: %w", j.id, err)
-		}
 	}
 	return j.AttachArticles(m)
 }

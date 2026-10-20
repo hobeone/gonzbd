@@ -39,6 +39,18 @@ func lrBuiltJob(t *testing.T, a *lrApp, name string, nA, nB int) *job.Job {
 	return j
 }
 
+// verifyFromRecord is Hydrate's no-file-table branch for a job the dispatcher
+// does not hold: it reads j's record and calls verifyAndAttach with it, over m,
+// which was built from the table those rows describe.
+func (a *lrApp) verifyFromRecord(t *testing.T, j *job.Job, m *job.Manifest) error {
+	t.Helper()
+	files, rows, err := a.residency.readRecord(t.Context(), j.ID())
+	if err != nil {
+		t.Fatalf("readRecord: %v", err)
+	}
+	return a.residency.verifyAndAttach(t.Context(), j, m, files, rows)
+}
+
 // TestVerifyAndAttach_InstallsWhatTheRecordProves calls the hydration path for
 // a job with no progress: the recorded articles whose bytes match are Done,
 // and the rest are Outstanding.
@@ -55,7 +67,7 @@ func TestVerifyAndAttach_InstallsWhatTheRecordProves(t *testing.T) {
 	}
 
 	fresh := job.New(j0.ID(), j0.Name(), job.Policy{})
-	if err := a.residency.verifyAndAttach(t.Context(), fresh, m); err != nil {
+	if err := a.verifyFromRecord(t, fresh, m); err != nil {
 		t.Fatalf("verifyAndAttach: %v", err)
 	}
 	if !fresh.Resident() {
@@ -89,7 +101,7 @@ func TestVerifyAndAttach_MissingDirectoryParksTheJob(t *testing.T) {
 	}
 
 	fresh := job.New(j0.ID(), j0.Name(), job.Policy{})
-	err = a.residency.verifyAndAttach(t.Context(), fresh, m)
+	err = a.verifyFromRecord(t, fresh, m)
 	if !errors.Is(err, dispatch.ErrResidencyFault) {
 		t.Fatalf("verifyAndAttach = %v, want a residency fault: a missing directory at a hydration is not absence", err)
 	}
@@ -98,6 +110,9 @@ func TestVerifyAndAttach_MissingDirectoryParksTheJob(t *testing.T) {
 	}
 	if fresh.Resident() {
 		t.Error("the job is resident after a verification that faulted")
+	}
+	if fresh.Files() != nil || fresh.HasProgress() {
+		t.Error("a verification that faulted left a file table or progress on the job: the next hydration would take the attach-articles-only path and never verify")
 	}
 	rows, err := a.st.WrittenRows(t.Context(), j0.ID())
 	if err != nil {
@@ -474,7 +489,7 @@ func TestHandleFileUntrusted_AFailedDeleteIsOwedUntilItLands(t *testing.T) {
 		t.Fatalf("Manifest: %v", err)
 	}
 	fresh := job.New(j.ID(), j.Name(), job.Policy{})
-	if err := a.residency.verifyAndAttach(t.Context(), fresh, m); err != nil {
+	if err := a.verifyFromRecord(t, fresh, m); err != nil {
 		t.Fatalf("verifyAndAttach: %v", err)
 	}
 	p := fresh.Progress()
@@ -699,7 +714,7 @@ func TestVerifyAndAttach_RemovesUnrecordedFilesAndStageDirsWhenFetching(t *testi
 		t.Fatalf("Manifest: %v", err)
 	}
 
-	if err := a.residency.verifyAndAttach(t.Context(), fresh, m); err != nil {
+	if err := a.verifyFromRecord(t, fresh, m); err != nil {
 		t.Fatalf("verifyAndAttach: %v", err)
 	}
 
@@ -758,7 +773,7 @@ func TestVerifyAndAttach_PreservesExtractedFilesWhenNotFetching(t *testing.T) {
 		t.Fatalf("Manifest: %v", err)
 	}
 
-	if err := a.residency.verifyAndAttach(t.Context(), fresh, m); err != nil {
+	if err := a.verifyFromRecord(t, fresh, m); err != nil {
 		t.Fatalf("verifyAndAttach: %v", err)
 	}
 

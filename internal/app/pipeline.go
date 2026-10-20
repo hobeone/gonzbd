@@ -634,7 +634,7 @@ func (p *pipeline) registerFileAttempt(j *job.Job, m *job.Manifest, fileIdx int)
 		Dir:          loc.Dir,
 		Name:         loc.Name,
 		TotalParts:   totalParts,
-		ExpectedSize: preallocSize(m, fileIdx),
+		ExpectedSize: preallocSize(m.Files(), fileIdx),
 		Owned:        ownedRanges(j.FileRows(fileIdx)),
 	}
 

@@ -34,11 +34,16 @@ file internal/app/residency.go
 		}
 --- end
 
-[re-hydration ignores a refused restore]
+[a re-hydration ignores an article list its file table refuses]
 file internal/app/residency.go
 --- anchor
-		return j.RestoreContent(m)
+	m, err := job.NewManifestFromArticles(ft, arts)
+	if err != nil {
+		return fmt.Errorf("residency: hydrate %s: %w", id, err)
+	}
 --- replace
-		_ = j.RestoreContent(m)
+	m, err := job.NewManifestFromArticles(ft, arts)
+	if err != nil {
 		return nil
+	}
 --- end

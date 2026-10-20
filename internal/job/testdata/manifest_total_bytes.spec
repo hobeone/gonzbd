@@ -1,13 +1,13 @@
 pkg ./internal/job/
-run TestManifestDoesNotPersistTotalBytes
+run TestDecodeArticles_RoundTripsMarshalJSON
 
-[the total is persisted again]
+[a total is persisted beside the articles]
 file internal/job/manifest.go
 --- anchor
-	return json.Marshal(manifestJSON{Files: files})
+	return json.Marshal(manifestJSON{Articles: articles})
 --- replace
 	return json.Marshal(struct {
 		manifestJSON
 		TotalBytes int64 `json:"total_bytes"`
-	}{manifestJSON{Files: files}, m.ft.totalBytes})
+	}{manifestJSON{Articles: articles}, m.ft.totalBytes})
 --- end
