@@ -11,6 +11,7 @@ import (
 	"hash/crc32"
 	"net/http/httptest"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -1040,6 +1041,9 @@ func TestCLI_Run(t *testing.T) {
 
 	// Subtest 1: gen subcommand
 	t.Run("gen happy", func(t *testing.T) {
+		if _, err := exec.LookPath("rar"); err != nil {
+			t.Skip("rar not installed")
+		}
 		outDir := filepath.Join(tempDir, "gen-out")
 		var stdout, stderr bytes.Buffer
 		code := run(context.Background(), []string{
