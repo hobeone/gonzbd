@@ -372,8 +372,11 @@ type FileSeed struct {
 
 // newJobProgress returns a fresh JobProgress sized to ft: every file's Pending
 // starts at its article count (0 for a file whose seed Fetch is not
-// FetchAlways) and pendingArticles at the sum, so RemainingBytes() — derived
-// from per-file state, see derivedRemainingBytes — starts at ft.TotalBytes().
+// FetchAlways) and pendingArticles at the sum. RemainingBytes() is derived
+// from per-file state (sizeFigures): for a nil seed it starts at
+// ft.TotalBytes(); for a seed it starts at the sum, over the FetchAlways files
+// that are not Complete, of the file's Bytes less its estimated downloaded
+// bytes (fileBytesDownloaded, from the seeded Recorded).
 //
 // A nil seed is a freshly ingested job: every file Verified, Recorded 0. A
 // non-nil seed (the caller has checked len(seed) == ft.NumFiles()) leaves
