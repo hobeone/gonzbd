@@ -1334,7 +1334,15 @@ flag, filename and fetch policy, and leaves it unverified
 (`FileProgress.Verified` false). It sets no article bit
 (`docs/durability-contract.md` §3), so `Pending`, `PendingArticles`,
 `FailedBytes` and `ArticlesFailed` hold the values of a job with nothing
-downloaded, for the files it fetches, until `AttachArticles` recomputes them. The downloaded bytes of an unverified file
+downloaded, for the files it fetches, until `AttachArticles` recomputes them.
+`RepairState` is derived from those zeroed counters (`repairStateLocked`), so
+before the first hydration it reads as a job with no failures; the API
+reports it beside `progress_verified: false` as a display value, and its three
+other readers outside `internal/job` — the failure message's counters
+(`failMsgForCounters`), the Assessing runner and the downloader's abort check
+(`git grep -n 'RepairState()' -- '*.go' ':!*_test.go' ':!internal/job/*'`
+returns 4 lines) — run on a launched job, which the tick hydrated first, so no
+gate consumes the unverified value. The downloaded bytes of an unverified file
 are estimated as `Bytes × Recorded / ArticleCount`, in the NZB's encoded unit
 (`fileBytesDownloaded`), so `RemainingBytes` and the percentage derived from it
 show roughly how far a half-downloaded job got; the record's own byte lengths,
