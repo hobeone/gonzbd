@@ -45,7 +45,7 @@ region.
 | | Statement |
 |---|---|
 | **NN1** | Never deliver a corrupt or incomplete file as complete — including for a post with no par2. |
-| **NN2** | Queue rows, manifests and NZB backups keep their formats and owners. |
+| **NN2** | Queue rows and NZB backups keep their formats and owners; a manifest holds a job's article list alone, and its owner is unchanged (the per-file structure is `job_files`, §6). |
 | **NN3** | Hostile-input checks are kept: Message-ID validation, `offsetOutOfRange` with its `ExpectedSize/8` slack, path sanitisation. |
 | **NN4** | Standing Design Rule 3: a bad article costs only its own bytes. |
 | **NN5** | No `docs/sabnzbd_spec.md` §10 field changes. |
@@ -98,8 +98,9 @@ Two tables in `history.db`, both owned by `durability.Store`
   whether or not the poster supplied one, so every row has a CRC to verify.
 - **`job_files`** — one row per file: its structure (`subject`, `bytes`,
   `article_count`), written once at admission (§6), and the `complete`,
-  `filename` and `fetch_policy` the recorder updates. The structure is what
-  hydration builds the job's file table from (§3).
+  `filename` and `fetch_policy` the recorder updates. The structure is what the
+  restore pass builds the job's file table from (§3); hydration builds the
+  manifest over that table.
 
 `complete=1` means every article of the file is resolved (written or failed)
 and the file was fsynced on a handle that wrote or verified it (§2).
@@ -157,12 +158,15 @@ for the fsync (§2), and a restart does not trust a row it has not read (§3).
 ### 1. One writer updates the record
 
 `Store.ApplyRecord` is the only production writer of `written_articles` rows
-and of `job_files`' `complete`, `filename` and `fetch_policy`, and the recorder
-is its only caller: `git grep -n -E '\.ApplyRecord[(]' -- '*.go' ':!*_test.go'`
+and the only `UPDATE` of `job_files` (`complete`, `filename` and
+`fetch_policy`), and the recorder is its only caller:
+`git grep -n -E '\.ApplyRecord[(]' -- '*.go' ':!*_test.go'`
 returns 3 lines, all in `internal/app/record.go` (`flushLocked`, `apply` and
-`untrust`).
-`Store.Admit` is the one other writer of `job_files`, and it only inserts the
-seed rows (§6).
+`untrust`). `git grep -n -E 'INTO job_files|UPDATE job_files' -- '*.go' ':!*_test.go'`
+returns 3 lines: the two `UPDATE`s in `written.go`, and the one `INSERT`, in
+`Store.Admit` (`progress.go`). `Store.Admit` writes each file's row once at
+admission, with its structure and initial fetch policy (§6); the reclaim rule
+deletes `job_files` rows (§6, `internal/durability/reclaim.go`).
 
 The recorder has two ways in:
 
@@ -222,8 +226,8 @@ And three ways out:
   what the verdict removed. Its callers are verification and the retry:
   `git grep -n -E 'recorder\.apply\(' -- '*.go' ':!*_test.go'` returns 4
   lines. Neither names an instance that owes a delete (below): a hydration
-  verifies a job with no progress in this process, so one that wrote no row
-  here, and a retry's instance is new.
+  verifies a restored job, which has written no row here, and a retry's
+  instance is new.
 - **`untrust`** removes one file's record (§4). It purges what is still
   buffered for the file under `mu` **first**, records the file's
   `DeleteAll` + `ClearComplete` verdict as **owed** by the job instance, and
@@ -247,12 +251,13 @@ deliberately held across `ApplyRecord`, by every `flush`, `apply` and
 returns 10 lines. Five of them run under a deadline: Shutdown's flush (its step
 budget), the download-complete report's, the hand-over's and the finalizer's
 flushes (`recorderFlushTimeout`), and the untrust (`untrustTimeout`). The other
-five have none:
+five have none, except that the hydration's commit has one when the hydration
+comes from a rename (`SetName`), not from the tick or the startup reconciliation:
 
 | Holder | Context |
 |---|---|
 | `recorder.run`'s periodic flush | `app.ctx`, which ends at Shutdown |
-| a hydration's commit (`appResidency.commit`) | `app.ctx` from the tick and the startup reconciliation; `context.Background()` from `SetName`'s `LoadProgress` |
+| a hydration's commit (`appResidency.commit`) | `app.ctx` from the tick and the startup reconciliation, so no deadline from either; a context with `setNameLoadTimeout` (10 minutes) from `SetName`'s `LoadProgress`, which ends the wait, not a blocked syscall |
 | `verifyRetry`'s two applies | the retry's: an API request's context, or `app.ctx` for the automatic retry |
 | `retryHistoryJob`'s final commit | `context.Background()` |
 
@@ -337,7 +342,13 @@ Before the first tick, the restore pass (`Application.restoreProgress`) gives
 every restored job whose structure it can read its file table, built from its `job_files` rows
 (`fileTableFromRows`), and a progress record seeded with each file's recorded
 row count, `complete` flag, filename and fetch policy, with every file
-unverified. **It sets no article bit.**
+unverified. **It sets no article bit.** A job whose rows are missing, gapped or unreadable
+is given an operational error and, if it has an open attempt, settled Failed
+through `Dispatcher.SettleFailed`; a job that has never run is left without a
+table, and the tick's first hydration of it, once it holds a lease (so after a
+resume, if it was restored paused), fails for want of one
+(`failUnrestorable`; `Hydrate` refuses a job without a table) and settles it
+Failed.
 
 **A recorded count sits beside the bits and is not one.** The restore read
 (`Store.SeedRows`) returns, with each file's `job_files` row, how many
@@ -374,13 +385,15 @@ changed nothing (the job is not resident, or the index names no file),
 the job's articles attached. `Job.AllVerified` is then false, so the next
 hydration after an eviction verifies again. So **a job `Hydrate` attached was
 verified first**, and `Hydrate`'s early `AttachArticles` for a job whose every
-file is verified is sound: the other ways a job gains progress
-verify too, or have nothing to verify — a freshly ingested job has no rows and
-is verified from the start, and a retry verifies its rebuilt job itself
-(`verifyRetry`).
+file is verified is sound. A job gains progress in three other ways, and only the first is not
+verified when it arrives: the restore pass seeds it with every file unverified
+and sets no article bit, so the job's first hydration takes the verifying
+branch; a freshly ingested job has no rows and is verified from the start; a
+retry's rebuilt job arrives flagged verified (it is built as an ingest is) and
+`verifyRetry` reads its rows back itself.
 
-Every path that attaches content to a job with rows goes through this, or
-verifies itself:
+Every path that attaches a job's articles (`Job.AttachArticles`) to a job with
+rows goes through this, or verifies itself:
 
 - the dispatcher's tick (`reconcileResidency`), for a job that holds what its
   position requires;
@@ -389,18 +402,38 @@ verifies itself:
   first, so the restored filenames make the job "begun" (`verifyJobFiles`
   deletes a complete=0 file's rows recorded without a filename rather than
   keep them) and a rename can never leave rows pointing at a stale path.
-  `LoadProgress` calls `Hydrate` even for a job with progress, so it waits
-  for a hydration that has attached content but not yet installed its
-  filenames;
+  `LoadProgress` calls `Hydrate` even for a job with progress: since the
+  restore pass every restored job has progress before its first hydration,
+  and `Hydrate` also waits for a hydration in flight, so `SetName` never reads
+  `DownloadBegun()` between an attach and its verification.
+  `SetName` bounds its load by `setNameLoadTimeout` (10 minutes); a
+  rename that exceeds it fails, attaches nothing, and can be retried
+  (`registry.go`);
 - `Application.fileOwedUnwantedFailures` → `appResidency.Hydrate`, before the
   first tick, for a restored job the archive peek owes a filing;
 - `Application.verifyRetry`, for a retried job: it is rebuilt by
   `BuildIngestJob`, which attaches its files and articles, so `Hydrate` would return
   early and never verify it (see *Retry* below).
 
+`git grep -n -E '\.Hydrate\(' -- '*.go' ':!*_test.go'` returns 3 lines, one for
+each of the first three paths (`tick.go`, `registry.go`, `startup_reconcile.go`).
+The file table and the seeded progress are attached
+earlier and separately, by the restore pass (above), which does not go through
+this. Of the four paths, the tick is the residency rule; `SetName`'s
+`LoadProgress` and `fileOwedUnwantedFailures`' direct `Hydrate` load a job the
+rule would not (`SetName`'s: any job, paused or not holding what its position
+requires, which the tick would not hydrate; `fileOwedUnwantedFailures`': a job
+before the first tick), and `verifyRetry`
+verifies a job built with its articles.
+
 A paused job is not hydrated by the tick even while it holds a compute slot
 (`reconcileResidency`'s `IntentPause` test). Without that, a job parked by a
-verification fault would be re-read, and fault again, on every tick.
+verification fault would be re-read, and fault again, on every tick. A job
+restored paused at `Fetching` is therefore not verified at startup. It reports
+the recorded-count estimate (`Bytes × Recorded / ArticleCount`) until it is
+resumed, whose tick then hydrates and verifies it, or until a rename loads it
+(`SetName`'s `LoadProgress`), after which it stays resident while paused
+(`reconcileResidency`'s eviction arm skips `IntentPause`).
 
 #### What
 
@@ -809,7 +842,8 @@ article would burn its retry budget over something a user often fixes in ten
 seconds.
 
 **A hydration's verification fault always stalls, even when it classifies
-permanent.** The job has no progress in this process yet, so
+permanent.** The job has written nothing in this process yet and its restored
+progress is unverified, so
 failing it would send it to history and discard the bytes an earlier run left
 on disk, over an `EACCES` on a mount that has not finished coming up.
 
@@ -953,7 +987,11 @@ both `Stall` and `parkVerifyFault`, refuses to pause a job while it is set, or
 once `app.ctx` is cancelled. The pause would be
 the one that cannot be undone: it is persisted, the stall list that would
 re-evaluate it is in memory and dies with the process, and nothing at startup
-resumes it. The next start verifies the job's files regardless.
+resumes it. Nor is a pause needed for the files to be checked: every job's
+first hydration after the restart verifies them. A job a user paused before the
+shutdown is restored paused, so its first hydration is the resume, or a
+rename's load (§3), and it reports the recorded-count estimate, not a verified
+figure, until then.
 
 **A permanent fault still fails the job**, and `Application.Fail` has no
 stopping guard, because nothing it persists positions the job for
@@ -1489,10 +1527,14 @@ are bounded by the flush cadence and by file size, as below.
 These are known, deliberate, and **not** claims about correctness. They are
 recorded here so the next reader does not mistake them for design.
 
-1. **Verification runs inside the dispatcher's tick.** A multi-GB resume holds
+1. **Verification runs inside the dispatcher's tick.** It also runs in `Start`,
+   for a job owed an unwanted-extension filing (`fileOwedUnwantedFailures`), and
+   in a rename's caller (`SetName`, bounded by `setNameLoadTimeout`, 10
+   minutes); those are the three `Hydrate` callers (§3). A multi-GB resume holds
    back that tick's launches. It is a per-job cost paid at a restart, a
    retry or a resume, not a steady-state one: a job is verified at its first
-   successful hydration after a restart, again on a retry, and once per
+   successful hydration after a restart (for a job restored paused, the
+   user's resume or a rename), again on a retry, and once per
    user resume of the job while it is parked on a verification fault (§3),
    which no stall re-evaluation resumes by itself. If it
    matters, the follow-up is a `verified` gate in the dispatch plan with the
@@ -1550,8 +1592,9 @@ recorded here so the next reader does not mistake them for design.
    `untrustTimeout`, `recorderFlushTimeout`, the disk probe, Shutdown's step
    budgets), not the syscalls'. A stalled record write holds `wmu` until its
    own context ends, which for the five holders §1 lists without a deadline —
-   the recorder's periodic flush, a hydration's commit, `verifyRetry`'s two
-   applies and `retryHistoryJob`'s final commit — may be never; a waiter for
+   the recorder's periodic flush, a hydration's commit (from the tick or the
+   startup reconciliation; a rename's has `setNameLoadTimeout`),
+   `verifyRetry`'s two applies and `retryHistoryJob`'s final commit — may be never; a waiter for
    `wmu` gives up when its own context ends (§1).
 
 7. **The crash suite does not test fsync-to-platter.** See below.
@@ -1633,5 +1676,8 @@ a green run does and does not bound.
    article owns a range only once its write succeeded.
 5. The whole-file CRC exists only for a gapless, non-overlapping chain of rows
    covering every article of the file with none failed.
-6. One writer updates the record (the recorder, through `ApplyRecord`); `Admit`
-   only inserts the seed; the reclaim rule deletes.
+6. One writer updates the record (the recorder, through `ApplyRecord`, the only
+   `UPDATE` of `job_files`); `Admit` only inserts each file's row, with its
+   structure and initial fetch policy; the reclaim rule deletes.
+7. A storage fault never marks an article failed, nor degrades the health
+   percentage or the failed-byte count (A1, R21; §7).

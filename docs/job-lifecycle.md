@@ -1298,9 +1298,9 @@ infallible.** Only mutation paths take the fallible handle.
 **`dispatch.restore` attaches neither, and the application does before the
 first tick.** It rebuilds each job with `job.New` and no content: this package
 has no database access, and the manifest half is kept out of it by
-`TestDispatchNamesNoManifestType` (`git grep -n -F 'FileRows' -- internal/dispatch
-':!*_test.go'` returns no line, so the restore loop reads no `job_files` row
-either). `Application.restoreProgress` then attaches a `FileTable` and a seeded
+`TestDispatchNamesNoManifestType` (`git grep -n -E 'FileRows|SeedRows' --
+internal/dispatch ':!*_test.go'` returns no line, so the restore loop reads no
+`job_files` row either). `Application.restoreProgress` then attaches a `FileTable` and a seeded
 `JobProgress` to every registered job, from one read of `job_files` and the
 per-file count of `written_articles` rows, inside `reconcileBeforeFirstTick`
 (§12). A job whose rows are missing, or do not cover its file indices once
@@ -1312,9 +1312,9 @@ first hydration fails it for want of a table (decision D20).
 So a registered job lacks progress only in that class, and in the interval
 between `dispatch.restore` and the pass, in which nothing ticks.
 `grep -n 'j\.progress == nil\|j\.progress != nil' internal/job/*.go | grep -v
-_test.go` finds 45 lines, so "no caller checks for their absence" still
-describes an intent rather than the code: those checks remain, and which of
-them the unrestorable class reaches is not enumerated here.
+_test.go` finds 45 lines, so callers in `internal/job` do still check for
+progress being absent; which of those checks the unrestorable class reaches is
+not enumerated here.
 
 That interval is why `Job` carries a small set of `restored*` fields for
 progress-tier state recovered from the queue-state row before the record exists
@@ -1334,7 +1334,15 @@ flag, filename and fetch policy, and leaves it unverified
 (`FileProgress.Verified` false). It sets no article bit
 (`docs/durability-contract.md` §3), so `Pending`, `PendingArticles`,
 `FailedBytes` and `ArticlesFailed` hold the values of a job with nothing
-downloaded, for the files it fetches, until `AttachArticles` recomputes them. The downloaded bytes of an unverified file
+downloaded, for the files it fetches, until `AttachArticles` recomputes them.
+`RepairState` is derived from those zeroed counters (`repairStateLocked`), so
+before the first hydration it reads as a job with no failures; the API
+reports it beside `progress_verified: false` as a display value, and its three
+other readers outside `internal/job` — the failure message's counters
+(`failMsgForCounters`), the Assessing runner and the downloader's abort check
+(`git grep -n 'RepairState()' -- '*.go' ':!*_test.go' ':!internal/job/*'`
+returns 4 lines) — run on a launched job, which the tick hydrated first, so no
+gate consumes the unverified value. The downloaded bytes of an unverified file
 are estimated as `Bytes × Recorded / ArticleCount`, in the NZB's encoded unit
 (`fileBytesDownloaded`), so `RemainingBytes` and the percentage derived from it
 show roughly how far a half-downloaded job got; the record's own byte lengths,
@@ -1481,10 +1489,19 @@ user resumes it.
 
 ### Who writes what
 
-- **`internal/dispatch/store`** is the only reader or writer of the
-  `dispatch_jobs` table: identity, header, queue order, `Policy`, and the four
-  axes. It lives beside `internal/dispatch` rather than inside it so that
-  package stays free of a SQL driver.
+- **`internal/dispatch/store`** is the only non-test writer of the
+  `dispatch_jobs` table (`internal/dispatch/store/doc.go`): identity, header,
+  queue order, `Policy`, and the four axes. The reclaim rule in
+  `internal/durability/reclaim.go` also reads the table, to decide whether a
+  job still has a queue row. (`git grep -n -E 'INTO dispatch_jobs|UPDATE
+  dispatch_jobs|DELETE FROM dispatch_jobs' -- '*.go' ':!*_test.go'` returns 2
+  lines, both in `internal/dispatch/store/store.go`.) It lives beside `internal/dispatch` rather than
+  inside it so that package stays free of a SQL driver.
+- **`durability.Store.Admit`** (`internal/durability/progress.go`) inserts each
+  file's `job_files` row — `subject`, `bytes`, `article_count` and the initial
+  `fetch_policy` — in one transaction at ingest and at retry. The recorder
+  updates `complete`, `filename` and `fetch_policy` afterwards, and
+  `Store.SeedRows` is read once per `Start` by `Application.restoreProgress`.
 - **The recorder** (`internal/app/record.go`) writes the article record — one
   `written_articles` row per written article, and each file's `complete`,
   `filename` and `fetch_policy` in `job_files` — through
@@ -1686,7 +1703,7 @@ Per article, against the field types:
 | `Manifest` — `articleIDs []string`, `articleBytes`, `articleNumber` | ~86 B | ~1.6 MB |
 | `FileTable` — one entry per file (subject, bytes, article count, recovery flag) and one 8-byte offset | sized by files, not articles; not measured | — |
 | `JobProgress` — `done`/`failed`/`emitted` as bitsets | 0.375 B | ~7.5 KB |
-| `JobProgress.files` — one `FileProgress` per file, 88 B of which `Verified` and `Recorded` are 16 B | per file, not per article; derived from the layout, not measured | 1000 files: ≈88 KB |
+| `JobProgress.files` — one `FileProgress` per file, 88 B of which `Verified` and `Recorded` are 16 B | per file, not per article; 88 B measured with `unsafe.Sizeof` (stage 2; no test pins it) | 1000 files: ≈88 KB |
 | `JobProgress.written` — one `durability.WrittenRow` per article of a file whose CRC is not settled | 40 B | up to ~800 KB |
 
 The manifest figure is dominated by `articleIDs`: a 16-byte string header plus
@@ -1706,11 +1723,12 @@ to 8 B = 40 B) plus one 8 B `offsets` entry, plus the subject's bytes, so
 48 B + len(subject) per file. At 1000 files with 100-byte subjects that is
 ≈148 KB (derived from the layout, not measured), against 7.5 KB of bitsets
 for a 20k-article job. That comparison leaves out the rest of the progress
-record, which holds one `FileProgress` per file (88 B, derived from the struct
-layout, 16 B of it the `Verified` flag and the `Recorded` count) and an 8 B
-`fileStarts` entry beside the bitset
+record, which holds one `FileProgress` per file (88 B, measured with
+`unsafe.Sizeof`; no test pins it; 16 B of it the `Verified` flag and
+the `Recorded` count) and an 8 B `fileStarts` entry (derived) beside the bitset
 bits. Per file, then, the table is 48 B + len(subject) and the progress record
-is about 96 B plus its share of the bitsets (derived, not measured): the same
+is about 96 B (88 B measured, plus the 8 B `fileStarts` entry) plus its share of
+the bitsets (derived, not measured): the same
 order, so neither is small next to the bitsets alone. What holds is that the
 manifest (≈86 B/article, measured) dwarfs both, and **that asymmetry — manifest against table plus progress — is the whole
 justification for evicting the manifest and nothing else.**
@@ -1780,12 +1798,15 @@ Two Assessing verdicts change a job's download intent after ingest:
 clean, and `Job.ReleaseRecovery` moves the held volumes a repair needs to
 `FetchAlways` when it finds damage. Two other paths move `fetch_policy` after
 ingest: the finalizer's retry of a failed par2 repair, which calls
-`Job.ReleaseRecovery` to release the volumes its sizing asks for, and the first hydration
-after a restart, which re-applies whatever `job_files` holds through
-`Job.InstallFileVerification` (#329). Those are the callers, outside ingest, of
-the one policy writer: `git grep -n 'setFileFetchPolicy(' -- internal/job/
-':!*_test.go'` finds it under `SetFileFetchPolicy` (called only at ingest),
-`undeferRecovery` (under `ReleaseRecovery`), `DiscardDeferredPar2` and
+`Job.ReleaseRecovery` to release the volumes its sizing asks for, and the
+restart, which applies whatever `job_files` holds twice: first the restore
+pass's seed (`newJobProgress`, reached from `AttachFiles`, before the first
+tick), and again the first hydration after a restart, which re-applies it
+through `Job.InstallFileVerification` (#329). Those are the callers, outside
+ingest, of the one policy writer: `git grep -n 'setFileFetchPolicy(' --
+internal/job/ ':!*_test.go' ':!*.spec'` returns 6 lines, the definition and five
+call sites, under `SetFileFetchPolicy` (called only at ingest), `undeferRecovery`
+(under `ReleaseRecovery`), `DiscardDeferredPar2`, `newJobProgress` and
 `InstallFileVerification`. None of these touches the file set. A recovery
 volume proven unnecessary keeps its `job_files` row exactly where it was; only
 its `fetch_policy` column moves, from `FetchIfNeeded` to `FetchNever`. That
@@ -2092,7 +2113,8 @@ Named here so they are decisions rather than omissions.
    guard runs on the hydration path and not on the load path, and it would not
    catch rows renumbered out of band in either case (§14).
 4. **Nothing pins the memory figures in §13.** They are derived from the field
-   types and are re-derivable by hand, but no test asserts bytes per article,
+   types and are re-derivable by hand (the 88 B `FileProgress` figure was also
+   measured once with `unsafe.Sizeof`), but no test asserts bytes per article,
    and the terminal-compaction decision rests on arithmetic rather than on a
    measurement a change would break.
 5. **Nothing pins residency parity for the byte figures.** Remaining, expected
