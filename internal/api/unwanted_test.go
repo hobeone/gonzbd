@@ -93,6 +93,20 @@ func TestQueueResume_NZBKeyCannotApprove(t *testing.T) {
 	if plain.Intent() != job.IntentRun {
 		t.Error("the NZB key can no longer resume an ordinary job")
 	}
+
+	// A job the fail action blocked is never approved by a resume, so the
+	// NZB key is not refused for it.
+	owed := add("owed", unwanted.StateFailOwed)
+	w = apiGet(t, s.Handler(), "/api?mode=queue&name=resume&value=owed&nzbkey="+testNZBKey)
+	if w.Code != http.StatusOK {
+		t.Fatalf("resume of a fail-owed job with the NZB key: status = %d; want 200 (body: %s)", w.Code, w.Body.String())
+	}
+	if owed.Intent() != job.IntentRun {
+		t.Error("the NZB-key resume of a fail-owed job did not take effect")
+	}
+	if row, _ := d.Row("owed"); row.Header.Unwanted != unwanted.StateFailOwed {
+		t.Errorf("Unwanted = %v after the resume; want StateFailOwed kept", row.Header.Unwanted)
+	}
 }
 
 // TestHistoryRetry_NZBKeyCannotAllowUnwanted pins the same rule for retry.
@@ -168,7 +182,7 @@ func TestQueueRename_GoesThroughTheNameOwner(t *testing.T) {
 }
 
 // TestQueueSlot_UnwantedLabel pins the SABnzbd-compatible labels list: a job
-// the check flagged carries "UNWANTED", blocked or approved, as SABnzbd's
+// the check flagged carries "UNWANTED", blocked, approved or owed a fail filing, as SABnzbd's
 // labels do for any non-zero unwanted_ext; any other job has an empty list.
 func TestQueueSlot_UnwantedLabel(t *testing.T) {
 	t.Parallel()
@@ -179,6 +193,7 @@ func TestQueueSlot_UnwantedLabel(t *testing.T) {
 		"clean":    unwanted.StateNone,
 		"blocked":  unwanted.StateBlocked,
 		"approved": unwanted.StateApproved,
+		"failowed": unwanted.StateFailOwed,
 	}
 	for id, st := range states {
 		if err := d.Add(context.Background(), job.New(id, id, job.Policy{}), dispatch.Header{Name: id, Bytes: 1000, Unwanted: st}); err != nil {
