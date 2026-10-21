@@ -419,7 +419,12 @@ func TestResumeAtStartup_StorageFaultStallsAndDoesNotFailArticles(t *testing.T) 
 			a := f.start(1)
 
 			// The verification runs when the first tick hydrates the job.
-			if !waitUntil(10*time.Second, func() bool { return a.StallReason(f.jobID).Reason != "" }) {
+			// stall records the reason before it pauses, so the reason
+			// alone does not mean the pause has landed: wait for both.
+			if !waitUntil(10*time.Second, func() bool {
+				row, ok := a.Dispatcher().Row(f.jobID)
+				return a.StallReason(f.jobID).Reason != "" && ok && row.Status() == constants.StatusPaused
+			}) {
 				t.Fatal("the read fault never parked the job")
 			}
 			if stallReason := a.StallReason(f.jobID).Reason; !strings.HasPrefix(stallReason, "Stalled (resume to retry): ") {

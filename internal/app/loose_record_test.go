@@ -771,10 +771,12 @@ func TestLooseRecord_VerificationFaultParksNeverFails(t *testing.T) {
 	a2.start(t)
 
 	path := env.filePath(j)
-	lrWaitFor(t, "the verification fault to park the job", func() bool {
-		return strings.Contains(a2.StallReason(j.ID()).Reason, path)
-	})
 	j2 := a2.registered(t, j.ID())
+	// stall records the reason before PauseInstance pauses the job, and the
+	// resume below must not race ahead of that pause: wait for both.
+	lrWaitFor(t, "the verification fault to park the job", func() bool {
+		return strings.Contains(a2.StallReason(j.ID()).Reason, path) && j2.Intent() == job.IntentPause
+	})
 	if o := j2.State().Outcome; o != job.OutcomePending {
 		t.Fatalf("outcome = %v after a verification fault, want none", o)
 	}
