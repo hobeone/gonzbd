@@ -1353,7 +1353,8 @@ file Verified after construction
 articles-only branch on `Job.AllVerified`, not on the table's presence, so a
 job the pass seeded has every file verified at its first successful
 hydration, `complete=1` and row-less files included; the API reports the state as `progress_verified`
-and a file's `verified`.
+and a file's `verified`; a job with no progress record has no estimate to
+verify and reads `progress_verified: true`.
 
 `AttachFiles` refuses a second attach rather than silently replacing a live
 record: it builds a *fresh* `JobProgress`, so a re-attach would discard every
