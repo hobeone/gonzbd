@@ -6,23 +6,24 @@ vi.mock('#lib/api.js', () => ({
 	postAction: vi.fn()
 }));
 
-// Captures the handler passed to subscribeWS so tests can simulate WS events.
-let capturedWSHandler: ((event: any) => void) | null = null;
-vi.mock('./websocket.svelte', () => ({
-	subscribeWS: vi.fn((handler: (event: any) => void) => {
-		capturedWSHandler = handler;
-		return vi.fn();
-	})
-}));
+vi.mock('./websocket.svelte', async () => {
+	const { createWSMock } = await import('./testing/wsMock.js');
+	return createWSMock();
+});
 
 // Mock ConnectionStore — warnings store reports success/failure to it.
-vi.mock('./connection.svelte', () => ({
-	reportFailure: vi.fn(),
-	reportSuccess: vi.fn(),
-	onReconnected: vi.fn(() => vi.fn())
-}));
+vi.mock('./connection.svelte', async () => {
+	const { createConnectionMock } = await import('./testing/wsMock.js');
+	return createConnectionMock();
+});
 
 // We need to import after mocking
+import {
+	capturedWSHandlers,
+	capturedWSHandler,
+	triggerReconnected,
+	resetWSMock
+} from './testing/wsMock.js';
 import {
 	startWarningsPolling,
 	stopWarningsPolling,
@@ -40,6 +41,7 @@ describe('warnings store', () => {
 	beforeEach(() => {
 		vi.useFakeTimers();
 		vi.clearAllMocks();
+		resetWSMock();
 		stopWarningsPolling();
 		dismissToast();
 	});
@@ -126,15 +128,21 @@ describe('warnings store', () => {
 			expect(getWarnings()).toEqual(['new']);
 		});
 
-		it('stopWarningsPolling prevents further fetches', async () => {
+		it('stopWarningsPolling prevents further fetches (WS and reconnect)', async () => {
 			vi.mocked(fetchWarnings).mockResolvedValue({ status: true, warnings: [] });
 
 			startWarningsPolling();
 			await vi.advanceTimersByTimeAsync(0);
+			expect(fetchWarnings).toHaveBeenCalledTimes(1);
+			vi.clearAllMocks();
+
 			stopWarningsPolling();
 
-			// Only the initial poll should have happened.
-			expect(fetchWarnings).toHaveBeenCalledTimes(1);
+			capturedWSHandler({ event: 'warnings_updated' });
+			triggerReconnected();
+			await vi.advanceTimersByTimeAsync(0);
+
+			expect(fetchWarnings).not.toHaveBeenCalled();
 		});
 
 		it('double start is a no-op', async () => {
@@ -145,6 +153,7 @@ describe('warnings store', () => {
 			await vi.advanceTimersByTimeAsync(0);
 
 			expect(fetchWarnings).toHaveBeenCalledTimes(1);
+			expect(capturedWSHandlers.size).toBe(1);
 		});
 	});
 

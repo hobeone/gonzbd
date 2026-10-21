@@ -346,3 +346,14 @@ func createTestNZBFile(t *testing.T, filename, fileSubject string) string {
 	}
 	return path
 }
+
+// expectHidden waits for loc to become hidden within 3000ms.
+func expectHidden(t *testing.T, loc playwright.Locator, msg string) {
+	t.Helper()
+	if err := loc.First().WaitFor(playwright.LocatorWaitForOptions{
+		State:   playwright.WaitForSelectorStateHidden,
+		Timeout: playwright.Float(3000),
+	}); err != nil {
+		t.Errorf("%s: %v", msg, err)
+	}
+}
