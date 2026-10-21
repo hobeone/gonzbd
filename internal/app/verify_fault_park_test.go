@@ -70,8 +70,8 @@ func TestReevaluateStall_TimerStillResumesAWriteFault(t *testing.T) {
 // job that was already paused when its hydration faulted, reached through
 // Dispatcher.SetName's LoadProgress on a paused job: the pause is not claimed.
 // A re-evaluation while the job is still paused keeps the reason: clearing it
-// would leave the job paused at 0 % with nothing saying why, and nothing would
-// re-verify it. The re-evaluation after the user resumes the job clears it.
+// would leave the job paused at its seeded estimate (0 % when the record holds
+// nothing) with nothing saying why, and nothing would re-verify it. The re-evaluation after the user resumes the job clears it.
 func TestReevaluateStall_VerifyFaultOnAPausedJobKeepsItsReason(t *testing.T) {
 	t.Parallel()
 	application, j := newDurabilityTestApp(t, 1, 2)

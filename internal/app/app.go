@@ -1328,8 +1328,8 @@ func (app *Application) Start(ctx context.Context) error {
 	// is reported download-complete by its Fetching worker (appRunner.runFetch)
 	// and reaches post-processing through Assessing. A file a hydration here
 	// finishes by path is queued as a Resumed completion, which
-	// watchCompletions applies once it runs. The jobs restored paused at
-	// Fetching are verified last, below, after this method's other work.
+	// watchCompletions applies once it runs. A job restored paused at
+	// Fetching is not hydrated here: the tick hydrates it once it is resumed.
 	if err := app.dispatcher.StartWith(app.ctx, app.reconcileBeforeFirstTick); err != nil {
 		return fmt.Errorf("app: start dispatcher: %w", err)
 	}
