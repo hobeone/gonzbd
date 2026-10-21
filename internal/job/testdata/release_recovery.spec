@@ -44,17 +44,17 @@ j.repairStateLocked().Hopeless() && false {
 [the zero value is treated as sized]
 file internal/job/release.go
 --- anchor
-	if s.sized && j.manifest != nil {
+	if s.sized {
 --- replace
-	if j.manifest != nil {
+	if true {
 --- end
 
-[an evicted manifest is dereferenced]
+[an evicted job is not sized]
 file internal/job/release.go
 --- anchor
-	if s.sized && j.manifest != nil {
---- replace
 	if s.sized {
+--- replace
+	if s.sized && j.manifest != nil {
 --- end
 
 [every candidate counts as one block]
@@ -68,7 +68,7 @@ file internal/job/release.go
 [candidate bytes ignored]
 file internal/job/release.go
 --- anchor
-				bytes = append(bytes, j.manifest.Files().Bytes(i))
+				bytes = append(bytes, j.fileTable.Bytes(i))
 --- replace
 				bytes = append(bytes, 1)
 --- end

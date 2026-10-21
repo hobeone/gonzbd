@@ -35,8 +35,8 @@ const maxCoverCells = 1 << 25
 // Sized, it frees the cheapest-by-bytes subset of the remaining volumes whose
 // names carry a block count that reaches the need, or all of them when they
 // cannot reach it, when the need exceeds MaxPar2Slices, or when the cover
-// would exceed maxCoverCells. Unsized, or without a resident manifest to read
-// names and sizes from, it frees every held volume.
+// would exceed maxCoverCells. Unsized, it frees every held volume. It reads
+// names and sizes from the file table, so residency does not change the result.
 func (j *Job) ReleaseRecovery(s RecoverySizing) (released int, err error) {
 	j.contentMu.Lock()
 	defer j.contentMu.Unlock()
@@ -56,14 +56,16 @@ func (j *Job) ReleaseRecovery(s RecoverySizing) (released int, err error) {
 		}
 	}
 	j.undeferRecovery(onDisk)
-	if s.sized && j.manifest != nil {
+	// j.fileTable is non-nil here: the j.progress guard above passed, and
+	// AttachFiles is the only assignment of either (content.go), setting both.
+	if s.sized {
 		var idxs, blocks []int
 		var bytes []int64
 		for _, i := range held {
-			if n, ok := RecoveryVolumeBlocks(j.manifest.Files().Subject(i)); ok {
+			if n, ok := RecoveryVolumeBlocks(j.fileTable.Subject(i)); ok {
 				idxs = append(idxs, i)
 				blocks = append(blocks, n)
-				bytes = append(bytes, j.manifest.Files().Bytes(i))
+				bytes = append(bytes, j.fileTable.Bytes(i))
 			}
 		}
 		if s.need <= MaxPar2Slices && len(idxs)*(s.need+1) <= maxCoverCells {

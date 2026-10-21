@@ -87,7 +87,7 @@ func TestReleaseRecovery(t *testing.T) {
 		{"hopeless job releases nothing", standardVols(), Unsized(), func(j *Job) {
 			j.progress.files[0].FailedBytes = 1 << 40
 		}, nil},
-		{"evicted manifest releases all", standardVols(), NeedBlocks(1), func(j *Job) { j.Evict() }, all},
+		{"an evicted job still releases the sized cover", standardVols(), NeedBlocks(1), func(j *Job) { j.Evict() }, []int{1}},
 		{"a minus-form volume is not a candidate", []heldVol{{"x.vol03-07.par2", 1000}}, NeedBlocks(1), nil, []int{1}},
 		{"minus-form beside counted volumes is skipped", []heldVol{
 			{"x.vol00-01.par2", 1}, {"x.vol00+02.par2", 5000}, {"x.vol02+02.par2", 6000},
