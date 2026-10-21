@@ -983,10 +983,11 @@ both `Stall` and `parkVerifyFault`, refuses to pause a job while it is set, or
 once `app.ctx` is cancelled. The pause would be
 the one that cannot be undone: it is persisted, the stall list that would
 re-evaluate it is in memory and dies with the process, and nothing at startup
-resumes it. A pause the shutdown persisted stays in force after the restart, so
-that job is not verified until it is resumed or a rename loads it (§3), and it
-reports the recorded-count estimate, not a verified figure, until then. A job
-that was resumed is verified at its first hydration.
+resumes it. Nor is a pause needed for the files to be checked: every job's
+first hydration after the restart verifies them. A job a user paused before the
+shutdown is restored paused, so its first hydration is the resume, or a
+rename's load (§3), and it reports the recorded-count estimate, not a verified
+figure, until then.
 
 **A permanent fault still fails the job**, and `Application.Fail` has no
 stopping guard, because nothing it persists positions the job for
