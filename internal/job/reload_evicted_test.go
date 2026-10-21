@@ -61,8 +61,8 @@ func TestClearEmittedForReload_UnfailsAnEvictedJob(t *testing.T) {
 		t.Error("article 2, in a complete file, was un-failed")
 	}
 
-	if err := j.RestoreContent(m); err != nil {
-		t.Fatalf("RestoreContent: %v", err)
+	if err := j.AttachArticles(m); err != nil {
+		t.Fatalf("AttachArticles: %v", err)
 	}
 	checkPendingMatchesRecompute(t, j, m, 2)
 	if got := offered(t, j); !slices.Equal(got, []int32{0, 1}) {

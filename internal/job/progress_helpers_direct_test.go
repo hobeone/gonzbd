@@ -2,9 +2,9 @@ package job
 
 import "testing"
 
-// Direct tests for seven unexported helpers in progress.go: markNotDone,
-// fileMetaFromManifest, derivedRemainingBytes, sizeFigures,
-// describesSameJobAs, setPar2ReleaseReason and clearPar2ReleaseReason.
+// Direct tests for six unexported helpers in progress.go: markNotDone,
+// fileMetaFromTable, derivedRemainingBytes, sizeFigures,
+// setPar2ReleaseReason and clearPar2ReleaseReason.
 //
 // They are here because a comment-only edit to progress.go put the file's
 // unexported helpers on check_test_alignment's bar, which is the gate working
@@ -19,12 +19,12 @@ import "testing"
 // markNotDone, or a restart would re-derive it as outstanding and re-fetch
 // bytes that will never arrive.
 func TestMarkNotDone_RefusesAPermanentlyFailedArticle(t *testing.T) {
-	m := newManifest([]JobFile{{
+	m := NewManifest([]JobFile{{
 		Subject:  "a.rar",
 		Bytes:    300,
 		Articles: []JobArticle{{ID: "<1@x>", Bytes: 100}, {ID: "<2@x>", Bytes: 100}, {ID: "<3@x>", Bytes: 100}},
 	}})
-	p := newJobProgress(m)
+	p := newJobProgress(m.Files())
 
 	// Article 0: done via a successful path. markNotDone must undo it.
 	p.done.Set(0)
@@ -55,20 +55,20 @@ func TestMarkNotDone_RefusesAPermanentlyFailedArticle(t *testing.T) {
 	}
 }
 
-// TestFileMetaFromManifest_ProjectsCountsBytesAndPar2 pins the projection
+// TestFileMetaFromTable_ProjectsCountsBytesAndPar2 pins the projection
 // newJobProgress depends on: per-file article counts, byte totals, and the
 // par2 classification ContentFailedBytes and HasPar2Files select on
 // (progress.go). Not sizeFigures — that excludes on Fetch, never on IsPar2.
-func TestFileMetaFromManifest_ProjectsCountsBytesAndPar2(t *testing.T) {
-	m := newManifest([]JobFile{
+func TestFileMetaFromTable_ProjectsCountsBytesAndPar2(t *testing.T) {
+	m := NewManifest([]JobFile{
 		{Subject: "movie.part1.rar", Bytes: 200, Articles: []JobArticle{{ID: "<1@x>", Bytes: 100}, {ID: "<2@x>", Bytes: 100}}},
-		{Subject: "movie.vol00+01.par2", Bytes: 50, Articles: []JobArticle{{ID: "<3@x>", Bytes: 50}}, IsPar2Recovery: true},
+		{Subject: "movie.vol00+01.par2", Bytes: 50, Articles: []JobArticle{{ID: "<3@x>", Bytes: 50}}},
 	})
 
-	got := fileMetaFromManifest(m)
+	got := fileMetaFromTable(m.Files())
 
 	if len(got) != 2 {
-		t.Fatalf("fileMetaFromManifest returned %d entries, want 2", len(got))
+		t.Fatalf("fileMetaFromTable returned %d entries, want 2", len(got))
 	}
 	if got[0].ArticleCount != 2 || got[0].Bytes != 200 {
 		t.Errorf("file 0 = {count:%d bytes:%d}, want {count:2 bytes:200}", got[0].ArticleCount, got[0].Bytes)
@@ -90,11 +90,11 @@ func TestFileMetaFromManifest_ProjectsCountsBytesAndPar2(t *testing.T) {
 // fetched-file total, drops as files complete, and excludes a file the job is
 // not fetching at all.
 func TestDerivedRemainingBytes_TracksCompletionAndFetchPolicy(t *testing.T) {
-	m := newManifest([]JobFile{
+	m := NewManifest([]JobFile{
 		{Subject: "a.rar", Bytes: 100, Articles: []JobArticle{{ID: "<1@x>", Bytes: 100}}},
 		{Subject: "b.rar", Bytes: 200, Articles: []JobArticle{{ID: "<2@x>", Bytes: 200}}},
 	})
-	p := newJobProgress(m)
+	p := newJobProgress(m.Files())
 
 	if got := p.derivedRemainingBytes(); got != 300 {
 		t.Errorf("derivedRemainingBytes on a fresh job = %d, want 300", got)
@@ -117,12 +117,12 @@ func TestDerivedRemainingBytes_TracksCompletionAndFetchPolicy(t *testing.T) {
 // figures skip a file the job is not fetching, and ONLY remaining also skips a
 // complete one. Computed apart, that is a convention; here it is asserted.
 func TestSizeFigures_ExcludesDifferOnCompleteOnly(t *testing.T) {
-	m := newManifest([]JobFile{
+	m := NewManifest([]JobFile{
 		{Subject: "a.rar", Bytes: 100, Articles: []JobArticle{{ID: "<1@x>", Bytes: 100}}},
 		{Subject: "b.rar", Bytes: 200, Articles: []JobArticle{{ID: "<2@x>", Bytes: 200}}},
 		{Subject: "c.rar", Bytes: 400, Articles: []JobArticle{{ID: "<3@x>", Bytes: 400}}},
 	})
-	p := newJobProgress(m)
+	p := newJobProgress(m.Files())
 
 	expected, remaining := p.sizeFigures()
 	if expected != 700 || remaining != 700 {
@@ -156,81 +156,12 @@ func TestSizeFigures_ExcludesDifferOnCompleteOnly(t *testing.T) {
 	}
 }
 
-// TestDescribesSameJobAs_GuardsBothDimensions pins the predicate that keeps a
-// mismatched (manifest, progress) pair out of RestoreContent. It is what makes
-// a structurally-valid-but-inconsistent pair an error rather than a panic in
-// recompute (#278), so both dimensions and the nil cases matter.
-func TestDescribesSameJobAs_GuardsBothDimensions(t *testing.T) {
-	m := newManifest([]JobFile{
-		{Subject: "a.rar", Bytes: 100, Articles: []JobArticle{{ID: "<1@x>", Bytes: 100}}},
-		{Subject: "b.rar", Bytes: 100, Articles: []JobArticle{{ID: "<2@x>", Bytes: 100}}},
-	})
-	p := newJobProgress(m)
-
-	if !p.describesSameJobAs(m) {
-		t.Fatal("a progress built from m does not describe m")
-	}
-
-	// Article-count mismatch, in both directions.
-	bigger := newManifest([]JobFile{
-		{Subject: "a.rar", Bytes: 100, Articles: []JobArticle{{ID: "<1@x>", Bytes: 100}}},
-		{Subject: "b.rar", Bytes: 200, Articles: []JobArticle{{ID: "<2@x>", Bytes: 100}, {ID: "<3@x>", Bytes: 100}}},
-	})
-	if p.describesSameJobAs(bigger) {
-		t.Error("progress sized for 2 articles accepted a 3-article manifest")
-	}
-	if newJobProgress(bigger).describesSameJobAs(m) {
-		t.Error("progress sized for 3 articles accepted a 2-article manifest — the guard must " +
-			"reject an OVERSIZED progress too, which is the direction the old code tolerated")
-	}
-
-	// File-count mismatch at the same article count.
-	oneFile := newManifest([]JobFile{
-		{Subject: "a.rar", Bytes: 200, Articles: []JobArticle{{ID: "<1@x>", Bytes: 100}, {ID: "<2@x>", Bytes: 100}}},
-	})
-	if p.describesSameJobAs(oneFile) {
-		t.Error("progress for 2 files accepted a 1-file manifest with the same article count")
-	}
-	// A trailing file with no articles leaves every range p knows unchanged,
-	// so only the file count tells the two apart.
-	trailingEmpty := newManifest([]JobFile{
-		{Subject: "a.rar", Bytes: 100, Articles: []JobArticle{{ID: "<1@x>", Bytes: 100}}},
-		{Subject: "b.rar", Bytes: 100, Articles: []JobArticle{{ID: "<2@x>", Bytes: 100}}},
-		{Subject: "c.rar"},
-	})
-	if p.describesSameJobAs(trailingEmpty) {
-		t.Error("progress for 2 files accepted a 3-file manifest whose third file has no articles")
-	}
-
-	// Equal counts split differently between the files.
-	shifted := newManifest([]JobFile{
-		{Subject: "a.rar", Bytes: 0},
-		{Subject: "b.rar", Bytes: 200, Articles: []JobArticle{{ID: "<1@x>", Bytes: 100}, {ID: "<2@x>", Bytes: 100}}},
-	})
-	if p.describesSameJobAs(shifted) {
-		t.Error("progress accepted a manifest whose files split the articles differently")
-	}
-
-	// Nil on either side is not a match. This is defence in depth rather than
-	// the guard that keeps a null manifest out of recompute: RestoreContent
-	// rejects a nil manifest, and a job with no progress record, before it
-	// calls this (content.go), so the nil case here is only reachable from a
-	// caller that does not. Asserted so the predicate stays total if one appears.
-	if p.describesSameJobAs(nil) {
-		t.Error("describesSameJobAs(nil) = true")
-	}
-	var nilProgress *JobProgress
-	if nilProgress.describesSameJobAs(m) {
-		t.Error("(*JobProgress)(nil).describesSameJobAs(m) = true")
-	}
-}
-
 // TestPar2ReleaseReason_SetAndClear pins the pair as each other's inverse.
 // They are trivial, and the point of testing them together is that the
 // accessor reports the round trip rather than either setter in isolation.
 func TestPar2ReleaseReason_SetAndClear(t *testing.T) {
-	m := newManifest([]JobFile{{Subject: "a.rar", Bytes: 100, Articles: []JobArticle{{ID: "<1@x>", Bytes: 100}}}})
-	p := newJobProgress(m)
+	m := NewManifest([]JobFile{{Subject: "a.rar", Bytes: 100, Articles: []JobArticle{{ID: "<1@x>", Bytes: 100}}}})
+	p := newJobProgress(m.Files())
 
 	if got := p.Par2ReleaseReason(); got != "" {
 		t.Errorf("a fresh JobProgress reports par2 release reason %q, want empty", got)

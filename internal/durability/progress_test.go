@@ -35,7 +35,7 @@ func TestStore_AdmitSeedsAndKeepsExistingRows(t *testing.T) {
 	db := openTestDB(t)
 	st := NewStore(db)
 
-	if err := st.Admit(ctx, "job-a", []uint8{0, 2}); err != nil {
+	if err := st.Admit(ctx, "job-a", admitPolicies(0, 2)); err != nil {
 		t.Fatalf("Admit: %v", err)
 	}
 	if err := st.ApplyRecord(ctx, []RecordBatch{{JobID: "job-a", Files: []FileState{
@@ -43,7 +43,7 @@ func TestStore_AdmitSeedsAndKeepsExistingRows(t *testing.T) {
 	}}}); err != nil {
 		t.Fatalf("ApplyRecord: %v", err)
 	}
-	if err := st.Admit(ctx, "job-a", []uint8{0, 2, 1}); err != nil {
+	if err := st.Admit(ctx, "job-a", admitPolicies(0, 2, 1)); err != nil {
 		t.Fatalf("re-Admit: %v", err)
 	}
 
@@ -62,6 +62,81 @@ func TestStore_AdmitSeedsAndKeepsExistingRows(t *testing.T) {
 	}
 }
 
+// admitPolicies builds AdmitFiles that differ only in fetch policy, for tests
+// that do not care about the structure columns.
+func admitPolicies(policies ...uint8) []AdmitFile {
+	out := make([]AdmitFile, len(policies))
+	for i, p := range policies {
+		out[i] = AdmitFile{FetchPolicy: p}
+	}
+	return out
+}
+
+// TestStore_AdmitWritesTheFileStructure pins that Admit persists each file's
+// NZB-derived structure and FileRows returns it verbatim, in index order.
+func TestStore_AdmitWritesTheFileStructure(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	st := NewStore(openTestDB(t))
+
+	files := []AdmitFile{
+		{Subject: "first.rar [1/2]", Bytes: 1234, ArticleCount: 3, FetchPolicy: 0},
+		{Subject: "second.par2 [2/2]", Bytes: 99, ArticleCount: 7, FetchPolicy: 2},
+	}
+	if err := st.Admit(ctx, "job-a", files); err != nil {
+		t.Fatalf("Admit: %v", err)
+	}
+	rows, err := st.FileRows(ctx, "job-a")
+	if err != nil {
+		t.Fatalf("FileRows: %v", err)
+	}
+	want := []FileRow{
+		{FileIndex: 0, Subject: "first.rar [1/2]", Bytes: 1234, ArticleCount: 3, FetchPolicy: 0},
+		{FileIndex: 1, Subject: "second.par2 [2/2]", Bytes: 99, ArticleCount: 7, FetchPolicy: 2},
+	}
+	if !slices.Equal(rows, want) {
+		t.Errorf("rows = %+v, want %+v", rows, want)
+	}
+}
+
+// TestStore_AdmitAgainKeepsTheFirstRow pins ON CONFLICT DO NOTHING for the
+// whole row: a second Admit changes neither the results nor the structure.
+func TestStore_AdmitAgainKeepsTheFirstRow(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	db := openTestDB(t)
+	st := NewStore(db)
+
+	files := []AdmitFile{
+		{Subject: "a", Bytes: 10, ArticleCount: 1},
+		{Subject: "b", Bytes: 20, ArticleCount: 2},
+	}
+	if err := st.Admit(ctx, "job-a", files); err != nil {
+		t.Fatalf("Admit: %v", err)
+	}
+	if _, err := db.Exec(`UPDATE job_files SET complete = 1 WHERE job_id = 'job-a' AND file_index = 0`); err != nil {
+		t.Fatal(err)
+	}
+	changed := []AdmitFile{
+		{Subject: "other", Bytes: 11, ArticleCount: 9},
+		{Subject: "b", Bytes: 20, ArticleCount: 2},
+	}
+	if err := st.Admit(ctx, "job-a", changed); err != nil {
+		t.Fatalf("re-Admit: %v", err)
+	}
+	rows, err := st.FileRows(ctx, "job-a")
+	if err != nil {
+		t.Fatalf("FileRows: %v", err)
+	}
+	want := []FileRow{
+		{FileIndex: 0, Subject: "a", Bytes: 10, ArticleCount: 1, Complete: true},
+		{FileIndex: 1, Subject: "b", Bytes: 20, ArticleCount: 2},
+	}
+	if !slices.Equal(rows, want) {
+		t.Errorf("rows after a second Admit = %+v, want %+v", rows, want)
+	}
+}
+
 // TestStore_FileRowsSkipsARowItCannotScan pins the partial read: the bad row
 // is skipped, the others are returned, and the error says the result is
 // incomplete rather than failed.
@@ -70,7 +145,7 @@ func TestStore_FileRowsSkipsARowItCannotScan(t *testing.T) {
 	ctx := context.Background()
 	db := openTestDB(t)
 	st := NewStore(db)
-	if err := st.Admit(ctx, "job-a", []uint8{0, 0}); err != nil {
+	if err := st.Admit(ctx, "job-a", admitPolicies(0, 0)); err != nil {
 		t.Fatal(err)
 	}
 	// filename is nullable, and NULL does not scan into a string.
@@ -94,7 +169,7 @@ func TestStore_ProgressMethodsReportAClosedDatabase(t *testing.T) {
 	ctx := context.Background()
 	st := closedStore(t)
 	calls := map[string]func() error{
-		"Admit":    func() error { return st.Admit(ctx, "j", []uint8{0}) },
+		"Admit":    func() error { return st.Admit(ctx, "j", admitPolicies(0)) },
 		"FileRows": func() error { _, err := st.FileRows(ctx, "j"); return err },
 	}
 	for name, call := range calls {

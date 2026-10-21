@@ -166,7 +166,7 @@ func assessVerdict(t *testing.T, dir string, qjob *job.Job, log *slog.Logger) (p
 		return outcomeRepair, "no usable par2 index found to verify against"
 	}
 	a, err := par2.AssessWithOptions(dir, sets,
-		assembledFiles(mustManifest(t, qjob), qjob.Progress()), log, par2.DefaultParseOptions())
+		assembledFiles(mustManifest(t, qjob).Files(), qjob.Progress()), log, par2.DefaultParseOptions())
 	if err != nil {
 		return outcomeRepair, "could not match downloaded files against the par2 index"
 	}
@@ -553,7 +553,7 @@ func TestMaybeReleaseRecoveryVolumes(t *testing.T) {
 		m := mustManifest(t, j)
 		sawRecovery := false
 		for fi := range m.NumFiles() {
-			if !m.FileIsPar2Recovery(fi) {
+			if !m.Files().IsPar2Recovery(fi) {
 				continue
 			}
 			sawRecovery = true
@@ -594,7 +594,7 @@ func TestMaybeReleaseRecoveryVolumes(t *testing.T) {
 		m, p := mustManifest(t, jobCorrupt), jobCorrupt.Progress()
 		found := false
 		for fi := range m.NumFiles() {
-			if m.FileIsPar2Recovery(fi) {
+			if m.Files().IsPar2Recovery(fi) {
 				found = true
 				if p.FileFetchPolicy(fi) != job.FetchAlways {
 					t.Error("deferred recovery volume was not undeferred")
@@ -732,7 +732,7 @@ func TestMaybeReleaseRecoveryVolumes_RespectsRepairPolicy(t *testing.T) {
 	}
 	m := mustManifest(t, qjob)
 	for fi := range m.NumFiles() {
-		if !m.FileIsPar2Recovery(fi) {
+		if !m.Files().IsPar2Recovery(fi) {
 			continue
 		}
 		if got := qjob.Progress().FileFetchPolicy(fi); got != job.FetchIfNeeded {

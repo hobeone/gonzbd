@@ -15,21 +15,21 @@ func TestResolvedName(t *testing.T) {
 
 	m := job.NewManifest([]job.JobFile{
 		{Subject: "subject-name.bin", Bytes: 100, Articles: []job.JobArticle{{ID: "<1@x>", Bytes: 100}}},
-		{Subject: "data.vol000+01.par2", Bytes: 100, IsPar2Recovery: true, Articles: []job.JobArticle{{ID: "<2@x>", Bytes: 100}}},
+		{Subject: "data.vol000+01.par2", Bytes: 100, Articles: []job.JobArticle{{ID: "<2@x>", Bytes: 100}}},
 	})
 	j := job.New("resolved-name-job", "resolved-name-job", job.Policy{})
 	if err := j.AttachContent(m); err != nil {
 		t.Fatalf("AttachContent: %v", err)
 	}
 
-	if got := resolvedName(m, j.Progress(), 0); got != "subject-name.bin" {
+	if got := resolvedName(m.Files(), j.Progress(), 0); got != "subject-name.bin" {
 		t.Errorf("with nothing recorded, resolvedName = %q, want the subject", got)
 	}
 
 	if err := j.RecordFileFilename(0, j.Name(), "actual-on-disk.bin"); err != nil {
 		t.Fatalf("RecordFileFilename: %v", err)
 	}
-	if got := resolvedName(m, j.Progress(), 0); got != "actual-on-disk.bin" {
+	if got := resolvedName(m.Files(), j.Progress(), 0); got != "actual-on-disk.bin" {
 		t.Errorf("with a name recorded, resolvedName = %q, want the recorded name", got)
 	}
 }
@@ -41,7 +41,7 @@ func TestAssembledFiles(t *testing.T) {
 
 	m := job.NewManifest([]job.JobFile{
 		{Subject: "subject-name.bin", Bytes: 100, Articles: []job.JobArticle{{ID: "<1@x>", Bytes: 100}}},
-		{Subject: "data.vol000+01.par2", Bytes: 100, IsPar2Recovery: true, Articles: []job.JobArticle{{ID: "<2@x>", Bytes: 100}}},
+		{Subject: "data.vol000+01.par2", Bytes: 100, Articles: []job.JobArticle{{ID: "<2@x>", Bytes: 100}}},
 	})
 	j := job.New("assembled-files-job", "assembled-files-job", job.Policy{})
 	if err := j.AttachContent(m); err != nil {
@@ -53,7 +53,7 @@ func TestAssembledFiles(t *testing.T) {
 	}
 	jobtest.SeedFileCRC(t, j, 0, 0x1068AFA6)
 
-	files := assembledFiles(m, j.Progress())
+	files := assembledFiles(m.Files(), j.Progress())
 	if len(files) != m.NumFiles() {
 		t.Fatalf("got %d assembled files, want %d — one per manifest file", len(files), m.NumFiles())
 	}

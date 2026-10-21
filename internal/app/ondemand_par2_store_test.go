@@ -60,7 +60,7 @@ func TestMaybeReleaseRecoveryVolumes_WithStore(t *testing.T) {
 	m := mustManifest(t, qjob)
 	sawRecovery := false
 	for fi := range m.NumFiles() {
-		if !m.FileIsPar2Recovery(fi) {
+		if !m.Files().IsPar2Recovery(fi) {
 			continue
 		}
 		sawRecovery = true

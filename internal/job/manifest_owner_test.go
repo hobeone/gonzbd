@@ -3,21 +3,19 @@ package job
 import (
 	"bytes"
 	"encoding/json"
+	"strings"
 	"testing"
-	"time"
 )
 
-// A Manifest has one owner for its derived state: newManifest. UnmarshalJSON
-// delegates to it rather than filling the fields itself, so a round-trip
-// cannot produce a Manifest that differs from one built directly — which is
-// what lets the rest of the system reason about "a manifest" without asking
-// which constructor made it.
-func TestManifestRoundTripMatchesDirectConstruction(t *testing.T) {
+// A Manifest has one owner for its derived state: newManifest, reached through
+// NewManifestFromArticles. The file holds the articles alone, so a round trip
+// is Marshal, DecodeArticles, then NewManifestFromArticles over the table the
+// caller already has: the result cannot differ from a Manifest built directly.
+func TestDecodeArticles_RoundTripsMarshalJSON(t *testing.T) {
 	t.Parallel()
 	files := []JobFile{
 		{
 			Subject: "a.bin",
-			Date:    time.Unix(1700000000, 0).UTC(),
 			Bytes:   300,
 			Articles: []JobArticle{
 				{ID: "a1@h", Bytes: 100, Number: 1},
@@ -25,76 +23,89 @@ func TestManifestRoundTripMatchesDirectConstruction(t *testing.T) {
 			},
 		},
 		{
-			Subject:        "a.vol01+02.par2",
-			Date:           time.Unix(1700000001, 0).UTC(),
-			Bytes:          50,
-			IsPar2Recovery: true,
-			Articles:       []JobArticle{{ID: "p1@h", Bytes: 50, Number: 1}},
+			Subject:  "a.vol01+02.par2",
+			Bytes:    50,
+			Articles: []JobArticle{{ID: "p1@h", Bytes: 50, Number: 1}},
 		},
 	}
 
-	direct := newManifest(files)
+	direct := NewManifest(files)
 	blob, err := json.Marshal(direct)
 	if err != nil {
 		t.Fatalf("Marshal: %v", err)
 	}
-	var loaded Manifest
-	if err := json.Unmarshal(blob, &loaded); err != nil {
-		t.Fatalf("Unmarshal: %v", err)
+	if !bytes.Contains(blob, []byte(`"articles"`)) {
+		t.Errorf("marshalled manifest has no articles key: %s", blob)
+	}
+	for _, key := range []string{`"subject"`, `"files"`, `"date"`, `"is_par2_recovery"`, `"total_bytes"`} {
+		if bytes.Contains(blob, []byte(key)) {
+			t.Errorf("marshalled manifest carries a %s key, which the job_files record owns: %s", key, blob)
+		}
+	}
+	arts, err := DecodeArticles(bytes.NewReader(blob))
+	if err != nil {
+		t.Fatalf("DecodeArticles: %v", err)
+	}
+	loaded, err := NewManifestFromArticles(direct.Files(), arts)
+	if err != nil {
+		t.Fatalf("NewManifestFromArticles: %v", err)
 	}
 
-	if got, want := loaded.TotalBytes(), direct.TotalBytes(); got != want {
-		t.Errorf("TotalBytes = %d, want %d", got, want)
-	}
-	if got, want := loaded.NumFiles(), direct.NumFiles(); got != want {
-		t.Errorf("NumFiles = %d, want %d", got, want)
-	}
 	if got, want := loaded.NumArticles(), direct.NumArticles(); got != want {
-		t.Errorf("NumArticles = %d, want %d", got, want)
-	}
-	if got, want := loaded.RecoveryBytes(), direct.RecoveryBytes(); got != want {
-		t.Errorf("RecoveryBytes = %d, want %d", got, want)
+		t.Fatalf("NumArticles = %d, want %d", got, want)
 	}
 	for i := range direct.NumArticles() {
 		if got, want := loaded.ArticleID(i), direct.ArticleID(i); got != want {
 			t.Errorf("ArticleID(%d) = %q, want %q", i, got, want)
 		}
-	}
-	for fi := range direct.NumFiles() {
-		if got, want := loaded.FileBytes(fi), direct.FileBytes(fi); got != want {
-			t.Errorf("FileBytes(%d) = %d, want %d", fi, got, want)
+		if got, want := loaded.ArticleBytes(i), direct.ArticleBytes(i); got != want {
+			t.Errorf("ArticleBytes(%d) = %d, want %d", i, got, want)
+		}
+		if got, want := loaded.ArticleNumber(i), direct.ArticleNumber(i); got != want {
+			t.Errorf("ArticleNumber(%d) = %d, want %d", i, got, want)
 		}
 	}
+	if loaded.Files() != direct.Files() {
+		t.Error("the loaded manifest is not indexed over the table it was given")
+	}
 }
 
-// No total is persisted. A stored copy of a value recomputable from the file
-// list is a second source of truth, and the one that can drift; the blob
-// carries only the files, and a stray total_bytes key in one is read by no one.
-func TestManifestDoesNotPersistTotalBytes(t *testing.T) {
+// NewManifestFromArticles is the one constructor, and it refuses a flat article
+// list whose length the table does not account for. The error names both
+// counts so a reader can tell which side is short.
+func TestNewManifestFromArticles_RefusesAnArticleCountTheTableDoesNotHave(t *testing.T) {
 	t.Parallel()
-	m := newManifest([]JobFile{{Subject: "a.bin", Bytes: 300, Articles: []JobArticle{
-		{ID: "a1@h", Bytes: 100, Number: 1}, {ID: "a2@h", Bytes: 200, Number: 2},
-	}}})
+	ft := NewFileTable([]FileSpec{
+		{Subject: "a.bin", Bytes: 200, ArticleCount: 2},
+		{Subject: "b.bin", Bytes: 100, ArticleCount: 1},
+	})
+	m, err := NewManifestFromArticles(ft, []JobArticle{
+		{ID: "a1@h", Bytes: 100, Number: 1}, {ID: "a2@h", Bytes: 100, Number: 2},
+	})
+	if err == nil {
+		t.Fatalf("NewManifestFromArticles = %v, nil; want an error for 2 articles against a 3-article table", m)
+	}
+	for _, want := range []string{"3", "2"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error %q does not name the count %s", err, want)
+		}
+	}
 
-	blob, err := json.Marshal(m)
-	if err != nil {
-		t.Fatalf("Marshal: %v", err)
+	// Too many is refused as well: the check is !=, not <.
+	m, err = NewManifestFromArticles(ft, []JobArticle{
+		{ID: "a1@h", Bytes: 100, Number: 1}, {ID: "a2@h", Bytes: 100, Number: 2},
+		{ID: "b1@h", Bytes: 100, Number: 1}, {ID: "b2@h", Bytes: 100, Number: 2},
+	})
+	if err == nil {
+		t.Fatalf("NewManifestFromArticles = %v, nil; want an error for 4 articles against a 3-article table", m)
 	}
-	if bytes.Contains(blob, []byte("total_bytes")) {
-		t.Errorf("marshalled manifest carries a total_bytes key: %s", blob)
-	}
-
-	var loaded Manifest
-	if err := json.Unmarshal(blob, &loaded); err != nil {
-		t.Fatalf("Unmarshal: %v", err)
-	}
-	if got := loaded.TotalBytes(); got != 300 {
-		t.Errorf("TotalBytes after round trip = %d, want 300 derived from the file list", got)
+	if want := "describes 3 articles, got 4"; !strings.Contains(err.Error(), want) {
+		t.Errorf("error %q does not contain %q", err, want)
 	}
 }
 
-// A Message-ID read back from disk is re-checked, and a manifest carrying one
-// that cannot be requested is refused whole.
+// A Message-ID read back from disk is re-checked, and an article list carrying
+// one that cannot be requested is refused whole.
 //
 // This is the one place internal/queue does not trust its own earlier output,
 // and the reason is specific: internal/nntp interpolates the ID into a
@@ -106,7 +117,7 @@ func TestManifestDoesNotPersistTotalBytes(t *testing.T) {
 // Refusing the whole manifest rather than dropping the article is deliberate:
 // the caller treats the error as a corrupt manifest and fails the job
 // visibly, where a silent drop would leave a job quietly short of articles.
-func TestManifestRefusesAnUnfetchableMessageIDFromDisk(t *testing.T) {
+func TestDecodeArticles_RefusesAnUnfetchableMessageID(t *testing.T) {
 	t.Parallel()
 	for _, tc := range []struct{ name, id string }{
 		{"carriage return", "a\r\nDATA@h"},
@@ -116,40 +127,37 @@ func TestManifestRefusesAnUnfetchableMessageIDFromDisk(t *testing.T) {
 		{"empty", ""},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			blob, err := json.Marshal(manifestJSON{Files: []manifestJSONFile{{
-				Subject:  "a.bin",
-				Bytes:    100,
-				Articles: []manifestJSONArticle{{ID: tc.id, Bytes: 100, Number: 1}},
-			}}})
+			blob, err := json.Marshal(manifestJSON{Articles: []manifestJSONArticle{
+				{ID: "ok@h", Bytes: 100, Number: 1},
+				{ID: tc.id, Bytes: 100, Number: 2},
+			}})
 			if err != nil {
 				t.Fatalf("Marshal: %v", err)
 			}
-			var m Manifest
-			if err := json.Unmarshal(blob, &m); err == nil {
-				t.Fatalf("Unmarshal(%q) = nil, want an error — the ID would reach "+
-					"the wire unchecked", tc.id)
+			arts, err := DecodeArticles(bytes.NewReader(blob))
+			if err == nil {
+				t.Fatalf("DecodeArticles(%q) = %v, nil; want an error: the ID would reach the wire unchecked", tc.id, arts)
+			}
+			if arts != nil {
+				t.Errorf("DecodeArticles returned %d articles alongside its error; the whole list is refused", len(arts))
 			}
 		})
 	}
 }
 
-// A well-formed manifest must still load, or the check above would refuse
+// A well-formed article list must still load, or the check above would refuse
 // every job on restart.
-func TestManifestAcceptsOrdinaryMessageIDsFromDisk(t *testing.T) {
+func TestDecodeArticles_AcceptsOrdinaryMessageIDs(t *testing.T) {
 	t.Parallel()
-	blob, err := json.Marshal(manifestJSON{Files: []manifestJSONFile{{
-		Subject:  "a.bin",
-		Bytes:    100,
-		Articles: []manifestJSONArticle{{ID: "plain@example.com", Bytes: 100, Number: 1}},
-	}}})
+	blob, err := json.Marshal(manifestJSON{Articles: []manifestJSONArticle{{ID: "plain@example.com", Bytes: 100, Number: 1}}})
 	if err != nil {
 		t.Fatalf("Marshal: %v", err)
 	}
-	var m Manifest
-	if err := json.Unmarshal(blob, &m); err != nil {
-		t.Fatalf("Unmarshal: %v", err)
+	arts, err := DecodeArticles(bytes.NewReader(blob))
+	if err != nil {
+		t.Fatalf("DecodeArticles: %v", err)
 	}
-	if got := m.ArticleID(0); got != "plain@example.com" {
-		t.Errorf("ArticleID(0) = %q, want it loaded verbatim", got)
+	if len(arts) != 1 || arts[0].ID != "plain@example.com" {
+		t.Errorf("DecodeArticles = %v, want the one article loaded verbatim", arts)
 	}
 }

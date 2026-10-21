@@ -17,10 +17,10 @@ func TestFileState_DistinguishesHeldFromSkipped(t *testing.T) {
 	p := job.Progress()
 
 	// File 1 is the recovery volume, held pending the verdict.
-	if got := fileState(m, p, 1); got != "held" {
+	if got := fileState(m.Files(), p, 1); got != "held" {
 		t.Errorf("held volume state = %q, want %q", got, "held")
 	}
-	if got := fileState(m, p, 0); got == "held" || got == "skipped" {
+	if got := fileState(m.Files(), p, 0); got == "held" || got == "skipped" {
 		t.Errorf("content file state = %q, want a fetched state", got)
 	}
 
@@ -29,7 +29,7 @@ func TestFileState_DistinguishesHeldFromSkipped(t *testing.T) {
 		t.Fatal("DiscardDeferredPar2 returned false, want true")
 	}
 	p = job.Progress()
-	if got := fileState(m, p, 1); got != "skipped" {
+	if got := fileState(m.Files(), p, 1); got != "skipped" {
 		t.Errorf("discarded volume state = %q, want %q", got, "skipped")
 	}
 }

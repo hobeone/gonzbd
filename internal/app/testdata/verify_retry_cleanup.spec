@@ -4,7 +4,7 @@ run ^(TestCleanUnrecordedRetryFiles|TestVerifyRetry_CleansUnrecordedRetryFilesAn
 [unrecorded files and staging dirs are not cleaned during verifyRetry]
 file internal/app/app.go
 --- anchor
-	cleanUnrecordedRetryFiles(j.Name(), m, files, app.pipeline.sanitizeOptions(), locate, app.log)
+	cleanUnrecordedRetryFiles(j.Name(), m.Files(), files, app.pipeline.sanitizeOptions(), locate, app.log)
 --- replace
 --- end
 

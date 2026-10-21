@@ -26,7 +26,7 @@ func TestPeek_FailActionFilesTheJobAfterTheFileIsMarkedComplete(t *testing.T) {
 		t.Fatalf("writeJobManifest: %v", err)
 	}
 	// The job_files rows AddJob would have seeded.
-	if err := seedJobFiles(t.Context(), a.durable, a.j.ID(), a.j.NumFiles(), a.j.FileFetchPolicy); err != nil {
+	if err := seedJobFiles(t.Context(), a.durable, a.j); err != nil {
 		t.Fatalf("seedJobFiles: %v", err)
 	}
 	// Hold the completion between the peek and the mark until the job, if it

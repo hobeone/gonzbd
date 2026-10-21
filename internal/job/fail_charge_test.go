@@ -99,8 +99,8 @@ func TestMarkArticleFailedCharge_EvictedChargeHoldsAtHydration(t *testing.T) {
 	if err := j.MarkArticleFailed(2, 30); err != nil {
 		t.Fatalf("MarkArticleFailed on an evicted job: %v", err)
 	}
-	if err := j.RestoreContent(m); err != nil {
-		t.Fatalf("RestoreContent: %v", err)
+	if err := j.AttachArticles(m); err != nil {
+		t.Fatalf("AttachArticles: %v", err)
 	}
 	checkFigures(t, j, 30)
 }
@@ -173,8 +173,8 @@ func TestMarkArticleFailedCharge_SecondFailureKeepsTheFirstCharge(t *testing.T) 
 		if err := j.MarkArticleFailed(2, 10); err != nil {
 			t.Fatalf("MarkArticleFailed: %v", err)
 		}
-		if err := j.RestoreContent(m); err != nil {
-			t.Fatalf("RestoreContent: %v", err)
+		if err := j.AttachArticles(m); err != nil {
+			t.Fatalf("AttachArticles: %v", err)
 		}
 		checkFigures(t, j, 100)
 	})
@@ -202,7 +202,7 @@ func TestMarkArticleFailedCharge_ChangesNoFetchPolicy(t *testing.T) {
 		t.Helper()
 		m := NewManifest([]JobFile{
 			{Subject: "data", Bytes: 100, Articles: []JobArticle{{ID: "<d0@x>", Bytes: 100, Number: 1}}},
-			{Subject: "vol01+02.par2", Bytes: 100, IsPar2Recovery: true,
+			{Subject: "vol01+02.par2", Bytes: 100,
 				Articles: []JobArticle{{ID: "<p0@x>", Bytes: 100, Number: 1}}},
 		})
 		j := New("j", "j", PolicyFromPP(1))
@@ -283,8 +283,8 @@ func TestCheckEarlyAbort_IgnoresARefusalThatChargesNothing(t *testing.T) {
 			j, m := newJob(t)
 			j.Evict()
 			failAll(t, j, charge)
-			if err := j.RestoreContent(m); err != nil {
-				t.Fatalf("RestoreContent: %v", err)
+			if err := j.AttachArticles(m); err != nil {
+				t.Fatalf("AttachArticles: %v", err)
 			}
 			return j
 		},
@@ -361,8 +361,8 @@ func TestCheckEarlyAbort_AZeroChargeRefusalStaysResolved(t *testing.T) {
 			j, m := newJob(t)
 			j.Evict()
 			failAll(t, j)
-			if err := j.RestoreContent(m); err != nil {
-				t.Fatalf("RestoreContent: %v", err)
+			if err := j.AttachArticles(m); err != nil {
+				t.Fatalf("AttachArticles: %v", err)
 			}
 			return j
 		},
@@ -398,7 +398,7 @@ func TestCheckEarlyAbort_SparesAJobWhoseDamageFitsRecovery(t *testing.T) {
 		return out
 	}
 	vol := func(bytes int64, n int) JobFile {
-		return JobFile{Subject: "data.vol00+10.par2", Bytes: bytes, IsPar2Recovery: true, Articles: arts("v", n)}
+		return JobFile{Subject: "data.vol00+10.par2", Bytes: bytes, Articles: arts("v", n)}
 	}
 	cases := []struct {
 		name      string
@@ -486,8 +486,8 @@ func TestCheckEarlyAbort_SparesAJobWhoseDamageFitsRecovery(t *testing.T) {
 				j, m := newJob(t)
 				j.Evict()
 				failAll(t, j)
-				if err := j.RestoreContent(m); err != nil {
-					t.Fatalf("RestoreContent: %v", err)
+				if err := j.AttachArticles(m); err != nil {
+					t.Fatalf("AttachArticles: %v", err)
 				}
 				return j
 			},
@@ -517,7 +517,7 @@ func TestCheckEarlyAbort_SparingLeavesTheLatchUnset(t *testing.T) {
 	}
 	m := NewManifest([]JobFile{
 		{Subject: "data.bin", Bytes: 2000, Articles: arts},
-		{Subject: "data.vol00+10.par2", Bytes: 1500, IsPar2Recovery: true,
+		{Subject: "data.vol00+10.par2", Bytes: 1500,
 			Articles: []JobArticle{{ID: "<lv@x>", Bytes: 1500, Number: 1}}},
 	})
 	j := New("latch", "latch", PolicyFromPP(3))

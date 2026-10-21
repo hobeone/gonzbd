@@ -131,7 +131,7 @@ func parseNZB(path string) (*nzb.NZB, error) {
 //
 // nzb.File.Subject is NOT the raw subject line: convertFile already ran it
 // through ExtractFilenameFromSubject and SanitizeFilename, and Manifest
-// carries that result through to Manifest.FileSubject — which is exactly what
+// carries that result through to FileTable.Subject — which is exactly what
 // both call sites hand to par2 as AssembledFile.FileName. Re-extracting a
 // quoted run here would probe a name production never sees.
 func deliveredName(subject string) string { return subject }
@@ -139,7 +139,7 @@ func deliveredName(subject string) string { return subject }
 // productionName reproduces what both call sites hand par2 as
 // AssembledFile.FileName:
 //
-//	name := m.FileSubject(fi)
+//	name := ft.Subject(fi)
 //	if fn := p.FileFilename(fi); fn != "" { name = fn }
 //
 // FileFilename is the yEnc-declared name recorded during assembly, so once a
@@ -220,7 +220,7 @@ func probeIndex(cfgPath string, doc *nzb.NZB, full bool) error {
 	// This is what production actually matches on. Both par2 consumers — the
 	// on-demand fetch decision and the quickcheck stage — build their
 	// par2.AssembledFile list from a name that prefers FileProgress.Filename
-	// over Manifest.FileSubject when it is set (app.resolvedName), and
+	// over FileTable.Subject when it is set (app.resolvedName), and
 	// Filename comes from the yEnc header — so probing Subject alone would
 	// compare a name the real code never uses.
 	fmt.Printf("\n=== yEnc headers (one article per file)\n")

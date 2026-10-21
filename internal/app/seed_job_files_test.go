@@ -4,11 +4,15 @@ import (
 	"context"
 	"database/sql"
 	"path/filepath"
+	"strings"
 	"testing"
 
+	"github.com/hobeone/gonzbd/internal/config"
 	"github.com/hobeone/gonzbd/internal/durability"
 	"github.com/hobeone/gonzbd/internal/history"
 	"github.com/hobeone/gonzbd/internal/job"
+	"github.com/hobeone/gonzbd/internal/nzb"
+	"github.com/hobeone/gonzbd/internal/types"
 )
 
 // fetchAlwaysForAll is the fetch-policy accessor every seed test but the
@@ -66,7 +70,7 @@ func TestSeedJobFiles_OneRowPerFile(t *testing.T) {
 		return job.FetchAlways
 	}
 
-	if err := seedJobFiles(t.Context(), durability.NewStore(db), "job-a", 4, fetch); err != nil {
+	if err := seedJobFiles(t.Context(), durability.NewStore(db), blankJob(t, "job-a", 4, fetch)); err != nil {
 		t.Fatalf("seedJobFiles: %v", err)
 	}
 
@@ -116,7 +120,7 @@ func TestSeedJobFiles_IsIdempotent(t *testing.T) {
 	t.Parallel()
 	db := openHistoryTestDB(t)
 
-	if err := seedJobFiles(t.Context(), durability.NewStore(db), "job-b", 3, fetchAlwaysForAll); err != nil {
+	if err := seedJobFiles(t.Context(), durability.NewStore(db), blankJob(t, "job-b", 3, fetchAlwaysForAll)); err != nil {
 		t.Fatalf("first seed: %v", err)
 	}
 	if _, err := db.Exec(
@@ -125,7 +129,7 @@ func TestSeedJobFiles_IsIdempotent(t *testing.T) {
 	); err != nil {
 		t.Fatalf("simulate recorder write: %v", err)
 	}
-	if err := seedJobFiles(t.Context(), durability.NewStore(db), "job-b", 3, fetchAlwaysForAll); err != nil {
+	if err := seedJobFiles(t.Context(), durability.NewStore(db), blankJob(t, "job-b", 3, fetchAlwaysForAll)); err != nil {
 		t.Fatalf("second seed: %v", err)
 	}
 
@@ -169,7 +173,7 @@ BEGIN SELECT RAISE(ABORT, 'injected fault'); END`); err != nil {
 		t.Fatalf("create trigger: %v", err)
 	}
 
-	err := seedJobFiles(t.Context(), durability.NewStore(db), "job-c", 6, fetchAlwaysForAll)
+	err := seedJobFiles(t.Context(), durability.NewStore(db), blankJob(t, "job-c", 6, fetchAlwaysForAll))
 	if err == nil {
 		t.Fatal("seedJobFiles returned nil, want the injected fault reported")
 	}
@@ -186,7 +190,7 @@ func TestSeedJobFiles_ZeroFilesCommits(t *testing.T) {
 	t.Parallel()
 	db := openHistoryTestDB(t)
 
-	if err := seedJobFiles(t.Context(), durability.NewStore(db), "job-d", 0, fetchAlwaysForAll); err != nil {
+	if err := seedJobFiles(t.Context(), durability.NewStore(db), blankJob(t, "job-d", 0, fetchAlwaysForAll)); err != nil {
 		t.Fatalf("seedJobFiles with no files: %v", err)
 	}
 	if n := countSeeded(t, db, "job-d"); n != 0 {
@@ -202,10 +206,99 @@ func TestSeedJobFiles_CancelledContextSeedsNothing(t *testing.T) {
 	ctx, cancel := context.WithCancel(t.Context())
 	cancel()
 
-	if err := seedJobFiles(ctx, durability.NewStore(db), "job-e", 3, fetchAlwaysForAll); err == nil {
+	if err := seedJobFiles(ctx, durability.NewStore(db), blankJob(t, "job-e", 3, fetchAlwaysForAll)); err == nil {
 		t.Fatal("seedJobFiles returned nil for a cancelled context, want an error")
 	}
 	if n := countSeeded(t, db, "job-e"); n != 0 {
 		t.Errorf("job_files rows = %d, want 0", n)
+	}
+}
+
+// blankJob returns a job with n structure-less files whose fetch policies are
+// fetch's, for tests of the seed's row count and fetch policies rather than of
+// the structure it copies.
+func blankJob(t *testing.T, id string, n int, fetch func(int) job.FetchPolicy) *job.Job {
+	t.Helper()
+	j := job.New(id, id, job.Policy{})
+	if err := j.AttachContent(job.NewManifest(make([]job.JobFile, n))); err != nil {
+		t.Fatalf("AttachContent: %v", err)
+	}
+	for i := range n {
+		if err := j.SetFileFetchPolicy(i, fetch(i)); err != nil {
+			t.Fatalf("SetFileFetchPolicy(%d): %v", i, err)
+		}
+	}
+	return j
+}
+
+// TestSeedJobFiles_RefusesAJobWithoutFiles pins that a job with no file table
+// is an error rather than a zero-row seed.
+func TestSeedJobFiles_RefusesAJobWithoutFiles(t *testing.T) {
+	t.Parallel()
+	db := openHistoryTestDB(t)
+
+	err := seedJobFiles(t.Context(), durability.NewStore(db), job.New("job-f", "job-f", job.Policy{}))
+	if err == nil {
+		t.Fatal("seedJobFiles returned nil for a job with no file table, want an error")
+	}
+	if n := countSeeded(t, db, "job-f"); n != 0 {
+		t.Errorf("job_files rows = %d, want 0", n)
+	}
+}
+
+// TestSeedJobFiles_WritesTheStructure pins that AddJob seeds each file's
+// subject, bytes, article count and fetch policy from the job's file table, in
+// a job with an on-demand par2 volume so a FetchIfNeeded row is exercised.
+func TestSeedJobFiles_WritesTheStructure(t *testing.T) {
+	t.Parallel()
+	env := newLREnv(t)
+	a := env.newApp(t)
+	raw := []byte(`<?xml version="1.0" encoding="UTF-8"?>
+<nzb xmlns="http://www.newzbin.com/DTD/2003/nzb">
+ <file poster="p" date="1" subject="data.part01.rar">
+  <groups><group>alt.binaries.test</group></groups>
+  <segments><segment bytes="100" number="1">d1@t</segment><segment bytes="150" number="2">d2@t</segment></segments>
+ </file>
+ <file poster="p" date="1" subject="data.vol01+02.par2">
+  <groups><group>alt.binaries.test</group></groups>
+  <segments><segment bytes="80" number="1">p1@t</segment></segments>
+ </file>
+</nzb>`)
+	parsed, err := nzb.Parse(strings.NewReader(string(raw)))
+	if err != nil {
+		t.Fatalf("nzb.Parse: %v", err)
+	}
+	a.config.With(func(c *config.Config) { c.Downloads.OnDemandPar2 = true })
+	j, hdr, err := BuildIngestJob(a.config, parsed, "data.nzb", types.FetchOptions{NzbName: "data"}, nil)
+	if err != nil {
+		t.Fatalf("BuildIngestJob: %v", err)
+	}
+	if err := a.AddJob(t.Context(), j, hdr, raw, true); err != nil {
+		t.Fatalf("AddJob: %v", err)
+	}
+
+	rows, err := a.st.FileRows(t.Context(), j.ID())
+	if err != nil {
+		t.Fatalf("FileRows: %v", err)
+	}
+	specs := j.Files().Specs()
+	if len(rows) != len(specs) || len(rows) != 2 {
+		t.Fatalf("rows = %d, specs = %d, want 2 each", len(rows), len(specs))
+	}
+	sawIfNeeded := false
+	for i, r := range rows {
+		if r.FileIndex != i || r.Subject != specs[i].Subject || r.Bytes != specs[i].Bytes || r.ArticleCount != specs[i].ArticleCount {
+			t.Errorf("row %d = %+v, want structure %+v", i, r, specs[i])
+		}
+		if want := uint8(j.FileFetchPolicy(i)); r.FetchPolicy != want {
+			t.Errorf("row %d FetchPolicy = %d, want %d", i, r.FetchPolicy, want)
+		}
+		sawIfNeeded = sawIfNeeded || r.FetchPolicy == uint8(job.FetchIfNeeded)
+	}
+	if !sawIfNeeded {
+		t.Error("no FetchIfNeeded row: the fixture does not exercise the derived policy")
+	}
+	if rows[0].ArticleCount != 2 || rows[0].Bytes != 250 {
+		t.Errorf("row 0 = %+v, want ArticleCount 2, Bytes 250", rows[0])
 	}
 }

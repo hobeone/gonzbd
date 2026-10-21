@@ -13,12 +13,12 @@ import (
 // no-op once Emitted or Done), and clearEmitted only restores it to pending
 // when the article has not since completed.
 func TestMarkEmittedClearEmitted_Pair(t *testing.T) {
-	m := newManifest([]JobFile{{Articles: []JobArticle{
+	m := NewManifest([]JobFile{{Articles: []JobArticle{
 		{ID: "a0", Bytes: 100},
 		{ID: "a1", Bytes: 100},
 		{ID: "a2", Bytes: 100},
 	}}})
-	p := newJobProgress(m)
+	p := newJobProgress(m.Files())
 	// recompute is not needed to seed the counters — newJobProgress sets
 	// pendingArticles now that it delegates to newJobProgressSized — but it
 	// is what production runs before these helpers ever see the progress, so
@@ -126,11 +126,11 @@ func TestResetForReload_FailedArticle(t *testing.T) {
 	// always makes it. RemainingBytes derives from the file's own size, so a
 	// fixture leaving it zero would clamp the figure to zero and make the
 	// assertions below pass no matter what resetForReload did.
-	m := newManifest([]JobFile{{Bytes: 200, Articles: []JobArticle{
+	m := NewManifest([]JobFile{{Bytes: 200, Articles: []JobArticle{
 		{ID: "a0", Bytes: 100},
 		{ID: "a1", Bytes: 100},
 	}}})
-	p := newJobProgress(m)
+	p := newJobProgress(m.Files())
 	p.markFailed(m, 0)
 	p.emitted.Set(0) // simulate a reload racing an in-flight (re-)dispatch
 
@@ -174,11 +174,11 @@ func TestResetForReload_NotFailedArticle(t *testing.T) {
 	// always makes it. RemainingBytes derives from the file's own size, so a
 	// fixture leaving it zero would clamp the figure to zero and make the
 	// assertions below pass no matter what resetForReload did.
-	m := newManifest([]JobFile{{Bytes: 200, Articles: []JobArticle{
+	m := NewManifest([]JobFile{{Bytes: 200, Articles: []JobArticle{
 		{ID: "a0", Bytes: 100},
 		{ID: "a1", Bytes: 100},
 	}}})
-	p := newJobProgress(m)
+	p := newJobProgress(m.Files())
 	p.markDone(m, 0) // successfully completed, not failed
 	p.emitted.Set(0)
 
@@ -218,11 +218,11 @@ func TestJobProgressClone_DeepCopy(t *testing.T) {
 	//
 	// This block was a verbatim copy of the two resetForReload fixtures above
 	// and still named resetForReload, which this test does not call.
-	m := newManifest([]JobFile{{Bytes: 200, Articles: []JobArticle{
+	m := NewManifest([]JobFile{{Bytes: 200, Articles: []JobArticle{
 		{ID: "a0", Bytes: 100},
 		{ID: "a1", Bytes: 100},
 	}}})
-	p := newJobProgress(m)
+	p := newJobProgress(m.Files())
 	p.done.Set(0)
 	p.files[0].Filename = "original.bin"
 	p.serverStats = map[string]int64{"srv1": 5}

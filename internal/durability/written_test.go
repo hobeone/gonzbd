@@ -36,7 +36,7 @@ func TestApplyRecord_ReplaceKeepsTheLatestWrite(t *testing.T) {
 	t.Parallel()
 	s := newWrittenStore(t)
 	ctx := context.Background()
-	if err := s.Admit(ctx, "j", []uint8{0}); err != nil {
+	if err := s.Admit(ctx, "j", admitPolicies(0)); err != nil {
 		t.Fatal(err)
 	}
 	row := WrittenRow{FileIdx: 0, ArtIdx: 3, Offset: 100, Length: 10, CRC32: 1}
@@ -59,7 +59,7 @@ func TestApplyRecord_FileStateUpdatesJobFiles(t *testing.T) {
 	t.Parallel()
 	s := newWrittenStore(t)
 	ctx := context.Background()
-	if err := s.Admit(ctx, "j", []uint8{0, 1}); err != nil {
+	if err := s.Admit(ctx, "j", admitPolicies(0, 1)); err != nil {
 		t.Fatal(err)
 	}
 	if err := s.ApplyRecord(ctx, []RecordBatch{{JobID: "j",
@@ -83,7 +83,7 @@ func TestApplyRecord_VerdictDeletesAndClears(t *testing.T) {
 	t.Parallel()
 	s := newWrittenStore(t)
 	ctx := context.Background()
-	if err := s.Admit(ctx, "j", []uint8{0}); err != nil {
+	if err := s.Admit(ctx, "j", admitPolicies(0)); err != nil {
 		t.Fatal(err)
 	}
 	if err := s.ApplyRecord(ctx, []RecordBatch{{JobID: "j",
@@ -113,7 +113,7 @@ func TestApplyRecord_VerdictDeletesNamedArticlesAndSetsComplete(t *testing.T) {
 	t.Parallel()
 	s := newWrittenStore(t)
 	ctx := context.Background()
-	if err := s.Admit(ctx, "j", []uint8{0, 0}); err != nil {
+	if err := s.Admit(ctx, "j", admitPolicies(0, 0)); err != nil {
 		t.Fatal(err)
 	}
 	if err := s.ApplyRecord(ctx, []RecordBatch{{JobID: "j",
@@ -146,7 +146,7 @@ func TestApplyRecord_RejectsSetAndClearTogether(t *testing.T) {
 	t.Parallel()
 	s := newWrittenStore(t)
 	ctx := context.Background()
-	if err := s.Admit(ctx, "j", []uint8{0}); err != nil {
+	if err := s.Admit(ctx, "j", admitPolicies(0)); err != nil {
 		t.Fatal(err)
 	}
 	if err := s.ApplyRecord(ctx, []RecordBatch{{JobID: "j",
@@ -174,7 +174,7 @@ func applyBatchIn(t *testing.T, s *Store, b RecordBatch) error {
 func TestApplyBatch_SetAndClearIsErrVerdictBothWays(t *testing.T) {
 	t.Parallel()
 	s := newWrittenStore(t)
-	if err := s.Admit(context.Background(), "j", []uint8{0}); err != nil {
+	if err := s.Admit(context.Background(), "j", admitPolicies(0)); err != nil {
 		t.Fatal(err)
 	}
 	err := applyBatchIn(t, s, RecordBatch{JobID: "j", Verdicts: []FileVerdict{{FileIdx: 0, SetComplete: true, ClearComplete: true}}})
@@ -187,7 +187,7 @@ func TestApplyBatch_DeleteAllThenRowsKeepsTheRows(t *testing.T) {
 	t.Parallel()
 	s := newWrittenStore(t)
 	ctx := context.Background()
-	if err := s.Admit(ctx, "j", []uint8{0}); err != nil {
+	if err := s.Admit(ctx, "j", admitPolicies(0)); err != nil {
 		t.Fatal(err)
 	}
 	if err := applyBatchIn(t, s, RecordBatch{JobID: "j", Rows: []WrittenRow{{0, 0, 0, 10, 1}}}); err != nil {
@@ -268,7 +268,7 @@ func TestApplyRecord_StatementFailuresAreReturnedAndRolledBack(t *testing.T) {
 			t.Parallel()
 			s := newWrittenStore(t)
 			ctx := context.Background()
-			if err := s.Admit(ctx, "j", []uint8{0}); err != nil {
+			if err := s.Admit(ctx, "j", admitPolicies(0)); err != nil {
 				t.Fatal(err)
 			}
 			// A row for the delete triggers to fire on.
@@ -316,7 +316,7 @@ func TestWrittenRows_ReturnsAQueryError(t *testing.T) {
 func TestApplyRecord_CancelledContextReturnsAnErrorAndWritesNothing(t *testing.T) {
 	t.Parallel()
 	s := newWrittenStore(t)
-	if err := s.Admit(context.Background(), "j", []uint8{0}); err != nil {
+	if err := s.Admit(context.Background(), "j", admitPolicies(0)); err != nil {
 		t.Fatal(err)
 	}
 	ctx, cancel := context.WithCancel(context.Background())

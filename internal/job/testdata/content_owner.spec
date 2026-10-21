@@ -1,10 +1,10 @@
 pkg ./internal/job/
 run TestAttachContent_IsTheSoleConstructorOfThePair
 
-[AttachContent stops deriving progress and leaves it nil]
+[AttachFiles stops deriving progress and leaves it nil]
 file internal/job/content.go
 --- anchor
-	j.progress = newJobProgress(m)
+	j.progress = newJobProgress(ft)
 --- replace
 	j.progress = nil
 --- end

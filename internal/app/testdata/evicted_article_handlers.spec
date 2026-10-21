@@ -52,9 +52,9 @@ file internal/job/content.go
 --- anchor
 	j.progress.recompute(m)
 	j.manifest = m
-	j.totalBytes = m.TotalBytes()
+	return nil
 --- replace
-	j.progress = newJobProgress(m)
+	j.progress = newJobProgress(m.Files())
 	j.manifest = m
-	j.totalBytes = m.TotalBytes()
+	return nil
 --- end

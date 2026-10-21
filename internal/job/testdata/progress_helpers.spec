@@ -1,5 +1,5 @@
 pkg ./internal/job/
-run TestMarkNotDone_RefusesAPermanentlyFailedArticle|TestFileMetaFromManifest_ProjectsCountsBytesAndPar2|TestDerivedRemainingBytes_TracksCompletionAndFetchPolicy|TestPar2ReleaseReason_SetAndClear|TestSizeFigures_ExcludesDifferOnCompleteOnly|TestDescribesSameJobAs_GuardsBothDimensions
+run TestMarkNotDone_RefusesAPermanentlyFailedArticle|TestFileMetaFromTable_ProjectsCountsBytesAndPar2|TestDerivedRemainingBytes_TracksCompletionAndFetchPolicy|TestPar2ReleaseReason_SetAndClear|TestSizeFigures_ExcludesDifferOnCompleteOnly
 
 [markNotDone stops refusing a permanently failed article]
 file internal/job/progress.go
@@ -18,7 +18,7 @@ file internal/job/progress.go
 [the par2 classification is dropped from the file projection]
 file internal/job/progress.go
 --- anchor
-			IsPar2:       isPar2File(m.FileSubject(fi)),
+			IsPar2:       isPar2File(ft.Subject(fi)),
 --- replace
 			IsPar2:       false,
 --- end
@@ -31,14 +31,6 @@ func (p *JobProgress) clearPar2ReleaseReason() {
 --- replace
 func (p *JobProgress) clearPar2ReleaseReason() {
 	p.par2ReleaseReason = p.par2ReleaseReason
---- end
-
-[describesSameJobAs stops checking the file dimension]
-file internal/job/progress.go
---- anchor
-	if p.done.Len() != m.NumArticles() || len(p.files) != m.NumFiles() {
---- replace
-	if p.done.Len() != m.NumArticles() {
 --- end
 
 [sizeFigures counts a file the job is not fetching]

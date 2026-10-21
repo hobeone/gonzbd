@@ -22,7 +22,7 @@ func buildRestoredTestJob(t *testing.T, reason string, released bool) *job.Job {
 		{Subject: "release.rar", Bytes: 500, Articles: []job.JobArticle{
 			{ID: "d0@t", Bytes: 500, Number: 1},
 		}},
-		{Subject: "x.vol000+01.par2", Bytes: 500, IsPar2Recovery: true, Deferred: true,
+		{Subject: "x.vol000+01.par2", Bytes: 500,
 			Articles: []job.JobArticle{{ID: "p0@t", Bytes: 500, Number: 1}}},
 	}
 	job.SortJobFiles(files)
@@ -39,7 +39,7 @@ func buildRestoredTestJob(t *testing.T, reason string, released bool) *job.Job {
 	// whose verdict released nothing still holds them.
 	if !released {
 		for fi := range m.NumFiles() {
-			if m.FileIsPar2Recovery(fi) {
+			if m.Files().IsPar2Recovery(fi) {
 				if err := j.SetFileFetchPolicy(fi, job.FetchIfNeeded); err != nil {
 					t.Fatalf("SetFileFetchPolicy: %v", err)
 				}

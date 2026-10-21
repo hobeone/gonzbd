@@ -22,10 +22,9 @@ func buildRepairHealthJob(t *testing.T, files []repairHealthFile, failIdx ...int
 	for i, f := range files {
 		totalBytes += f.bytes
 		jFiles = append(jFiles, job.JobFile{
-			Subject:        f.subject,
-			Bytes:          f.bytes,
-			Articles:       []job.JobArticle{{ID: fmt.Sprintf("a%d@t", i), Bytes: int(f.bytes), Number: 1}},
-			IsPar2Recovery: job.IsRecoveryVolume(f.subject),
+			Subject:  f.subject,
+			Bytes:    f.bytes,
+			Articles: []job.JobArticle{{ID: fmt.Sprintf("a%d@t", i), Bytes: int(f.bytes), Number: 1}},
 		})
 	}
 	m := job.NewManifest(jFiles)

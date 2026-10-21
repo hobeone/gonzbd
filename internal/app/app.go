@@ -782,10 +782,8 @@ func (app *Application) AddJob(ctx context.Context, j *job.Job, hdr dispatch.Hea
 	// without one — so the attempt runs unrecorded and reports as a failure to
 	// add.
 	if app.durable != nil {
-		if m, err := j.Manifest(); err == nil && m != nil {
-			if err := seedJobFiles(ctx, app.durable, j.ID(), m.NumFiles(), j.FileFetchPolicy); err != nil {
-				return err
-			}
+		if err := seedJobFiles(ctx, app.durable, j); err != nil {
+			return err
 		}
 	}
 	if _, err := app.claimJobName(snap, baseName, func(name string) error {
@@ -860,16 +858,28 @@ func (app *Application) removeNZBBackupIn(dir, jobID, nzbBackup string) {
 // in-flight tick Save before its own busy_timeout begins.
 const addPersistTimeout = 10 * time.Second
 
-// seedJobFiles seeds a job's job_files rows through the durability store,
-// translating each file's job.FetchPolicy to the store's plain type. See
-// durability.Store.Admit for why the seed must exist before the
-// recorder's first write, and why it is one transaction.
-func seedJobFiles(ctx context.Context, st durabilityStore, jobID string, numFiles int, fetch func(int) job.FetchPolicy) error {
-	policies := make([]uint8, numFiles)
-	for i := range numFiles {
-		policies[i] = uint8(fetch(i))
+// seedJobFiles seeds a job's job_files rows through the durability store from
+// the job's file table and per-file fetch policy, translating them to the
+// store's plain types. It refuses a job with no file table rather than
+// seeding zero rows: a job without a table would run with no rows for the
+// recorder to update. See durability.Store.Admit for why the seed must exist
+// before the recorder's first write, and why it is one transaction.
+func seedJobFiles(ctx context.Context, st durabilityStore, j *job.Job) error {
+	ft := j.Files()
+	if ft == nil {
+		return fmt.Errorf("app: seed job_files for %s: job has no file table", j.ID())
 	}
-	return st.Admit(ctx, jobID, policies)
+	specs := ft.Specs()
+	files := make([]durability.AdmitFile, len(specs))
+	for i, s := range specs {
+		files[i] = durability.AdmitFile{
+			Subject:      s.Subject,
+			Bytes:        s.Bytes,
+			ArticleCount: s.ArticleCount,
+			FetchPolicy:  uint8(j.FileFetchPolicy(i)),
+		}
+	}
+	return st.Admit(ctx, j.ID(), files)
 }
 
 // RemoveJob cancels and removes a job from the queue.
@@ -1849,7 +1859,7 @@ func (app *Application) maybeReleaseRecoveryVolumes(ctx context.Context, j *job.
 			// post-fetch assessment sizes the rest. If that volume did not
 			// parse, or the directory could not be read, every held volume
 			// is released.
-			fetched, _, _ := prog.RecoveryReleased(m)
+			fetched, _, _ := prog.RecoveryReleased(m.Files())
 			switch {
 			case sErr != nil:
 				reason = fmt.Sprintf("no usable par2 index found (err: %v)", sErr)
@@ -1862,7 +1872,7 @@ func (app *Application) maybeReleaseRecoveryVolumes(ctx context.Context, j *job.
 			app.log.Info("on-demand par2: no usable par2 index to verify against",
 				"job", jobID, "dir", dir, "err", sErr, "reason", reason)
 		default:
-			a, aErr := par2.AssessWithOptions(dir, sets, assembledFiles(m, prog), app.log, parseOpts)
+			a, aErr := par2.AssessWithOptions(dir, sets, assembledFiles(m.Files(), prog), app.log, parseOpts)
 			if aErr != nil {
 				outcome = outcomeRepair
 				reason = fmt.Sprintf("could not match downloaded files against the par2 index (err: %v)", aErr)
@@ -2924,7 +2934,7 @@ func (app *Application) retryHistoryJob(ctx context.Context, jobID string, allow
 	// drops state for a job the dispatcher does not hold yet. A file the
 	// verification finished keeps complete = 1.
 	if app.durable != nil {
-		if err := seedJobFiles(ctx, app.durable, jobID, m.NumFiles(), j.FileFetchPolicy); err != nil {
+		if err := seedJobFiles(ctx, app.durable, j); err != nil {
 			return fmt.Errorf("app: retry %s: seed job_files: %w", jobID, err)
 		}
 		// context.Background(): a client disconnect mid-request must not
@@ -2979,8 +2989,8 @@ func (app *Application) retryHistoryJob(ctx context.Context, jobID string, allow
 // A retried job is built by BuildIngestJob, which attaches its manifest, so
 // Hydrate would return early and never verify it; this is its verification.
 //
-//  1. Shape check: every row must name an article inside its file's range of
-//     the re-parsed manifest. On a mismatch every row of the job is deleted,
+//  1. Shape check: every row must name an article inside its file's range in
+//     the rebuilt job's file table. On a mismatch every row of the job is deleted,
 //     unread.
 //  2. complete is cleared on every file, because post-processing may have
 //     repaired, moved or deleted the bytes since they were written. The
@@ -3023,7 +3033,7 @@ func (app *Application) verifyRetry(ctx context.Context, j *job.Job, m *job.Mani
 		}
 	}
 	locate := func(fn string) (jobFile, error) { return app.pipeline.jobFileLocation(j.Name(), fn) }
-	res, err := verifyJobFiles(ctx, m, files, rows, locate, true)
+	res, err := verifyJobFiles(ctx, m.Files(), files, rows, locate, true)
 	if err != nil {
 		return nil, fmt.Errorf("verify written articles: %w", err)
 	}
@@ -3032,7 +3042,7 @@ func (app *Application) verifyRetry(ctx context.Context, j *job.Job, m *job.Mani
 			return nil, fmt.Errorf("commit verdicts: %w", err)
 		}
 	}
-	cleanUnrecordedRetryFiles(j.Name(), m, files, app.pipeline.sanitizeOptions(), locate, app.log)
+	cleanUnrecordedRetryFiles(j.Name(), m.Files(), files, app.pipeline.sanitizeOptions(), locate, app.log)
 	return installVerification(j, files, rows, res, false, app.log, nil), nil
 }
 

@@ -633,7 +633,7 @@ Both par2 engines are handed one candidate list, which `RepairStage.repairSets` 
    free: the zero value used to be the permissive one, so while `NotRun` still
    let a DirectUnpack success skip par2 (until #953), any early `return` that
    forgot to assign handed repair consent to skip it — and one did, the guard
-   in `recordVerdict` for a job whose manifest describes no files. With the
+   in `recordVerdict` for a job that describes no files. With the
    default inverted, a future early return reports what it did not verify by
    construction rather than by review catching it.
 4. **Per-job `DownloadDir` isolation**: Every cleanup stage (`sample_cleanup`,

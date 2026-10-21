@@ -39,6 +39,9 @@ func createTestDB(t *testing.T, dir string) *sql.DB {
 	CREATE TABLE job_files (
 		job_id TEXT,
 		file_index INTEGER,
+		subject TEXT NOT NULL DEFAULT '',
+		bytes INTEGER NOT NULL DEFAULT 0,
+		article_count INTEGER NOT NULL DEFAULT 0,
 		filename TEXT NOT NULL DEFAULT '',
 		complete INTEGER NOT NULL DEFAULT 0,
 		fetch_policy INTEGER NOT NULL DEFAULT 0,

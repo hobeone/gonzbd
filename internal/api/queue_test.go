@@ -867,7 +867,7 @@ func TestQueueDetail_FileStateClassification(t *testing.T) {
 			_ = disp.Add(context.Background(), j, dispatch.Header{Name: "f.nzb", Bytes: 1000})
 
 			tt.setup(t, disp, "j_class", j)
-			if got := fileState(m, j.Progress(), 0); got != tt.want {
+			if got := fileState(m.Files(), j.Progress(), 0); got != tt.want {
 				t.Errorf("fileState = %q; want %q", got, tt.want)
 			}
 		})
@@ -2902,7 +2902,7 @@ func TestBuildSlot_MapsJobFields(t *testing.T) {
 		Header: dispatch.Header{
 			Name:             "large.file",
 			Filename:         "large.file.nzb",
-			Bytes:            m.TotalBytes(),
+			Bytes:            m.Files().TotalBytes(),
 			PP:               job.ClampPP(3),
 			Password:         "hunter2",
 			Script:           "post.py",

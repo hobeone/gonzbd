@@ -22,11 +22,13 @@ file internal/app/unwanted.go
 [an unreadable file list lets the job through unchecked]
 file internal/app/unwanted.go
 --- anchor
-	m, err := j.Manifest()
-	if err != nil {
+	ft := j.Files()
+	if ft == nil {
+		return "", fmt.Errorf("unwanted-extension check: read the job's file list: %w", job.ErrNotResident)
 --- replace
-	m, err := j.Manifest()
-	if err != nil && m != nil {
+	ft := j.Files()
+	if ft == nil {
+		return "", nil
 --- end
 
 [action off is ignored]

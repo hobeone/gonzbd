@@ -18,7 +18,7 @@ func TestCompleteFinalizedFile_EvictedAfterTheResidencyCheckIsMarked(t *testing.
 	t.Parallel()
 	a := newPeekApp(t, unwanted.ActionOff, nil, false,
 		[]peekFile{{"payload.bin", []byte("payload")}})
-	if err := seedJobFiles(t.Context(), a.durable, a.j.ID(), a.j.NumFiles(), a.j.FileFetchPolicy); err != nil {
+	if err := seedJobFiles(t.Context(), a.durable, a.j); err != nil {
 		t.Fatalf("seedJobFiles: %v", err)
 	}
 	fired := false

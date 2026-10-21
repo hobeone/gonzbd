@@ -16,7 +16,7 @@ func newEvictedJob(t *testing.T) (*job.Job, dispatch.Row) {
 	files := []job.JobFile{
 		{Subject: "movie.part01.rar", Bytes: 100, Articles: []job.JobArticle{{ID: "a0@t", Bytes: 100, Number: 1}}},
 		{Subject: "movie.part02.rar", Bytes: 100, Articles: []job.JobArticle{{ID: "a1@t", Bytes: 100, Number: 1}}},
-		{Subject: "movie.vol01+02.par2", Bytes: 50, IsPar2Recovery: true, Articles: []job.JobArticle{{ID: "a2@t", Bytes: 50, Number: 1}}},
+		{Subject: "movie.vol01+02.par2", Bytes: 50, Articles: []job.JobArticle{{ID: "a2@t", Bytes: 50, Number: 1}}},
 	}
 	m := job.NewManifest(files)
 	j := job.New("j1", "movie.nzb", job.Policy{})
@@ -32,7 +32,7 @@ func newEvictedJob(t *testing.T) (*job.Job, dispatch.Row) {
 		Header: dispatch.Header{
 			Name:     "movie.nzb",
 			Filename: "movie.nzb",
-			Bytes:    m.TotalBytes(),
+			Bytes:    m.Files().TotalBytes(),
 		},
 		View: job.RenderView{
 			StateView: job.StateView{State: job.Fetching},
@@ -76,16 +76,16 @@ func TestBuildSlot_NonResidentJob(t *testing.T) {
 	}
 }
 
-// CurrentFile names the file being downloaded, which requires per-file
-// subjects from the manifest. A non-resident job is by definition not
-// downloading, so the field is empty rather than costing a disk read on
-// every poll.
-func TestBuildSlot_NonResidentJobHasNoCurrentFile(t *testing.T) {
+// CurrentFile names the first unfinished file, read from the file table and
+// progress record. A job with no file table attached has nothing to name, so
+// the field is empty.
+func TestBuildSlot_JobWithoutFileTableHasNoCurrentFile(t *testing.T) {
 	t.Parallel()
-	j, row := newEvictedJob(t)
+	_, row := newEvictedJob(t)
+	bare := job.New("bare", "bare.nzb", job.Policy{})
 
-	if got := buildSlot(row, j, false, 0, 0, nil, "").CurrentFile; got != "" {
-		t.Errorf("CurrentFile = %q, want empty for a non-resident job", got)
+	if got := buildSlot(row, bare, false, 0, 0, nil, "").CurrentFile; got != "" {
+		t.Errorf("CurrentFile = %q, want empty for a job with no file table", got)
 	}
 }
 
@@ -98,7 +98,7 @@ func newOnDemandPar2Job(t *testing.T) (*dispatch.Dispatcher, *job.Job) {
 		{Subject: "content.rar", Bytes: 10_000, Articles: []job.JobArticle{{ID: "c1@t", Bytes: 10_000, Number: 1}}},
 		// Recovery-volume subject: matches isRecoveryVolume's
 		// \.vol\d+[-+]\d+\.par2 pattern, so NewJob marks it deferred.
-		{Subject: "content.vol000+01.par2", Bytes: 1_000, IsPar2Recovery: true, Deferred: true, Articles: []job.JobArticle{{ID: "v1@t", Bytes: 1_000, Number: 1}}},
+		{Subject: "content.vol000+01.par2", Bytes: 1_000, Articles: []job.JobArticle{{ID: "v1@t", Bytes: 1_000, Number: 1}}},
 	}
 	m := job.NewManifest(files)
 	j := job.New("j-par2", "par2.nzb", job.Policy{})
@@ -112,7 +112,7 @@ func newOnDemandPar2Job(t *testing.T) (*dispatch.Dispatcher, *job.Job) {
 	if err := disp.Add(context.Background(), j, dispatch.Header{
 		Name:     "par2.nzb",
 		Filename: "par2.nzb",
-		Bytes:    m.TotalBytes(),
+		Bytes:    m.Files().TotalBytes(),
 	}); err != nil {
 		t.Fatalf("Add: %v", err)
 	}
@@ -134,7 +134,7 @@ func TestBuildSlot_FreshOnDemandPar2JobReportsZeroPercent(t *testing.T) {
 	disp, j := newOnDemandPar2Job(t)
 
 	// Guard the fixture against the bug this test exists to catch: under
-	// the old pairing (Size = job.TotalBytes(), the whole-manifest total
+	// the old pairing (Size = job.TotalBytes(), the whole-job total
 	// of 11_000) a fresh job would already show >0% downloaded even though
 	// nothing has been fetched.
 	if got, want := j.TotalBytes(), int64(11_000); got != want {

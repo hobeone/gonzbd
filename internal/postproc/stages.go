@@ -635,9 +635,7 @@ func (j *Job) RecordFileRename(from, to string) {
 // Manifest provides read-only access to the job's manifest for post-processing stages.
 type Manifest interface {
 	NumFiles() int
-	FileSubject(fi int) string
-	FileIsPar2Recovery(fi int) bool
-	TotalBytes() int64
+	Files() *job.FileTable
 	FileRange(fi int) (int, int)
 	ArticleBytes(i int) int
 }

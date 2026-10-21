@@ -175,7 +175,7 @@ func TestSetName_RefusesAJobThatHasStarted(t *testing.T) {
 // restores, show that bytes may exist under its name. SetName must load them
 // rather than trust the empty row. The residency double stands in for the real
 // one by attaching content and installing the recorded filename, as
-// RestoreContent plus installVerification do.
+// AttachArticles plus installVerification do.
 func TestSetName_RefusesARetriedJobRestoredBeforeHydration(t *testing.T) {
 	st := &fakeStore{}
 	st.seed([]Persisted{

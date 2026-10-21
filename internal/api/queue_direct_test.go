@@ -82,11 +82,18 @@ func TestFirstIncompleteFile(t *testing.T) {
 		}
 	})
 
-	t.Run("non-resident job returns empty rather than erroring", func(t *testing.T) {
+	t.Run("job without a file table returns empty rather than erroring", func(t *testing.T) {
 		t.Parallel()
-		job, _ := newEvictedJob(t)
-		if got := firstIncompleteFile(job); got != "" {
-			t.Errorf("firstIncompleteFile = %q; want empty for a non-resident job", got)
+		if got := firstIncompleteFile(job.New("bare", "bare.nzb", job.Policy{})); got != "" {
+			t.Errorf("firstIncompleteFile = %q; want empty for a job with no file table", got)
+		}
+	})
+
+	t.Run("evicted job still names its first incomplete file", func(t *testing.T) {
+		t.Parallel()
+		j, _ := newEvictedJob(t)
+		if got := firstIncompleteFile(j); got != "movie.part01.rar" {
+			t.Errorf("firstIncompleteFile = %q; want movie.part01.rar — eviction drops the manifest, not the file table", got)
 		}
 	})
 }
@@ -127,15 +134,22 @@ func TestBuildQueueFiles(t *testing.T) {
 		}
 	})
 
-	t.Run("non-resident job returns a non-nil empty slice", func(t *testing.T) {
+	t.Run("job without a file table returns a non-nil empty slice", func(t *testing.T) {
 		t.Parallel()
-		job, _ := newEvictedJob(t)
-		got := buildQueueFiles(job)
+		got := buildQueueFiles(job.New("bare", "bare.nzb", job.Policy{}))
 		if got == nil {
 			t.Fatal("buildQueueFiles returned nil; want a non-nil empty slice so JSON encodes as []")
 		}
 		if len(got) != 0 {
-			t.Errorf("len(got) = %d; want 0 for a non-resident job", len(got))
+			t.Errorf("len(got) = %d; want 0 for a job with no file table", len(got))
+		}
+	})
+
+	t.Run("evicted job still lists its files", func(t *testing.T) {
+		t.Parallel()
+		j, _ := newEvictedJob(t)
+		if got := buildQueueFiles(j); len(got) != 3 {
+			t.Errorf("len(got) = %d; want 3 — eviction drops the manifest, not the file table", len(got))
 		}
 	})
 }

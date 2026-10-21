@@ -4,7 +4,7 @@ run TestRecoveryBytesWriters_MatchTheEnumerationStatedInProse
 [recoveryBytes writer set mutated]
 file internal/job/writer_enumeration_test.go
 --- anchor
-	want := []string{"AttachContent", "RestoreContent", "SetRecoveryBytes"}
+	want := []string{"AttachFiles", "SetRecoveryBytes"}
 --- replace
-	want := []string{"AttachContent", "RestoreContent"}
+	want := []string{"AttachFiles"}
 --- end

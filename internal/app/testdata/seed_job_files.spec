@@ -20,7 +20,7 @@ ON CONFLICT(job_id, file_index) DO UPDATE SET filename = ''`)
 [every row seeded at index 0 instead of the file's own index]
 file internal/durability/progress.go
 --- anchor
-		if _, err := stmt.ExecContext(ctx, jobID, i, int(f)); err != nil {
+		if _, err := stmt.ExecContext(ctx, jobID, i, f.Subject, f.Bytes, f.ArticleCount, int(f.FetchPolicy)); err != nil {
 --- replace
-		if _, err := stmt.ExecContext(ctx, jobID, 0, int(f)); err != nil {
+		if _, err := stmt.ExecContext(ctx, jobID, 0, f.Subject, f.Bytes, f.ArticleCount, int(f.FetchPolicy)); err != nil {
 --- end

@@ -283,17 +283,17 @@ func stageFromStatus(status constants.Status) string {
 // firstIncompleteFile returns the subject of the first file that has not been
 // completely downloaded, skipping files with non-FetchAlways policy.
 func firstIncompleteFile(j *job.Job) string {
-	m, err := j.Manifest()
+	ft := j.Files()
 	p := j.Progress()
-	if err != nil || p == nil {
+	if ft == nil || p == nil {
 		return ""
 	}
-	for i := range m.NumFiles() {
+	for i := range ft.NumFiles() {
 		if p.FileFetchPolicy(i) != job.FetchAlways {
 			continue
 		}
 		if !p.FileComplete(i) {
-			return m.FileSubject(i)
+			return ft.Subject(i)
 		}
 	}
 	return ""
@@ -302,7 +302,7 @@ func firstIncompleteFile(j *job.Job) string {
 // fileState classifies a file into a coarse UI state. "downloading"
 // fires once any article in the file has completed; before that the
 // file is "queued". "failed" wins over "done" when any article failed.
-func fileState(m *job.Manifest, p *job.JobProgress, fileIdx int) string {
+func fileState(ft *job.FileTable, p *job.JobProgress, fileIdx int) string {
 	switch p.FileFetchPolicy(fileIdx) {
 	case job.FetchIfNeeded:
 		return "held"
@@ -311,7 +311,7 @@ func fileState(m *job.Manifest, p *job.JobProgress, fileIdx int) string {
 	}
 	if p.FileComplete(fileIdx) {
 		anyFailed := false
-		lo, hi := m.FileRange(fileIdx)
+		lo, hi := ft.Range(fileIdx)
 		for i := lo; i < hi; i++ {
 			if p.ArticleFailed(i) {
 				anyFailed = true
@@ -352,18 +352,18 @@ func fileState(m *job.Manifest, p *job.JobProgress, fileIdx int) string {
 // field — State carries "held" and "skipped" per file, so summing only the
 // files in neither state reproduces the row total exactly. Tracked as #325.
 func buildQueueFiles(j *job.Job) []queueFile {
-	m, err := j.Manifest()
+	ft := j.Files()
 	p := j.Progress()
-	if err != nil || p == nil {
+	if ft == nil || p == nil {
 		return []queueFile{}
 	}
-	out := make([]queueFile, 0, m.NumFiles())
-	for fi := range m.NumFiles() {
+	out := make([]queueFile, 0, ft.NumFiles())
+	for fi := range ft.NumFiles() {
 		out = append(out, queueFile{
-			Name:            m.FileSubject(fi),
-			Bytes:           m.FileBytes(fi),
+			Name:            ft.Subject(fi),
+			Bytes:           ft.Bytes(fi),
 			BytesDownloaded: p.FileBytesDownloaded(fi),
-			State:           fileState(m, p, fi),
+			State:           fileState(ft, p, fi),
 		})
 	}
 	return out

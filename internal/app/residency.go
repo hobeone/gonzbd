@@ -1,13 +1,14 @@
 package app
 
 import (
+	"cmp"
 	"compress/gzip"
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
 	"os"
+	"slices"
 	"sync"
 
 	"github.com/hobeone/gonzbd/internal/dispatch"
@@ -23,10 +24,10 @@ type recordReader interface {
 	WrittenRows(ctx context.Context, jobID string) ([]durability.WrittenRow, error)
 }
 
-// appResidency is the production dispatch.Residency: it loads a job's manifest
-// from the gzip-JSON file the ingest path wrote, verifies the job's written
-// articles against the bytes on disk before attaching anything, and drops the
-// manifest again.
+// appResidency is the production dispatch.Residency: it builds a job's file
+// table from its job_files rows, loads its article list from the gzip-JSON
+// file the ingest path wrote, verifies the job's written articles against the
+// bytes on disk before attaching anything, and drops the manifest again.
 //
 // It holds no registry of its own. The lookup function is the dispatcher's,
 // which is what keeps "which jobs exist" a single owner (Rule 2) rather than
@@ -79,12 +80,19 @@ func newAppResidency(lookup func(string) (*job.Job, bool), dir string, store rec
 	}
 }
 
-// Hydrate loads the manifest and attaches it. It may block on disk I/O; the
+// Hydrate makes the job's articles resident, and its file table too when it
+// has none. It may block on disk I/O; the
 // dispatcher calls it with no lock held (ports.go).
 //
-// A job with no progress yet has its written articles verified first
-// (verifyJobFiles), and the verdicts committed, before anything is attached:
-// if either fails, nothing is attached and the next hydration starts again.
+// A job with no file table yet (one restored at startup) gets it from its
+// job_files rows (fileTableFromRows), and the manifest from that table and the
+// article list in its manifest file. Its written articles are then verified
+// first (verifyJobFiles), and the verdicts committed, before anything is
+// attached: if either fails, nothing is attached — not the file table either —
+// and the next hydration starts again. The branch keys on Job.Files() != nil:
+// a job holding a table was ingested or hydrated in this process, its progress
+// is the authoritative record, and it gets its articles back alone
+// (Job.AttachArticles).
 // So a job Hydrate attached was verified first. Other jobs gain progress
 // without Hydrate: a freshly ingested job has no rows to verify, and a retry
 // verifies its rebuilt job itself (Application.verifyRetry). A verification
@@ -140,35 +148,71 @@ func (r *appResidency) Hydrate(ctx context.Context, id string) error {
 		r.mu.Unlock()
 	}()
 
-	m, err := r.readManifest(ctx, id)
+	// A job with a file table attached has run in this process and been
+	// evicted since (or was ingested here): its progress is the authoritative
+	// record, it was verified when it was first attached, and only the
+	// articles are owed. Installing fresh progress would zero its counters.
+	// A job without one is built from the record, and nothing is attached
+	// until that record has been verified: a hydration that fails leaves the
+	// job exactly as it found it, so the next one verifies again.
+	ft := j.Files()
+	hasFiles := ft != nil
+	var (
+		files []durability.FileRow
+		rows  []durability.WrittenRow
+	)
+	if !hasFiles {
+		if r.store == nil {
+			return fmt.Errorf("residency: hydrate %s: no record store to build the file table from", id)
+		}
+		var err error
+		if files, rows, err = r.readRecord(ctx, id); err != nil {
+			return r.fault(ctx, j, storagefault.Classify("read record", "", err), err)
+		}
+		if ft, err = fileTableFromRows(files); err != nil {
+			return fmt.Errorf("residency: hydrate %s: %w", id, err)
+		}
+	}
+	arts, err := r.readArticles(ctx, id)
 	if err != nil {
 		return fmt.Errorf("residency: hydrate %s: %w", id, err)
 	}
-
-	// A job that has run before in this process has progress already, which
-	// is the authoritative record: eviction keeps it, and it was verified
-	// when it was first attached. Installing a fresh JobProgress would zero
-	// its counters, which is the defect the RestoreContent/AttachContent
-	// split exists to prevent.
-	if j.HasProgress() {
-		return j.RestoreContent(m)
+	m, err := job.NewManifestFromArticles(ft, arts)
+	if err != nil {
+		return fmt.Errorf("residency: hydrate %s: %w", id, err)
 	}
-	return r.verifyAndAttach(ctx, j, m)
+	if hasFiles {
+		return j.AttachArticles(m)
+	}
+	return r.verifyAndAttach(ctx, j, m, files, rows)
 }
 
-// verifyAndAttach is Hydrate's no-progress branch: read the record, verify it,
-// commit the verdicts, and only then attach the content and install what was
-// verified.
-func (r *appResidency) verifyAndAttach(ctx context.Context, j *job.Job, m *job.Manifest) error {
-	if r.store == nil {
-		return j.AttachContent(m)
+// fileTableFromRows builds the job's file table from its job_files rows. The
+// rows must cover file indices 0..n-1 exactly once each; a gap or a duplicate
+// is an error naming the index, because a table built over them would index
+// every later file's articles against the wrong range. No rows is a table of
+// no files.
+func fileTableFromRows(rows []durability.FileRow) (*job.FileTable, error) {
+	sorted := slices.Clone(rows)
+	slices.SortFunc(sorted, func(a, b durability.FileRow) int { return cmp.Compare(a.FileIndex, b.FileIndex) })
+	specs := make([]job.FileSpec, len(sorted))
+	for i, row := range sorted {
+		if row.FileIndex != i {
+			return nil, fmt.Errorf("job_files rows do not cover file indices 0..%d once each: expected index %d, found %d",
+				len(sorted)-1, i, row.FileIndex)
+		}
+		specs[i] = job.FileSpec{Subject: row.Subject, Bytes: row.Bytes, ArticleCount: row.ArticleCount}
 	}
-	files, rows, err := r.readRecord(ctx, j.ID())
-	if err != nil {
-		return r.fault(ctx, j, storagefault.Classify("read record", "", err), err)
-	}
+	return job.NewFileTable(specs), nil
+}
+
+// verifyAndAttach is Hydrate's no-file-table branch: verify the record it read,
+// commit the verdicts, and only then attach the job's files and articles and
+// install what was verified. m was built over the table the rows describe.
+func (r *appResidency) verifyAndAttach(ctx context.Context, j *job.Job, m *job.Manifest,
+	files []durability.FileRow, rows []durability.WrittenRow) error {
 	locate := func(fn string) (jobFile, error) { return r.locate(j.Name(), fn) }
-	res, err := verifyJobFiles(ctx, m, files, rows, locate, false)
+	res, err := verifyJobFiles(ctx, m.Files(), files, rows, locate, false)
 	if err != nil {
 		f := storagefault.Classify("verify", "", err)
 		if vf, ok := errors.AsType[*errVerifyFault](err); ok {
@@ -184,7 +228,10 @@ func (r *appResidency) verifyAndAttach(ctx context.Context, j *job.Job, m *job.M
 	if j.State().State == job.Fetching {
 		cleanUnrecordedFetchingFiles(j.Name(), files, locate, r.log)
 	}
-	if err := j.AttachContent(m); err != nil {
+	if err := j.AttachFiles(m.Files()); err != nil {
+		return err
+	}
+	if err := j.AttachArticles(m); err != nil {
 		return err
 	}
 	// The message is a fact about the job, not the file: only the peek that
@@ -323,7 +370,7 @@ func installVerification(j *job.Job, files []durability.FileRow, rows []durabili
 // none is in flight when it drops the manifest. A waiting Hydrate that wakes
 // after Evict has dropped it may still start another. The wait ends when the
 // hydration returns: its manifest read returns at the cancellation
-// (readManifest) and its read-back checks the context between rows, but a
+// (readArticles) and its read-back checks the context between rows, but a
 // read-back read blocked in the syscall holds the wait until it returns. That
 // read is not abandoned as the manifest read is, because what follows it may
 // truncate or fsync the file (verifyJobFiles).
@@ -350,18 +397,19 @@ func (r *appResidency) Evict(id string) {
 	j.Evict()
 }
 
-// readManifest opens and decodes a job's manifest, and returns ctx's error as
-// soon as ctx ends even if the read has not.
+// readArticles opens and decodes a job's manifest file, which holds its
+// articles alone, and returns ctx's error as soon as ctx ends even if the read
+// has not.
 //
 // Closing the file would not end a read blocked in the syscall: os.File.Close
 // on a regular file releases the descriptor only once the read in flight
 // returns. So the open and decode run on their own goroutine, which a
 // cancelled caller leaves behind; it writes nothing, and it closes the file
 // when the read returns.
-func (r *appResidency) readManifest(ctx context.Context, id string) (*job.Manifest, error) {
+func (r *appResidency) readArticles(ctx context.Context, id string) ([]job.JobArticle, error) {
 	type result struct {
-		m   *job.Manifest
-		err error
+		arts []job.JobArticle
+		err  error
 	}
 	done := make(chan result, 1)
 	go func() {
@@ -370,18 +418,18 @@ func (r *appResidency) readManifest(ctx context.Context, id string) (*job.Manife
 			done <- result{err: err}
 			return
 		}
-		m, err := decodeManifest(f)
-		done <- result{m: m, err: err}
+		arts, err := decodeArticles(f)
+		done <- result{arts: arts, err: err}
 	}()
 	select {
 	case res := <-done:
-		return res.m, res.err
+		return res.arts, res.err
 	case <-ctx.Done():
 		return nil, ctx.Err()
 	}
 }
 
-// decodeManifest reads and unmarshals a gzipped JSON job manifest, closing f.
+// decodeArticles reads a gzipped JSON job manifest, closing f.
 //
 // It takes an already-open file rather than a path so that every caller reaches
 // a manifest through openManifestIn's os.Root, which confines the job ID to the
@@ -389,9 +437,9 @@ func (r *appResidency) readManifest(ctx context.Context, id string) (*job.Manife
 //
 // The read is untimed. AdminDir is ordinarily local, but a remote NFS/SMB mount
 // can stall it — docs/durability-contract.md carries that failure class — so a
-// caller under a deadline gets no help from this function; readManifest runs
+// caller under a deadline gets no help from this function; readArticles runs
 // it on a goroutine it can abandon.
-func decodeManifest(f *os.File) (*job.Manifest, error) {
+func decodeArticles(f *os.File) ([]job.JobArticle, error) {
 	defer func() { _ = f.Close() }() //nolint:errcheck // read-only manifest file
 
 	zr, err := gzip.NewReader(f)
@@ -400,9 +448,9 @@ func decodeManifest(f *os.File) (*job.Manifest, error) {
 	}
 	defer func() { _ = zr.Close() }()
 
-	var m job.Manifest
-	if err := json.NewDecoder(zr).Decode(&m); err != nil {
+	arts, err := job.DecodeArticles(zr)
+	if err != nil {
 		return nil, fmt.Errorf("decode manifest: %w", err)
 	}
-	return &m, nil
+	return arts, nil
 }

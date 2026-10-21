@@ -40,7 +40,7 @@ func TestRegisterFile_SuffixesANameAlreadyTakenOnDisk(t *testing.T) {
 			p := helperPipeline(t, disp)
 			m := mustManifest(t, j)
 
-			want := jobFile{Dir: filepath.Join(p.downloadDir, j.Name()), Name: m.FileSubject(0)}
+			want := jobFile{Dir: filepath.Join(p.downloadDir, j.Name()), Name: m.Files().Subject(0)}
 			if err := os.MkdirAll(want.Dir, 0o750); err != nil {
 				t.Fatal(err)
 			}

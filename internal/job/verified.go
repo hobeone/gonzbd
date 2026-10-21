@@ -260,10 +260,11 @@ func (j *Job) settleInputs(fileIdx int) (settleSnapshot, error) {
 // 'internal/job/*.go' ':!*_test.go'` returns 3 lines. So any row written,
 // replaced or dropped since makes the result stale, including a row dropped
 // and written back with the same value. The range is not compared:
-// newManifest is the one writer of a manifest's file ranges
-// (`git grep -n 'fileArticleOffsets\[[^]]*\] =' -- 'internal/job/*.go'
-// ':!*_test.go'` returns 2 lines, both in it), and RestoreContent re-attaches
-// the job's own manifest, so the range is the one in.lo and in.hi hold.
+// newFileTable is the one writer of a table's file ranges
+// (`git grep -n 'offsets\[[^]]*\] =' -- 'internal/job/*.go'
+// ':!*_test.go'` returns 2 lines, both in it), and AttachArticles accepts only
+// a manifest built from the job's own table, so the range is the one in.lo and
+// in.hi hold.
 //
 // The failed bits are not compared, because while the slice is unchanged no
 // change to them can change the result. A bit is set only on an article that

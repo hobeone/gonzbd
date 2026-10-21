@@ -250,7 +250,7 @@ func TestScriptStage_BytesExcludesDiscardedPar2(t *testing.T) {
 	}
 
 	wantExpected := j.Progress().ExpectedBytes()
-	wantTotal := m.TotalBytes()
+	wantTotal := m.Files().TotalBytes()
 	if wantExpected >= wantTotal {
 		t.Fatalf("fixture guard: ExpectedBytes (%d) must be less than TotalBytes (%d), or this test cannot distinguish them", wantExpected, wantTotal)
 	}

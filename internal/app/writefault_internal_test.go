@@ -209,8 +209,8 @@ func TestHandleArticlesUnwritten_ClearsTheBitsOfAnEvictedJob(t *testing.T) {
 	// Eviction keeps the bits, so the roll-back is only visible once the job is
 	// resident again (the fixture has no manifest on disk to Hydrate from) and
 	// can be asked what it offers.
-	if err := j.RestoreContent(m); err != nil {
-		t.Fatalf("RestoreContent: %v", err)
+	if err := j.AttachArticles(m); err != nil {
+		t.Fatalf("AttachArticles: %v", err)
 	}
 	for _, idx := range []int{0, 1} {
 		if articleInFlight(t, j, idx) {

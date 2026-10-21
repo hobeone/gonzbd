@@ -95,7 +95,7 @@ type ScriptInput struct {
 	APIURL string
 
 	// Bytes is the job's expected size (SAB_BYTES env-only) — what was
-	// actually fetched or scheduled to be, not the immutable whole-manifest
+	// actually fetched or scheduled to be, not the immutable whole-job
 	// total. See stage_script.go's ScriptInput construction for why this
 	// must be ExpectedBytes rather than Queue.TotalBytes().
 	Bytes int64

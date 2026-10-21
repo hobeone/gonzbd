@@ -197,11 +197,16 @@ func TestAddJob_UnwantedFailsClosed(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		j, hdr, err := app.BuildIngestJob(a.GetConfig(), parsed, "evicted.nzb", types.FetchOptions{}, nil)
+		built, hdr, err := app.BuildIngestJob(a.GetConfig(), parsed, "no-files.nzb", types.FetchOptions{}, nil)
 		if err != nil {
 			t.Fatal(err)
 		}
-		j.Evict()
+		// A job that never had a file table attached: eviction drops only the
+		// manifest and keeps the table, so it no longer makes the list unreadable.
+		j := job.New(built.ID(), "no-files.nzb", job.Policy{})
+		if j.Files() != nil {
+			t.Fatal("fixture guard: a fresh job has a file table — nothing is being tested")
+		}
 		err = a.AddJob(t.Context(), j, hdr, raw, false)
 		if err == nil || !strings.Contains(err.Error(), "unwanted-extension check") {
 			t.Fatalf("AddJob = %v, want an unwanted-extension check error", err)

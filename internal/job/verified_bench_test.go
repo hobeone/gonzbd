@@ -39,7 +39,7 @@ func benchManifest(n int) *Manifest {
 	for i := range arts {
 		arts[i] = JobArticle{ID: fmt.Sprintf("<%d@x>", i), Bytes: 100}
 	}
-	return newManifest([]JobFile{{Subject: "big.bin", Bytes: int64(n) * 100, Articles: arts}})
+	return NewManifest([]JobFile{{Subject: "big.bin", Bytes: int64(n) * 100, Articles: arts}})
 }
 
 // halfFailedJob is a one-file job whose even articles are written, each with

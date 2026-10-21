@@ -558,7 +558,7 @@ func (app *Application) sweepOrphans(ctx context.Context) {
 // It has no method that updates the record: the recorder is its writer, through
 // recordStore.
 type durabilityStore interface {
-	Admit(ctx context.Context, jobID string, fetch []uint8) error
+	Admit(ctx context.Context, jobID string, files []durability.AdmitFile) error
 	FileRows(ctx context.Context, jobID string) ([]durability.FileRow, error)
 	WrittenRows(ctx context.Context, jobID string) ([]durability.WrittenRow, error)
 	Reclaim(ctx context.Context, id string, more ...string) error

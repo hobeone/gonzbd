@@ -46,13 +46,13 @@ func evictNZBWithRecoveryVolume(nPayload, nRecovery int) []byte {
 	return []byte(b.String())
 }
 
-// recoveryFileIndexIn returns the one manifest index FileIsPar2Recovery
+// recoveryFileIndexIn returns the one file index IsPar2Recovery
 // reports true for, failing the test if there is not exactly one.
 func recoveryFileIndexIn(t *testing.T, m *job.Manifest) int {
 	t.Helper()
 	idx := -1
 	for i := range m.NumFiles() {
-		if m.FileIsPar2Recovery(i) {
+		if m.Files().IsPar2Recovery(i) {
 			if idx != -1 {
 				t.Fatalf("manifest has more than one recovery volume: %d and %d", idx, i)
 			}
@@ -75,8 +75,8 @@ func seedJobFilesRowIn(t *testing.T, db *sql.DB, jobID string, fileIndex int, co
 		c = 1
 	}
 	if _, err := db.Exec(
-		`INSERT INTO job_files (job_id, file_index, complete, filename, fetch_policy)
-		 VALUES (?, ?, ?, '', ?)`,
+		`INSERT INTO job_files (job_id, file_index, subject, bytes, article_count, complete, filename, fetch_policy)
+		 VALUES (?, ?, '', 0, 0, ?, '', ?)`,
 		jobID, fileIndex, c, int(fetch)); err != nil {
 		t.Fatalf("seed job_files row: %v", err)
 	}

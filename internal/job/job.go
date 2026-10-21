@@ -200,15 +200,22 @@ type Job struct {
 	// exported form would deadlock from either door.
 	lease *Lease
 
-	// contentMu guards the manifest/progress POINTER PAIR, and the restored*
-	// fields below — not the contents of *Manifest or *JobProgress.
-	// Eviction and hydration swap both pointers together; a reader holding a
-	// *Job but not this lock would race the swap (the defect #263 records
-	// against internal/queue's residencyMu, which this replaces).
+	// contentMu guards the fileTable, manifest and progress POINTERS, and the
+	// restored* fields below — not the contents of *FileTable, *Manifest or
+	// *JobProgress. fileTable and progress are installed together by
+	// AttachFiles and never replaced; eviction and hydration swap manifest
+	// alone. A reader holding a *Job but not this lock would race the swap (the
+	// defect #263 records against internal/queue's residencyMu, which this
+	// replaces).
+	//
+	// fileTable is named so, not files, because FileTable and JobProgress each
+	// declare a files field and the writer-enumeration scan matches a selector
+	// by name alone.
 	//
 	// It is a value, not a pointer, so every construction path gets a usable
 	// mutex with no initializer to forget.
 	contentMu sync.RWMutex
+	fileTable *FileTable
 	manifest  *Manifest
 	progress  *JobProgress
 
@@ -218,12 +225,12 @@ type Job struct {
 	// progress-tier write there has nowhere to land.
 	//
 	// The rule is uniform: while progress is nil these fields are
-	// authoritative and the Job-level accessors read them; once AttachContent
+	// authoritative and the Job-level accessors read them; once AttachFiles
 	// installs a JobProgress it seeds it from these and zeroes them, so the
 	// two are never both live.
 	//
 	// Three functions write them, not two: RestoreProgressState and
-	// SetPar2ReleaseReason write values, and AttachContent writes the zeroes
+	// SetPar2ReleaseReason write values, and AttachFiles writes the zeroes
 	// after seeding — `git grep -n 'j\.restored' -- 'internal/job/content.go'`
 	// finds 13 lines across those three plus the four accessors that read
 	// them. All thirteen are inside a contentMu critical section.

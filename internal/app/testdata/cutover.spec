@@ -12,18 +12,12 @@ run ^(TestVerifyAndAttach_MissingDirectoryParksTheJob|TestLooseRecord_UntrustedS
 file internal/app/residency.go
 run TestVerifyAndAttach_MissingDirectoryParksTheJob
 --- anchor
-	files, rows, err := r.readRecord(ctx, j.ID())
-	if err != nil {
-		return r.fault(ctx, j, storagefault.Classify("read record", "", err), err)
-	}
+	res, err := verifyJobFiles(ctx, m.Files(), files, rows, locate, false)
 --- replace
 	if err := j.AttachContent(m); err != nil {
 		return err
 	}
-	files, rows, err := r.readRecord(ctx, j.ID())
-	if err != nil {
-		return r.fault(ctx, j, storagefault.Classify("read record", "", err), err)
-	}
+	res, err := verifyJobFiles(ctx, m.Files(), files, rows, locate, false)
 --- end
 
 # An untrusted file's rows must leave SQLite, not only memory: otherwise the

@@ -133,7 +133,7 @@ func TestUndeferRecovery(t *testing.T) {
 		t.Helper()
 		m := NewManifest([]JobFile{
 			{Subject: "data", Bytes: 100, Articles: []JobArticle{{ID: "<d0@x>", Bytes: 100, Number: 1}}},
-			{Subject: "vol01+02.par2", Bytes: 100, IsPar2Recovery: true,
+			{Subject: "vol01+02.par2", Bytes: 100,
 				Articles: []JobArticle{{ID: "<p0@x>", Bytes: 100, Number: 1}}},
 		})
 		j := New("j", "j", Policy{})
@@ -184,7 +184,7 @@ func TestMarkArticleFailed_ChangesNoFetchPolicy(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			m := NewManifest([]JobFile{
 				{Subject: "data", Bytes: 100, Articles: []JobArticle{{ID: "<d0@x>", Bytes: 100, Number: 1}}},
-				{Subject: "vol01+02.par2", Bytes: 100, IsPar2Recovery: true,
+				{Subject: "vol01+02.par2", Bytes: 100,
 					Articles: []JobArticle{{ID: "<p0@x>", Bytes: 100, Number: 1}}},
 			})
 			j := New("j", "j", tc.pol)

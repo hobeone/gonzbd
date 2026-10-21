@@ -306,7 +306,7 @@ because the job departs once filed. A hydration that cannot verify the job's fil
 returns an error wrapping `ErrResidencyFault`, which no caller settles: the
 job has been parked (`docs/durability-contract.md` §3).
 
-Only the manifest tier is evictable: nothing drops a `JobProgress` once it
+Only the manifest tier is evictable: nothing drops a `FileTable` or a `JobProgress` once it
 exists, and header fields never leave. That is weaker than "resident for a
 job's whole time in the registry", and deliberately so — a job restored at
 startup has no `JobProgress` until first hydration, because `dispatch.restore`

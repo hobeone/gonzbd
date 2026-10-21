@@ -59,7 +59,7 @@ type JobProgress struct {
 	// through resetForReload, and ResetForRetry), each of which recomputes
 	// when the manifest is resident; and the evicted branches of
 	// markArticleFailed (setFailedBits), ClearArticleEmitted and
-	// ClearEmittedForReload, which RestoreContent's recompute folds in at the
+	// ClearEmittedForReload, which AttachArticles's recompute folds in at the
 	// next hydration. A restart sets no bit directly: it installs through
 	// markDone (installRows), markFailed and markArticleFailed, all three from
 	// InstallFileVerification.
@@ -67,12 +67,12 @@ type JobProgress struct {
 	// each Set and Clear.
 	done, failed, emitted bitset
 	files                 []FileProgress
-	// fileStarts[fi]..fileStarts[fi+1] is file fi's global article range, the
-	// manifest's own prefix sum (Manifest.FileRange) held on the progress
-	// tier so that a write needing only the file of an article runs at any
-	// residency. newJobProgressSized builds it and nothing changes it after,
-	// so a clone shares it; describesSameJobAs refuses a manifest whose
-	// ranges differ.
+	// fileStarts[fi]..fileStarts[fi+1] is file fi's global article range,
+	// the same prefix sum FileTable.Range reports, computed a second time
+	// here (decision D15) and held on the progress tier so that a write
+	// needing only the file of an article runs at any residency.
+	// newJobProgressSized builds it and nothing changes it after, so a clone
+	// shares it.
 	fileStarts []int
 	// fetchChanges counts the files whose fetchChanged is set, so a take
 	// from a job with none returns without walking its files.
@@ -171,8 +171,8 @@ type FileProgress struct {
 	// Fetch records whether this file will be downloaded. See FetchPolicy.
 	Fetch   FetchPolicy
 	Pending int
-	// Bytes is the file's NZB-claimed size, copied from the manifest when the
-	// file is first seen so RemainingBytes derives from progress alone and
+	// Bytes is the file's NZB-claimed size, copied from the FileTable when the
+	// file is first seen (fileMetaFromTable) so RemainingBytes derives from progress alone and
 	// keeps working after the manifest is evicted.
 	//
 	Bytes int64
@@ -210,11 +210,11 @@ type FileProgress struct {
 	// to content. Carried per file, like Bytes and FailedBytes, so
 	// ContentFailedBytes derives from progress alone at any residency.
 	//
-	// Note this is broader than the manifest's own per-file par2-recovery
-	// flag, which marks only volumes. The index matters here precisely because
+	// Note this is broader than the FileTable's own per-file par2-recovery
+	// flag (IsPar2Recovery), which marks only volumes. The index matters here precisely because
 	// it is not a recovery volume: it is fetched, so it can fail, and its
 	// failure is not damage. Classification is by subject, done once from the
-	// manifest when the file is first seen.
+	// FileTable when the file is first seen.
 	IsPar2 bool
 	// There is deliberately no WriteCursor or MaxWritten here.
 	//
@@ -324,32 +324,31 @@ func (p *JobProgress) movePending(fi, delta int) {
 	p.pendingArticles += delta
 }
 
-// fileMetaFromManifest projects m into the per-file sizing
+// fileMetaFromTable projects ft into the per-file sizing
 // newJobProgressSized takes.
 //
-// The projection is lossless for what JobProgress needs: Manifest.TotalBytes
-// is the sum of every file's bytes, and Manifest.NumArticles is the sum of
+// The projection is lossless for what JobProgress needs: FileTable.TotalBytes
+// is the sum of every file's bytes, and FileTable.TotalArticles is the sum of
 // every file's article count, so the totals newJobProgressSized derives are
-// the manifest's.
-func fileMetaFromManifest(m *Manifest) []FileMeta {
-	files := make([]FileMeta, m.NumFiles())
+// the table's.
+func fileMetaFromTable(ft *FileTable) []FileMeta {
+	files := make([]FileMeta, ft.NumFiles())
 	for fi := range files {
-		lo, hi := m.FileRange(fi)
 		files[fi] = FileMeta{
-			ArticleCount: hi - lo,
-			Bytes:        m.FileBytes(fi),
-			IsPar2:       isPar2File(m.FileSubject(fi)),
+			ArticleCount: ft.ArticleCount(fi),
+			Bytes:        ft.Bytes(fi),
+			IsPar2:       isPar2File(ft.Subject(fi)),
 		}
 	}
 	return files
 }
 
-// newJobProgress returns a fresh JobProgress sized to m: every file's Pending
-// starts at its article count and pendingArticles at m.NumArticles(), so
+// newJobProgress returns a fresh JobProgress sized to ft: every file's Pending
+// starts at its article count and pendingArticles at ft.TotalArticles(), so
 // RemainingBytes() — derived from per-file state, see derivedRemainingBytes —
-// starts at m.TotalBytes().
-func newJobProgress(m *Manifest) *JobProgress {
-	return newJobProgressSized(fileMetaFromManifest(m))
+// starts at ft.TotalBytes().
+func newJobProgress(ft *FileTable) *JobProgress {
+	return newJobProgressSized(fileMetaFromTable(ft))
 }
 
 // NumFiles returns the number of files tracked by the progress record.
@@ -472,11 +471,9 @@ func (p *JobProgress) ArticlesFailed() int {
 //
 // Derives from per-file state rather than re-reading the manifest, so it stays
 // correct after the manifest is evicted — IsPar2 was classified from the
-// manifest's subject when the file was first seen, and the classification
-// stays on FileProgress.
-//
-// There is no residency at which progress exists without having had a
-// manifest to classify from, so the classification is always available.
+// FileTable's subject when the file was first seen (fileMetaFromTable, called
+// from newJobProgress), and the classification stays on FileProgress. Progress
+// is built from a table, so every file has one.
 func (p *JobProgress) ContentFailedBytes() int64 {
 	if p == nil {
 		return 0
@@ -598,7 +595,7 @@ func (p *JobProgress) sizeFigures() (expected, remaining int64) {
 // computes both from one walk so their exclusion sets cannot drift apart.
 //
 // It is therefore NOT Job.TotalBytes(), which is the immutable
-// whole-manifest total and still includes deferred recovery volumes. See
+// whole-job total (the FileTable's) and still includes deferred recovery volumes. See
 // docs/job-lifecycle.md's byte-accounting section, which
 // records that a job's advertised expectation moving as par2 decisions are
 // made is a deliberate consequence.
@@ -727,7 +724,7 @@ func jobStampOrZero(t time.Time) time.Time {
 // for every decoded article, so the first wins; Job.MarkDownloadFinished calls
 // setDownloadFinishedOnce; Job.ClearDownloadFinished calls
 // clearDownloadFinished; ResetForRetry calls clearDownloadStamps; and
-// AttachContent and RestoreProgressState install persisted stamps through
+// AttachFiles and RestoreProgressState install persisted stamps through
 // restoreDownloadStamps.
 //
 // That claim is enforced rather than cited.
@@ -810,7 +807,7 @@ func (p *JobProgress) clearDownloadStamps() {
 // Callers: `git grep -c 'restoreDownloadStamps(' -- '*.go' ':!*_test.go'`
 // returns 2 files — this file (the declaration, and comments naming it) and
 // content.go,
-// where AttachContent seeds a fresh JobProgress from the stamps
+// where AttachFiles seeds a fresh JobProgress from the stamps
 // RestoreProgressState recorded on the Job before hydration (#504), and
 // RestoreProgressState installs them into a live one. It reads a stamp the
 // process did not mint, which is what this method is the door for.
@@ -841,9 +838,9 @@ func (p *JobProgress) restorePar2ReleaseReason(reason string) {
 }
 
 // RecoveryClassifier says which of a job's files are par2 recovery volumes.
-// *Manifest satisfies it.
+// *FileTable satisfies it.
 type RecoveryClassifier interface {
-	FileIsPar2Recovery(fi int) bool
+	IsPar2Recovery(fi int) bool
 }
 
 // RecoveryReleased counts the job's recovery volumes, as m classifies them:
@@ -857,7 +854,7 @@ func (p *JobProgress) RecoveryReleased(m RecoveryClassifier) (fetched, held, tot
 		return 0, 0, 0
 	}
 	for fi := range p.files {
-		if !m.FileIsPar2Recovery(fi) {
+		if !m.IsPar2Recovery(fi) {
 			continue
 		}
 		total++
@@ -882,10 +879,10 @@ func (p *JobProgress) FetchedRecoveryBlocks(m *Manifest) int {
 	var n int
 	for fi := range p.files {
 		f := &p.files[fi]
-		if !m.FileIsPar2Recovery(fi) || f.Fetch != FetchAlways || !f.Complete || f.FailedBytes != 0 {
+		if !m.Files().IsPar2Recovery(fi) || f.Fetch != FetchAlways || !f.Complete || f.FailedBytes != 0 {
 			continue
 		}
-		if b, ok := RecoveryVolumeBlocks(m.FileSubject(fi)); ok {
+		if b, ok := RecoveryVolumeBlocks(m.Files().Subject(fi)); ok {
 			n += b
 		}
 	}
@@ -965,37 +962,6 @@ func (p *JobProgress) DeferredRecoveryIndices() []int {
 	return idxs
 }
 
-// describesSameJobAs reports whether p was sized for a manifest of m's
-// shape. It is the precondition every pairing of a live JobProgress with a
-// freshly read Manifest has to satisfy, and recompute panics when it does
-// not hold.
-//
-// This compares shape only — NumFiles/NumArticles against
-// len(p.files)/p.done.Len(), and each file's article range against
-// fileStarts — so it detects a manifest blob whose shape disagrees with
-// progress, which used to happen through a torn Store.ReplaceManifest write
-// and now happens only through on-disk corruption (the file set is immutable
-// after Add, and ReplaceManifest is gone). It does NOT detect job_files rows
-// altered out of band:
-// Job.InstallFileVerification applies each file's restored state by its
-// FileIdx without resizing progress, so a row renumbered outside this
-// process to another in-range index satisfies this size check and attaches
-// its state to the wrong file.
-func (p *JobProgress) describesSameJobAs(m *Manifest) bool {
-	if p == nil || m == nil {
-		return false
-	}
-	if p.done.Len() != m.NumArticles() || len(p.files) != m.NumFiles() {
-		return false
-	}
-	for fi := range p.files {
-		if lo, hi := m.FileRange(fi); lo != p.fileStarts[fi] || hi != p.fileStarts[fi+1] {
-			return false
-		}
-	}
-	return true
-}
-
 // clone returns a deep copy, used by Job.Progress.
 func (p *JobProgress) clone() *JobProgress {
 	cp := *p
@@ -1016,11 +982,11 @@ func (p *JobProgress) clone() *JobProgress {
 // recompute recalculates each file's Pending and the job-level
 // pendingArticles/articlesResolved/articlesFailed/failedBytes counters from
 // the ground truth (done/failed/emitted flags), against m's file ranges.
-// Called by RestoreContent when a manifest is re-attached, and after each
+// Called by AttachArticles when a manifest is attached, and after each
 // bulk state change where incremental tracking is impractical:
 // `git grep -n '\.recomput[e](' -- '*.go' ':!*_test.go'` returns 4 lines —
-// RestoreContent, ClearEmittedForReload, ResetForRetry and UntrustFile.
-// AttachContent does not call it; it builds a fresh record with
+// AttachArticles, ClearEmittedForReload, ResetForRetry and UntrustFile.
+// AttachFiles does not call it; it builds a fresh record with
 // newJobProgress. A fetch-policy change does not need it: setFileFetchPolicy
 // re-derives the one file's Pending through the same pendingOf.
 //
@@ -1032,7 +998,7 @@ func (p *JobProgress) clone() *JobProgress {
 // value incrementally, and takes the manifest to do it. While the manifest is
 // evicted nothing maintains it: Job.MarkArticleFailed sets the bits and the
 // charge alone, Job.ClearEmittedForReload clears them alone, and the value
-// lags them until RestoreContent recomputes at the next hydration.
+// lags them until AttachArticles recomputes at the next hydration.
 func (p *JobProgress) recompute(m *Manifest) {
 	// m is passed in separately from p, and nothing here ties it to the
 	// manifest p was sized from (newJobProgress). A size
@@ -1073,7 +1039,7 @@ func (p *JobProgress) recompute(m *Manifest) {
 		p.files[fi].FailedBytes = fileFailed
 		// Bytes is ground truth held by the manifest; taking it from m keeps
 		// derivedRemainingBytes in the manifest's terms.
-		p.files[fi].Bytes = m.FileBytes(fi)
+		p.files[fi].Bytes = m.Files().Bytes(fi)
 		failedBytesTotal += fileFailed
 		total += n
 	}
@@ -1171,7 +1137,7 @@ func (p *JobProgress) markNotDone(fi, i int) bool {
 //
 // It maintains no counter: ResetForRetry, UntrustFile and ClearEmittedForReload
 // each recompute after it, ClearEmittedForReload only when the manifest is
-// resident and RestoreContent's recompute otherwise.
+// resident and AttachArticles's recompute otherwise.
 func (p *JobProgress) clearDone(fi int, arts ...int) {
 	for _, i := range arts {
 		p.done.Clear(i)
@@ -1249,7 +1215,7 @@ func (p *JobProgress) chargeOf(m *Manifest, i int) int64 {
 // It needs no manifest and maintains no counter. markFailedUncovered calls it
 // and then maintains the counters itself; Job.markArticleFailed calls it with
 // only limitCharge for a job whose manifest is evicted, leaving the counters to
-// the recompute in RestoreContent.
+// the recompute in AttachArticles.
 func (p *JobProgress) setFailedBits(i int) bool {
 	if p.done.Get(i) {
 		return false
@@ -1267,7 +1233,7 @@ func (p *JobProgress) setFailedBits(i int) bool {
 // at any residency; every counter it moves — Pending, the failed bytes and
 // counts, BytesDownloaded — is left to a recompute, which derives them from
 // the bits: ClearEmittedForReload's own when the manifest is resident,
-// RestoreContent's at the next hydration otherwise (#904).
+// AttachArticles's at the next hydration otherwise (#904).
 //
 // # Why a Complete file's article is left resolved (#426)
 //

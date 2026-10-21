@@ -9,7 +9,10 @@ run ^(TestLooseRecord_VerificationFaultParksNeverFails|TestLooseRecord_PausedJob
 [a verification that succeeds never attaches the job]
 file internal/app/residency.go
 --- anchor
-	if err := j.AttachContent(m); err != nil {
+	if err := j.AttachFiles(m.Files()); err != nil {
+		return err
+	}
+	if err := j.AttachArticles(m); err != nil {
 		return err
 	}
 	// The message is a fact about the job, not the file: only the peek that

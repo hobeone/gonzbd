@@ -87,7 +87,7 @@ func fileIdxBySubject(t *testing.T, j *job.Job, subject string) int {
 	t.Helper()
 	m := mustManifest(t, j)
 	for fi := range m.NumFiles() {
-		if m.FileSubject(fi) == subject {
+		if m.Files().Subject(fi) == subject {
 			return fi
 		}
 	}
@@ -122,7 +122,7 @@ func assessDir(t *testing.T, dir string, j *job.Job) par2.Assessment {
 	if err != nil || len(sets) == 0 {
 		t.Fatalf("FindPar2Files: %v (%d sets)", err, len(sets))
 	}
-	a, err := par2.AssessWithOptions(dir, sets, assembledFiles(mustManifest(t, j), j.Progress()),
+	a, err := par2.AssessWithOptions(dir, sets, assembledFiles(mustManifest(t, j).Files(), j.Progress()),
 		slog.New(slog.DiscardHandler), opts)
 	if err != nil {
 		t.Fatalf("AssessWithOptions: %v", err)
@@ -661,8 +661,8 @@ func policies(t *testing.T, j *job.Job) map[string]job.FetchPolicy {
 	m, p := mustManifest(t, j), j.Progress()
 	out := make(map[string]job.FetchPolicy)
 	for fi := range m.NumFiles() {
-		if m.FileIsPar2Recovery(fi) {
-			out[m.FileSubject(fi)] = p.FileFetchPolicy(fi)
+		if m.Files().IsPar2Recovery(fi) {
+			out[m.Files().Subject(fi)] = p.FileFetchPolicy(fi)
 		}
 	}
 	return out

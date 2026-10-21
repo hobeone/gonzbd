@@ -233,7 +233,7 @@ func TestFinalizer_PersistError_CleanupExecutes(t *testing.T) {
 
 	// Seed a durability row to verify it gets deleted during cleanup.
 	if _, err := repo.DB().ExecContext(t.Context(),
-		`INSERT INTO job_files (job_id, file_index) VALUES (?, 0)`, qJob.ID()); err != nil {
+		`INSERT INTO job_files (job_id, file_index, subject, bytes, article_count) VALUES (?, 0, '', 0, 0)`, qJob.ID()); err != nil {
 		t.Fatalf("seed job_files: %v", err)
 	}
 

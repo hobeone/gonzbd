@@ -12,7 +12,7 @@ import (
 // for the content tier: nothing may produce a (Manifest, JobProgress) pair
 // except AttachContent, so the two can never describe different jobs.
 //
-// newManifest and Manifest.UnmarshalJSON populating the same fields by two
+// newManifest and the former Manifest.UnmarshalJSON populating the same fields by two
 // paths is the defect this shape exists to prevent — they had already
 // diverged over totalBytes (see the spec's Rule 2, "Two constructors for one
 // type").
@@ -26,7 +26,7 @@ func TestAttachContent_IsTheSoleConstructorOfThePair(t *testing.T) {
 		t.Fatal("Manifest() on a non-resident job must error, not return nil,nil")
 	}
 
-	m := newManifest([]JobFile{{Subject: "a.rar", Bytes: 100, Articles: []JobArticle{{ID: "<1@x>", Bytes: 100}}}})
+	m := NewManifest([]JobFile{{Subject: "a.rar", Bytes: 100, Articles: []JobArticle{{ID: "<1@x>", Bytes: 100}}}})
 	if err := j.AttachContent(m); err != nil {
 		t.Fatalf("AttachContent: %v", err)
 	}
@@ -55,7 +55,7 @@ func TestJob_NumFiles(t *testing.T) {
 		t.Fatalf("NumFiles before attach = %d, want 0", got)
 	}
 
-	m := newManifest([]JobFile{
+	m := NewManifest([]JobFile{
 		{Subject: "file1.rar", Bytes: 100, Articles: []JobArticle{{ID: "<1@x>", Bytes: 100}}},
 		{Subject: "file2.rar", Bytes: 200, Articles: []JobArticle{{ID: "<2@x>", Bytes: 200}}},
 	})
@@ -77,7 +77,7 @@ func TestJob_NumFiles(t *testing.T) {
 
 func TestJob_ContentMethods(t *testing.T) {
 	j := New("job-1", "test-job", PolicyFromPP(3))
-	m := newManifest([]JobFile{
+	m := NewManifest([]JobFile{
 		{
 			Subject: "file1.rar",
 			Bytes:   200,
@@ -87,10 +87,8 @@ func TestJob_ContentMethods(t *testing.T) {
 			},
 		},
 		{
-			Subject:        "file2.vol01+01.par2",
-			Bytes:          100,
-			IsPar2Recovery: true,
-			Deferred:       true,
+			Subject: "file2.vol01+01.par2",
+			Bytes:   100,
 			Articles: []JobArticle{
 				{ID: "<3@x>", Bytes: 100, Number: 3},
 			},
@@ -209,10 +207,8 @@ func TestJob_AdditionalMethods(t *testing.T) {
 			},
 		},
 		{
-			Subject:        "f2.vol01+01.par2",
-			Bytes:          100,
-			IsPar2Recovery: true,
-			Deferred:       true,
+			Subject: "f2.vol01+01.par2",
+			Bytes:   100,
 			Articles: []JobArticle{
 				{ID: "<art3@x>", Bytes: 100, Number: 3},
 			},
@@ -269,20 +265,25 @@ func TestJob_AdditionalMethods(t *testing.T) {
 		t.Error("SetFileFetchPolicy with an out-of-range file index should error")
 	}
 
-	// RestoreContent needs a progress record of the job's own to restore onto.
+	// AttachArticles needs a file table and a progress record of the job's own
+	// to attach onto, and a manifest slot that is empty.
 	j2 := New("j3", "test3", Policy{})
-	if err := j2.RestoreContent(m); err == nil {
-		t.Error("RestoreContent on a job with no progress record: nil error")
+	if err := j2.AttachArticles(m); err == nil {
+		t.Error("AttachArticles on a job with no file table: nil error")
 	}
-	if err := j.RestoreContent(nil); err == nil {
-		t.Error("RestoreContent(nil): nil error")
+	if err := j.AttachArticles(nil); err == nil {
+		t.Error("AttachArticles(nil): nil error")
 	}
-	other := newManifest([]JobFile{{Subject: "x.rar", Bytes: 100, Articles: []JobArticle{{ID: "<x>", Bytes: 100}}}})
-	if err := j.RestoreContent(other); err == nil {
-		t.Error("RestoreContent with a manifest of a different shape: nil error")
+	if err := j.AttachArticles(m); err == nil {
+		t.Error("AttachArticles on a job whose manifest is resident: nil error")
 	}
-	if err := j.RestoreContent(m); err != nil {
-		t.Errorf("RestoreContent: %v", err)
+	j.Evict()
+	other := NewManifest([]JobFile{{Subject: "x.rar", Bytes: 100, Articles: []JobArticle{{ID: "<x>", Bytes: 100}}}})
+	if err := j.AttachArticles(other); err == nil {
+		t.Error("AttachArticles with a manifest of a different shape: nil error")
+	}
+	if err := j.AttachArticles(m); err != nil {
+		t.Errorf("AttachArticles: %v", err)
 	}
 
 	// ResetForRetry when resident
@@ -350,7 +351,7 @@ func TestContentMethods_UnattachedJobAndRunsErrors(t *testing.T) {
 		t.Error("MarkDownloadFinished on unattached job should error")
 	}
 
-	m := newManifest([]JobFile{
+	m := NewManifest([]JobFile{
 		{Subject: "f.rar", Bytes: 200, Articles: []JobArticle{{ID: "<1>", Bytes: 100}, {ID: "<2>", Bytes: 100}}},
 	})
 	jResident := New("res", "test", Policy{})
@@ -703,10 +704,8 @@ func TestJob_ProgressAccessors(t *testing.T) {
 			},
 		},
 		{
-			Subject:        "data.vol01+01.par2",
-			Bytes:          60,
-			IsPar2Recovery: true,
-			Deferred:       true,
+			Subject: "data.vol01+01.par2",
+			Bytes:   60,
 			Articles: []JobArticle{
 				{ID: "<p1@x>", Bytes: 60, Number: 3},
 			},
@@ -817,7 +816,7 @@ func TestJobFileFetchPolicy_ReadsWithoutCloningProgress(t *testing.T) {
 	}
 
 	j := New("j1", "test", Policy{})
-	m := newManifest([]JobFile{
+	m := NewManifest([]JobFile{
 		{Subject: "payload.bin", Bytes: 100, Articles: []JobArticle{{ID: "<a1@x>", Bytes: 100}}},
 		{Subject: "payload.vol000+01.par2", Bytes: 100, Articles: []JobArticle{{ID: "<r1@x>", Bytes: 100}}},
 	})
@@ -849,7 +848,7 @@ func TestJobFileFetchPolicy_ReadsWithoutCloningProgress(t *testing.T) {
 // evictedThreeArticleJob builds a job with one 300-byte file of three 100-byte
 // articles and no par2: articles 0 and 1 done, article 2 dispatched (its
 // Emitted bit set) when the manifest is evicted. It returns the manifest so a
-// test can re-hydrate with RestoreContent, as appResidency.Hydrate does with
+// test can re-hydrate with AttachArticles, as appResidency.Hydrate does with
 // the one it re-reads from disk.
 func evictedThreeArticleJob(t *testing.T) (*Job, *Manifest) {
 	t.Helper()
@@ -915,8 +914,8 @@ func TestMarkArticleFailed_RecordsAFailureThatArrivesAfterEviction(t *testing.T)
 		t.Error("article 2 is still Emitted after its failure was recorded")
 	}
 
-	if err := j.RestoreContent(m); err != nil {
-		t.Fatalf("RestoreContent: %v", err)
+	if err := j.AttachArticles(m); err != nil {
+		t.Fatalf("AttachArticles: %v", err)
 	}
 	if got := j.FailedBytes(); got != 100 {
 		t.Errorf("FailedBytes after re-hydration = %d, want 100", got)
@@ -1008,8 +1007,8 @@ func TestClearArticleEmitted_ReturnsAnEvictedArticleToOutstanding(t *testing.T) 
 		t.Fatal("article 2 is still Emitted after the clear")
 	}
 
-	if err := j.RestoreContent(m); err != nil {
-		t.Fatalf("RestoreContent: %v", err)
+	if err := j.AttachArticles(m); err != nil {
+		t.Fatalf("AttachArticles: %v", err)
 	}
 	if got := unfinishedArticles(t, j); len(got) != 1 || got[0] != 2 {
 		t.Errorf("unfinished articles after re-hydration = %v, want [2]", got)
@@ -1022,15 +1021,15 @@ func TestClearArticleEmitted_ReturnsAnEvictedArticleToOutstanding(t *testing.T) 
 	}
 }
 
-// TestRestoreContent_KeepsWritesMadeWhileEvicted pins that re-hydration
+// TestAttachArticles_KeepsWritesMadeWhileEvicted pins that re-hydration
 // restores onto the job's own progress record rather than installing a copy.
 //
 // Hydration used to clone the record, then install the clone. Every write
 // that needs no manifest and landed between the two went to the record the
 // install replaced: a failed bit lost, an article left Emitted, a stamp or a
 // par2 reason gone. This drives each such write in that position and requires
-// all of them after RestoreContent.
-func TestRestoreContent_KeepsWritesMadeWhileEvicted(t *testing.T) {
+// all of them after AttachArticles.
+func TestAttachArticles_KeepsWritesMadeWhileEvicted(t *testing.T) {
 	j, m := evictedThreeArticleJob(t)
 	if err := j.MarkArticleEmitted(1); err == nil {
 		t.Fatal("fixture: MarkArticleEmitted succeeded on an evicted job")
@@ -1051,8 +1050,8 @@ func TestRestoreContent_KeepsWritesMadeWhileEvicted(t *testing.T) {
 		t.Fatalf("SetFileFetchPolicy: %v", err)
 	}
 
-	if err := j.RestoreContent(m); err != nil {
-		t.Fatalf("RestoreContent: %v", err)
+	if err := j.AttachArticles(m); err != nil {
+		t.Fatalf("AttachArticles: %v", err)
 	}
 
 	p := j.Progress()

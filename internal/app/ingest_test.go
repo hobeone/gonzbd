@@ -65,11 +65,37 @@ func TestBuildIngestJob_HappyPath(t *testing.T) {
 	if m.NumFiles() != 3 {
 		t.Errorf("NumFiles = %d, want 3", m.NumFiles())
 	}
-	if m.TotalBytes() != 500 {
-		t.Errorf("TotalBytes = %d, want 500", m.TotalBytes())
+	if m.Files().TotalBytes() != 500 {
+		t.Errorf("TotalBytes = %d, want 500", m.Files().TotalBytes())
 	}
-	if m.RecoveryBytes() != 100 {
-		t.Errorf("Par2Bytes = %d, want 100", m.RecoveryBytes())
+	if m.Files().RecoveryBytes() != 100 {
+		t.Errorf("Par2Bytes = %d, want 100", m.Files().RecoveryBytes())
+	}
+}
+
+// TestBuildIngestJob_AttachesFilesAndArticles pins that ingest hands the
+// dispatcher a job holding the file table and the article table, with the
+// header's byte total read from the file table.
+func TestBuildIngestJob_AttachesFilesAndArticles(t *testing.T) {
+	t.Parallel()
+	parsed := multiVolumeNZB()
+
+	j, hdr, err := BuildIngestJob(&config.Config{}, parsed, "movie.nzb", types.FetchOptions{}, nil)
+	if err != nil {
+		t.Fatalf("BuildIngestJob: %v", err)
+	}
+	ft := j.Files()
+	if ft == nil {
+		t.Fatal("Files() = nil after BuildIngestJob")
+	}
+	if ft.NumFiles() != len(parsed.Files) {
+		t.Errorf("NumFiles = %d, want %d", ft.NumFiles(), len(parsed.Files))
+	}
+	if !j.Resident() || !j.HasProgress() {
+		t.Errorf("Resident = %v, HasProgress = %v, want both true", j.Resident(), j.HasProgress())
+	}
+	if hdr.Bytes != ft.TotalBytes() {
+		t.Errorf("hdr.Bytes = %d, want Files().TotalBytes() = %d", hdr.Bytes, ft.TotalBytes())
 	}
 }
 

@@ -127,10 +127,13 @@ func newResumeFixture(t *testing.T) *resumeFixture {
 	if err := store.Save(t.Context(), p); err != nil {
 		t.Fatalf("store.Save: %v", err)
 	}
+	// The structure hydration builds the file table from: what the manifest's
+	// table holds, as ingest's seedJobFiles writes it.
+	lo, hi := m.FileRange(0)
 	_, err = repo.DB().ExecContext(t.Context(),
-		`INSERT INTO job_files (job_id, file_index, complete, fetch_policy, filename)
-		VALUES (?, ?, ?, ?, ?)`,
-		j.ID(), 0, 0, int(job.FetchAlways), resumeFileName,
+		`INSERT INTO job_files (job_id, file_index, subject, bytes, article_count, complete, fetch_policy, filename)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+		j.ID(), 0, m.Files().Subject(0), m.Files().Bytes(0), hi-lo, 0, int(job.FetchAlways), resumeFileName,
 	)
 	if err != nil {
 		t.Fatalf("insert job_files: %v", err)

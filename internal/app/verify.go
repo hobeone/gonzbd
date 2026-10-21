@@ -103,7 +103,7 @@ func (f jobFile) Path() string { return filepath.Join(f.Dir, f.Name) }
 // error, a stat, fsync or truncate error while finishing, a
 // cancelled ctx — returns the zero result and an *errVerifyFault naming the
 // file or directory.
-func verifyJobFiles(ctx context.Context, m *job.Manifest, files []durability.FileRow,
+func verifyJobFiles(ctx context.Context, ft *job.FileTable, files []durability.FileRow,
 	rows []durability.WrittenRow, locate func(filename string) (jobFile, error), retry bool) (verifyResult, error) {
 	byFile := rowsByFile(rows)
 	res := verifyResult{
@@ -145,7 +145,7 @@ func verifyJobFiles(ctx context.Context, m *job.Manifest, files []durability.Fil
 			res.Failed[fi] = out.failed
 		}
 
-		finish, err := finishIfResolved(ctx, m, f, loc, out, retry)
+		finish, err := finishIfResolved(ctx, ft, f, loc, out, retry)
 		if err != nil {
 			return verifyResult{}, &errVerifyFault{File: path, Err: err}
 		}
@@ -170,7 +170,7 @@ func asVerifyFault(path string, err error) error {
 // finishIfResolved finishes one read-back file by path when every article of
 // it is resolved, and reports whether it did. out must be what readBackFile
 // just returned for loc: finishFileByPath relies on that read-back's fsync.
-func finishIfResolved(ctx context.Context, m *job.Manifest, f durability.FileRow, loc jobFile,
+func finishIfResolved(ctx context.Context, ft *job.FileTable, f durability.FileRow, loc jobFile,
 	out fileReadback, retry bool) (bool, error) {
 	if out.deleteAll || len(out.verified) == 0 {
 		return false, nil
@@ -184,7 +184,7 @@ func finishIfResolved(ctx context.Context, m *job.Manifest, f durability.FileRow
 			resolved[int(a)] = true
 		}
 	}
-	if !fileFinishable(m, f.FileIndex, job.FetchPolicy(f.FetchPolicy), f.Complete,
+	if !fileFinishable(ft, f.FileIndex, job.FetchPolicy(f.FetchPolicy), f.Complete,
 		func(i int) bool { return resolved[i] }) {
 		return false, nil
 	}
@@ -197,7 +197,7 @@ func finishIfResolved(ctx context.Context, m *job.Manifest, f durability.FileRow
 			maxEnd = max(maxEnd, r.Offset+r.Length)
 		}
 	}
-	if err := finishFileByPath(loc, maxEnd, preallocSize(m, f.FileIndex)); err != nil {
+	if err := finishFileByPath(loc, maxEnd, preallocSize(ft, f.FileIndex)); err != nil {
 		return false, err
 	}
 	return true, nil
@@ -207,7 +207,7 @@ func finishIfResolved(ctx context.Context, m *job.Manifest, f durability.FileRow
 // declared, encoded byte count. registerFile hands it to the assembler as
 // FileInfo.ExpectedSize, and finishIfResolved hands it to finishFileByPath,
 // so the finish recognises a file preallocation sized by the same figure.
-func preallocSize(m *job.Manifest, fi int) int64 { return m.FileBytes(fi) }
+func preallocSize(ft *job.FileTable, fi int) int64 { return ft.Bytes(fi) }
 
 // rowsByFile groups rows by file, each group in offset order.
 func rowsByFile(rows []durability.WrittenRow) map[int][]durability.WrittenRow {
@@ -496,14 +496,14 @@ func uniqueJobFileName(loc jobFile) string {
 //
 // A file with NO articles is excluded: the loop below is vacuously true over
 // an empty range.
-func fileFinishable(m *job.Manifest, fi int, policy job.FetchPolicy, complete bool, resolved func(i int) bool) bool {
-	if m == nil || fi < 0 || fi >= m.NumFiles() {
+func fileFinishable(ft *job.FileTable, fi int, policy job.FetchPolicy, complete bool, resolved func(i int) bool) bool {
+	if ft == nil || fi < 0 || fi >= ft.NumFiles() {
 		return false
 	}
 	if policy != job.FetchAlways || complete {
 		return false
 	}
-	lo, hi := m.FileRange(fi)
+	lo, hi := ft.Range(fi)
 	if hi <= lo {
 		return false
 	}
@@ -569,8 +569,8 @@ func cleanUnrecordedFetchingFiles(jobName string, files []durability.FileRow, lo
 // and unrecorded partial files whose names match the sanitized subject of a
 // manifest file with an empty recorded filename in job_files, while preserving
 // any other files (such as already-extracted archive members) in the directory.
-func cleanUnrecordedRetryFiles(jobName string, m *job.Manifest, files []durability.FileRow, sanitize fsutil.SanitizeOptions, locate func(filename string) (jobFile, error), log *slog.Logger) {
-	if locate == nil || m == nil {
+func cleanUnrecordedRetryFiles(jobName string, ft *job.FileTable, files []durability.FileRow, sanitize fsutil.SanitizeOptions, locate func(filename string) (jobFile, error), log *slog.Logger) {
+	if locate == nil || ft == nil {
 		return
 	}
 	loc, _ := locate(".") //nolint:errcheck // locate sets Dir even when the component check returns an error
@@ -588,11 +588,11 @@ func cleanUnrecordedRetryFiles(jobName string, m *job.Manifest, files []durabili
 		}
 	}
 	unrecordedSubjects := make(map[string]bool)
-	for fi := range m.NumFiles() {
+	for fi := range ft.NumFiles() {
 		if !emptyFilenameIdx[fi] {
 			continue
 		}
-		cand := fsutil.SanitizeFilename(m.FileSubject(fi), sanitize)
+		cand := fsutil.SanitizeFilename(ft.Subject(fi), sanitize)
 		if cand != "" && !recorded[cand] {
 			unrecordedSubjects[cand] = true
 		}

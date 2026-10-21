@@ -8,7 +8,7 @@ to be *done*, when that claim may be made, what survives a crash, how a restart
 re-derives its work set, and how a storage fault reaches the user.
 
 `docs/ARCHITECTURE.md` places these packages in the download pipeline.
-`docs/job-lifecycle.md` owns residency and the manifest/progress split, which
+`docs/job-lifecycle.md` owns residency and the file table, manifest and progress tiers, which
 this contract depends on and does not restate.
 
 **This states the contract in the present tense.** Where the code and this
@@ -96,8 +96,10 @@ Two tables in `history.db`, both owned by `durability.Store`
   the decoder's CRC of those bytes. **It is not a durability claim**: a row may
   describe bytes the kernel never flushed. The decoder computes the CRC itself
   whether or not the poster supplied one, so every row has a CRC to verify.
-- **`job_files`** — one row per file: `complete`, `filename` and
-  `fetch_policy`.
+- **`job_files`** — one row per file: its structure (`subject`, `bytes`,
+  `article_count`), written once at admission (§6), and the `complete`,
+  `filename` and `fetch_policy` the recorder updates. The structure is what
+  hydration builds the job's file table from (§3).
 
 `complete=1` means every article of the file is resolved (written or failed)
 and the file was fsynced on a handle that wrote or verified it (§2).
@@ -333,18 +335,20 @@ row's CRC, or because its file was `complete=1`** (and not reset by a retry).
 
 Verification runs **before** the job's content is attached, and its outcome
 decides whether attaching happens at all. `appResidency.Hydrate`, on the branch
-where the job has no progress yet (`verifyAndAttach`):
+where the job has no file table yet (`verifyAndAttach`):
 
-1. reads the job's `job_files` and `written_articles` rows;
+1. reads the job's `job_files` and `written_articles` rows, builds the file
+   table from the `job_files` rows (`fileTableFromRows`) and the manifest from
+   that table and the article list in the manifest file;
 2. calls `verifyJobFiles`, which reads bytes and returns a verdict without
    touching the job or a row;
 3. commits the verdict's deletes and `complete` changes through `recorder.apply`;
-4. only then calls `Job.AttachContent` and installs what was verified
-   (`installVerification`).
+4. only then calls `Job.AttachFiles` and `Job.AttachArticles` and installs what
+   was verified (`installVerification`).
 
 If any step fails or is cancelled, nothing is attached and the next hydration
 starts again from step 1. So **a job `Hydrate` attached was verified first**,
-and `Hydrate`'s early `RestoreContent` for a job with progress is sound: the
+and `Hydrate`'s early `AttachArticles` for a job with a file table is sound: the
 other ways a job gains progress verify too, or have nothing to verify — a
 freshly ingested job has no rows, and a retry verifies its rebuilt job itself
 (`verifyRetry`).
@@ -368,7 +372,7 @@ verifies itself:
   for a hydration that has attached content but not yet installed its
   filenames;
 - `Application.verifyRetry`, for a retried job: it is rebuilt by
-  `BuildIngestJob`, which attaches its manifest, so `Hydrate` would return
+  `BuildIngestJob`, which attaches its files and articles, so `Hydrate` would return
   early and never verify it (see *Retry* below).
 
 A paused job is not hydrated by the tick even while it holds a compute slot
@@ -494,7 +498,7 @@ in between — and only then does the verdict carry `SetComplete`. A stat,
 fsync or truncate error while finishing is a verification fault.
 
 **The finish truncates only a file at its preallocated size** (`preallocSize`,
-the manifest's declared byte count, which `registerFile` also hands the
+the file table's declared byte count, which `registerFile` also hands the
 assembler as `FileInfo.ExpectedSize`). The trim exists to drop the zeros
 preallocation left past the last article (*Pre-allocation*). A file longer
 than its last row's end at any other size holds bytes preallocation did not
@@ -578,8 +582,8 @@ start's verification.
 `retryHistoryJob` verifies the rebuilt job before registering it
 (`verifyRetry`):
 
-1. **Shape check.** Every row must name an article inside its file's range of
-   the re-parsed manifest; on a mismatch every row of the job is deleted,
+1. **Shape check.** Every row must name an article inside its file's range in
+   the rebuilt job's file table; on a mismatch every row of the job is deleted,
    unread.
 2. **`complete` is cleared on every file**, because post-processing may have
    repaired, moved or deleted the bytes since they were written. A retry
@@ -726,7 +730,10 @@ neighbours are refused. A par2 post repairs them; a no-par2 post ends at
 ### 6. The record's rows have one lifecycle rule
 
 **Admission.** `seedJobFiles` → `Store.Admit` inserts every `job_files` row in
-one transaction at submission, before `Dispatcher.Add`. It is a precondition
+one transaction at submission, before `Dispatcher.Add`. It writes each file's
+structure — subject, bytes, article count, from the job's `FileTable` — as well
+as its fetch policy, and leaves `complete` and `filename` empty for the recorder
+to fill in; a row that already exists is left whole. It is a precondition
 for the recorder: an `UPDATE` matching no row is not an error, so a file with
 no seed row would silently persist nothing. A retry re-seeds, inserting only
 missing rows.
@@ -1525,7 +1532,7 @@ recorded here so the next reader does not mistake them for design.
    paused jobs' verifier and the `Shutdown` step that joins it (limitation
    1); a manifest read or removal on the filesystem hosting `admin_dir`
    blocks its caller, except a hydration's manifest read, which its caller
-   abandons when its context ends (`appResidency.readManifest`) and leaves
+   abandons when its context ends (`appResidency.readArticles`) and leaves
    to return on its own goroutine.
    The bounded waits are the callers' (`closeHandlesTimeout`,
    `untrustTimeout`, `recorderFlushTimeout`, the disk probe, Shutdown's step

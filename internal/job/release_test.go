@@ -20,7 +20,7 @@ func releaseJob(t *testing.T, vols []heldVol) *Job {
 	files = append(files, JobFile{Subject: "data.rar", Bytes: 100, Articles: []JobArticle{{ID: "<d@x>", Bytes: 100, Number: 1}}})
 	for i, v := range vols {
 		files = append(files, JobFile{
-			Subject: v.name, Bytes: v.bytes, IsPar2Recovery: true, Deferred: true,
+			Subject: v.name, Bytes: v.bytes,
 			Articles: []JobArticle{{ID: fmt.Sprintf("<v%d@x>", i), Bytes: int(v.bytes), Number: 1}},
 		})
 	}
@@ -87,7 +87,7 @@ func TestReleaseRecovery(t *testing.T) {
 		{"hopeless job releases nothing", standardVols(), Unsized(), func(j *Job) {
 			j.progress.files[0].FailedBytes = 1 << 40
 		}, nil},
-		{"evicted manifest releases all", standardVols(), NeedBlocks(1), func(j *Job) { j.Evict() }, all},
+		{"an evicted job still releases the sized cover", standardVols(), NeedBlocks(1), func(j *Job) { j.Evict() }, []int{1}},
 		{"a minus-form volume is not a candidate", []heldVol{{"x.vol03-07.par2", 1000}}, NeedBlocks(1), nil, []int{1}},
 		{"minus-form beside counted volumes is skipped", []heldVol{
 			{"x.vol00-01.par2", 1}, {"x.vol00+02.par2", 5000}, {"x.vol02+02.par2", 6000},
@@ -132,9 +132,9 @@ func TestRecoveryReleased(t *testing.T) {
 		m := NewManifest([]JobFile{
 			{Subject: "data.rar", Bytes: 100, Articles: art("<d@x>")},
 			{Subject: "x.par2", Bytes: 100, Articles: art("<i@x>")},
-			{Subject: "x.vol00+01.par2", Bytes: 100, IsPar2Recovery: true, Articles: art("<v0@x>")},
-			{Subject: "x.vol01+02.par2", Bytes: 100, IsPar2Recovery: true, Articles: art("<v1@x>")},
-			{Subject: "x.vol03+04.par2", Bytes: 100, IsPar2Recovery: true, Articles: art("<v2@x>")},
+			{Subject: "x.vol00+01.par2", Bytes: 100, Articles: art("<v0@x>")},
+			{Subject: "x.vol01+02.par2", Bytes: 100, Articles: art("<v1@x>")},
+			{Subject: "x.vol03+04.par2", Bytes: 100, Articles: art("<v2@x>")},
 		})
 		j := New("rr", "rr", Policy{})
 		if err := j.AttachContent(m); err != nil {
@@ -179,7 +179,7 @@ func TestRecoveryReleased(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			j, m := build(t)
 			tc.prep(t, j)
-			f, h, n := j.Progress().RecoveryReleased(m)
+			f, h, n := j.Progress().RecoveryReleased(m.Files())
 			if f != tc.fetched || h != tc.held || n != tc.total {
 				t.Errorf("RecoveryReleased = (%d, %d, %d), want (%d, %d, %d)", f, h, n, tc.fetched, tc.held, tc.total)
 			}
@@ -198,12 +198,14 @@ func TestFetchedRecoveryBlocks(t *testing.T) {
 	art := func(id string) []JobArticle { return []JobArticle{{ID: id, Bytes: 100, Number: 1}} }
 	m := NewManifest([]JobFile{
 		{Subject: "data.rar", Bytes: 100, Articles: art("<d@x>")},
-		// Named like a volume but not classified as one, so it must not count.
-		{Subject: "x.vol15+16.par2", Bytes: 100, Articles: art("<i@x>")},
-		{Subject: "x.vol00+01.par2", Bytes: 100, IsPar2Recovery: true, Articles: art("<v0@x>")},
-		{Subject: "x.vol01+02.par2", Bytes: 100, IsPar2Recovery: true, Articles: art("<v1@x>")},
-		{Subject: "x.vol03+04.par2", Bytes: 100, IsPar2Recovery: true, Articles: art("<v2@x>")},
-		{Subject: "x.vol07-08.par2", Bytes: 100, IsPar2Recovery: true, Articles: art("<v3@x>")},
+		// A par2 index: not a recovery volume by the FileTable's predicate.
+		// RecoveryVolumeBlocks reads the same pattern, so a name the table does
+		// not classify as a volume cannot declare blocks either.
+		{Subject: "x.par2", Bytes: 100, Articles: art("<i@x>")},
+		{Subject: "x.vol00+01.par2", Bytes: 100, Articles: art("<v0@x>")},
+		{Subject: "x.vol01+02.par2", Bytes: 100, Articles: art("<v1@x>")},
+		{Subject: "x.vol03+04.par2", Bytes: 100, Articles: art("<v2@x>")},
+		{Subject: "x.vol07-08.par2", Bytes: 100, Articles: art("<v3@x>")},
 	})
 	tests := []struct {
 		name string
@@ -227,7 +229,7 @@ func TestFetchedRecoveryBlocks(t *testing.T) {
 		{"a minus-form volume has no count", func(f []FileProgress) {
 			f[5].Complete = true
 		}, 0},
-		{"a file not classified as a recovery volume is not counted", func(f []FileProgress) {
+		{"a par2 index has no recovery blocks to count", func(f []FileProgress) {
 			f[1].Complete = true
 		}, 0},
 	}

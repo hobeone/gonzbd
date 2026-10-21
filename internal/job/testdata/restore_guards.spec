@@ -1,15 +1,15 @@
 pkg ./internal/job/
 run TestAttachContent_RefusesASecondAttach|TestRestoreProgressState_FiltersStampsTheSameWayBeforeAndAfterHydration
 
-[the re-attach guard neutered, so a second AttachContent replaces the live record]
+[the re-attach guard neutered, so a second AttachFiles replaces the live record]
 file internal/job/content.go
 --- anchor
-	if j.progress != nil || j.manifest != nil {
-		return fmt.Errorf("job %s: AttachContent: content already attached; use RestoreContent to install a manifest alongside existing progress", j.id)
+	if j.progress != nil || j.fileTable != nil {
+		return fmt.Errorf("job %s: AttachFiles: files already attached; use AttachArticles to install a manifest alongside existing progress", j.id)
 	}
 --- replace
 	if false {
-		return fmt.Errorf("job %s: AttachContent: content already attached; use RestoreContent to install a manifest alongside existing progress", j.id)
+		return fmt.Errorf("job %s: AttachFiles: files already attached; use AttachArticles to install a manifest alongside existing progress", j.id)
 	}
 --- end
 

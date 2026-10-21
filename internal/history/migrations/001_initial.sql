@@ -61,14 +61,15 @@ CREATE INDEX idx_history_archive_completed ON history(archive, completed DESC);
 -- +goose StatementEnd
 
 -- +goose StatementBegin
--- The per-file RESULTS of downloading a job: what each file turned out to be
--- called, whether it finished, what it hashed to, and whether it is fetched.
+-- One row per file of a job. It holds the file's NZB-derived structure
+-- (subject, bytes, article_count), written once at admission by Store.Admit,
+-- AND its download results (complete, filename, fetch_policy), written by the
+-- recorder.
 --
--- Every column is something no other artifact holds. filename is discovered
--- from the yEnc header, complete decided by the assembler, fetch_policy chosen
--- by the on-demand par2 policy. Anything the manifest already says does not
--- belong here: the manifest is loaded before these rows are read, so a copy
--- would only ever be the stale one.
+-- filename is discovered from the yEnc header, complete decided by the
+-- assembler, fetch_policy chosen by the on-demand par2 policy. The manifest
+-- file carries the article table only; the per-file structure lives here so a
+-- restored job can be shown without opening its manifest.
 --
 -- The fetch_policy CHECK is the only guard that value has -- neither
 -- SetFileFetchPolicy nor Job.InstallFileVerification range-checks it.
@@ -89,7 +90,10 @@ CREATE TABLE job_files (
     id               INTEGER PRIMARY KEY AUTOINCREMENT,
     job_id           TEXT NOT NULL,
     file_index       INTEGER NOT NULL,
-    complete         INTEGER NOT NULL DEFAULT 0,
+    subject          TEXT NOT NULL,
+    bytes            INTEGER NOT NULL CHECK (bytes >= 0),
+    article_count    INTEGER NOT NULL CHECK (article_count >= 0),
+    complete        INTEGER NOT NULL DEFAULT 0,
     filename         TEXT,
     fetch_policy     INTEGER NOT NULL DEFAULT 0 CHECK (fetch_policy BETWEEN 0 AND 2),
     UNIQUE(job_id, file_index)
@@ -220,12 +224,12 @@ CREATE TABLE dispatch_jobs (
     -- par2 reads packets rather than filenames, so zero here means "nothing
     -- recognized", never "nothing to repair with".
     --
-    -- Derived from the manifest (Manifest.RecoveryBytes) rather than measured
-    -- here, but persisted rather than recomputed on load, because a
-    -- non-resident job has no manifest and because zero is not a missing
-    -- reading -- it is a definite claim of no repair capacity, which the UI
-    -- renders as "No repair data" and both abort gates read as grounds to call
-    -- a job hopeless. That must not be reachable from a degraded read.
+    -- Derived from the job's file table (FileTable.RecoveryBytes) rather than
+    -- measured here, but persisted rather than recomputed on load, because a
+    -- restarted job has no file table until it is first hydrated and because
+    -- zero is not a missing reading -- it is a definite claim of no repair
+    -- capacity, which the UI renders as "No repair data" and both abort gates
+    -- read as grounds to call a job hopeless. That must not be reachable from a degraded read.
     recovery_bytes    INTEGER NOT NULL DEFAULT 0,
 
     -- The job's unwanted.State: 0 none, 1 blocked by the unwanted-extension

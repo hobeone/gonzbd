@@ -13,7 +13,7 @@ import (
 func verifiedTestJob(t *testing.T) *Job {
 	t.Helper()
 	j := New("verified", "verified", Policy{})
-	m := newManifest([]JobFile{
+	m := NewManifest([]JobFile{
 		{Subject: "a.bin", Bytes: 400, Articles: []JobArticle{
 			{ID: "<a0@x>", Bytes: 100}, {ID: "<a1@x>", Bytes: 100},
 			{ID: "<a2@x>", Bytes: 100}, {ID: "<a3@x>", Bytes: 100},

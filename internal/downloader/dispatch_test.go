@@ -468,7 +468,7 @@ func TestBuildDispatchPlan_HopelessJobNotDispatched(t *testing.T) {
 	m := job.NewManifest([]job.JobFile{
 		{Subject: "test.bin", Bytes: 1000, Articles: []job.JobArticle{{ID: "h@h", Bytes: 1000, Number: 1}}},
 		{Subject: "test.par2", Bytes: 40, Articles: []job.JobArticle{{ID: "idx@h", Bytes: 40, Number: 1}}},
-		{Subject: "test.vol000+01.par2", Bytes: 100, IsPar2Recovery: true, Articles: []job.JobArticle{{ID: "vol@h", Bytes: 100, Number: 1}}},
+		{Subject: "test.vol000+01.par2", Bytes: 100, Articles: []job.JobArticle{{ID: "vol@h", Bytes: 100, Number: 1}}},
 	})
 	addTestJob(t, d.dispatcher, j, m)
 	if got := j.RecoveryBytes(); got != 100 {

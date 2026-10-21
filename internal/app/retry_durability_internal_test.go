@@ -16,7 +16,7 @@ import (
 func seedDurability(t *testing.T, application *Application, jobID string) {
 	t.Helper()
 	st := realStore(t, application)
-	if err := st.Admit(t.Context(), jobID, []uint8{0}); err != nil {
+	if err := st.Admit(t.Context(), jobID, []durability.AdmitFile{{}}); err != nil {
 		t.Fatalf("seed job_files: %v", err)
 	}
 	seedWritten(t, st, jobID, []durability.WrittenRow{
