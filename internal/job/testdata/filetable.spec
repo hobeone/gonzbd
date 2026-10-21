@@ -16,3 +16,19 @@ file internal/job/filetable.go
 --- replace
 		next += s.ArticleCount + 1
 --- end
+
+[recovery bytes keep only the last volume instead of summing]
+file internal/job/filetable.go
+--- anchor
+			bytes += f.bytes
+--- replace
+			bytes = f.bytes
+--- end
+
+[recovery file count is pinned at one instead of counting]
+file internal/job/filetable.go
+--- anchor
+			count++
+--- replace
+			count = 1
+--- end

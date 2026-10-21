@@ -6,33 +6,34 @@ func TestNewFileTable_DerivesOffsetsAndTotals(t *testing.T) {
 	ft := NewFileTable([]FileSpec{
 		{Subject: "a.bin", Bytes: 300, ArticleCount: 3},
 		{Subject: "a.vol00+01.par2", Bytes: 50, ArticleCount: 1},
+		{Subject: "a.vol01+02.par2", Bytes: 70, ArticleCount: 2},
 		{Subject: "a.par2", Bytes: 10, ArticleCount: 1},
 	})
-	if got := ft.NumFiles(); got != 3 {
-		t.Errorf("NumFiles = %d, want 3", got)
+	if got := ft.NumFiles(); got != 4 {
+		t.Errorf("NumFiles = %d, want 4", got)
 	}
-	wantRanges := [][2]int{{0, 3}, {3, 4}, {4, 5}}
+	wantRanges := [][2]int{{0, 3}, {3, 4}, {4, 6}, {6, 7}}
 	for fi, w := range wantRanges {
 		lo, hi := ft.Range(fi)
 		if lo != w[0] || hi != w[1] {
 			t.Errorf("Range(%d) = (%d,%d), want (%d,%d)", fi, lo, hi, w[0], w[1])
 		}
 	}
-	if got := ft.TotalArticles(); got != 5 {
-		t.Errorf("TotalArticles = %d, want 5", got)
+	if got := ft.TotalArticles(); got != 7 {
+		t.Errorf("TotalArticles = %d, want 7", got)
 	}
-	if got := ft.TotalBytes(); got != 360 {
-		t.Errorf("TotalBytes = %d, want 360", got)
+	if got := ft.TotalBytes(); got != 430 {
+		t.Errorf("TotalBytes = %d, want 430", got)
 	}
-	if got := ft.RecoveryBytes(); got != 50 {
-		t.Errorf("RecoveryBytes = %d, want 50", got)
+	if got := ft.RecoveryBytes(); got != 120 {
+		t.Errorf("RecoveryBytes = %d, want 120 (both volumes summed)", got)
 	}
-	if got := ft.RecoveryFiles(); got != 1 {
-		t.Errorf("RecoveryFiles = %d, want 1 (the index .par2 is not recovery)", got)
+	if got := ft.RecoveryFiles(); got != 2 {
+		t.Errorf("RecoveryFiles = %d, want 2 (the index .par2 is not recovery)", got)
 	}
-	if ft.IsPar2Recovery(0) || !ft.IsPar2Recovery(1) || ft.IsPar2Recovery(2) {
-		t.Errorf("IsPar2Recovery = %v,%v,%v, want false,true,false",
-			ft.IsPar2Recovery(0), ft.IsPar2Recovery(1), ft.IsPar2Recovery(2))
+	if ft.IsPar2Recovery(0) || !ft.IsPar2Recovery(1) || !ft.IsPar2Recovery(2) || ft.IsPar2Recovery(3) {
+		t.Errorf("IsPar2Recovery = %v,%v,%v,%v, want false,true,true,false",
+			ft.IsPar2Recovery(0), ft.IsPar2Recovery(1), ft.IsPar2Recovery(2), ft.IsPar2Recovery(3))
 	}
 	if ft.Subject(1) != "a.vol00+01.par2" || ft.Bytes(0) != 300 || ft.ArticleCount(0) != 3 {
 		t.Errorf("accessors disagree with input: %q %d %d", ft.Subject(1), ft.Bytes(0), ft.ArticleCount(0))
