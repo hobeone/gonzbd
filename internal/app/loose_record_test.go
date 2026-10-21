@@ -547,6 +547,13 @@ func TestLooseRecord_PausedJobReportsEstimateUntilResumed(t *testing.T) {
 	if j2.AllVerified() || j2.Resident() {
 		t.Fatal("the restored paused job was hydrated before its resume")
 	}
+	row, ok := a2.dispatcher.Row(j.ID())
+	if !ok {
+		t.Fatal("the job is not registered")
+	}
+	if want := row.Header.Bytes - 2*lrArtLen; row.RemainingBytes != want {
+		t.Errorf("remaining = %d of %d before the resume, want %d estimated from the 2 recorded articles", row.RemainingBytes, row.Header.Bytes, want)
+	}
 	if err := a2.dispatcher.ResumeJobByUser(j.ID()); err != nil {
 		t.Fatalf("ResumeJobByUser: %v", err)
 	}

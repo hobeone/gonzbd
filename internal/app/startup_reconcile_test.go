@@ -179,7 +179,9 @@ func TestStart_LeavesAJobRestoredPausedAtFetchingUnverified(t *testing.T) {
 
 // TestStart_FilesAnOwedJobInsideStart pins the sweep's place in
 // reconcileBeforeFirstTick: a restored job the archive peek owes a filing is
-// filed inside Start, before the first tick, over a real restarted queue.
+// filed inside Start, before the first tick, over a real restarted queue. The
+// paused job is there to show that an owed filing inside Start leaves an
+// unrelated paused job paused (the IntentPause assertion).
 func TestStart_FilesAnOwedJobInsideStart(t *testing.T) {
 	t.Parallel()
 	env := newLREnv(t)
