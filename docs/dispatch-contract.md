@@ -294,8 +294,8 @@ hydration in flight, and reloads an evicted job's manifest) and records the
 load for a job that was not resident before, so a later tick evicts it once
 it holds nothing and is not paused:
 `Application.verifyPausedJobs`, on a goroutine `Start` launches last, for
-every job restored paused at `Fetching`, so its verified progress is reported
-without a resume — each such job stays resident until it is resumed or
+every job restored paused at `Fetching`, so that the estimate the restore pass
+seeded is replaced by verified progress without a resume — each such job stays resident until it is resumed or
 removed, since the tick's eviction arm skips `IntentPause`
 (`docs/durability-contract.md`, Accepted limitation 1); and `SetName`, so a
 rename sees whether the job's download has begun. The
@@ -308,11 +308,20 @@ job has been parked (`docs/durability-contract.md` §3).
 
 Only the manifest tier is evictable: nothing drops a `FileTable` or a `JobProgress` once it
 exists, and header fields never leave. That is weaker than "resident for a
-job's whole time in the registry", and deliberately so — a job restored at
-startup has no `JobProgress` until first hydration, because `dispatch.restore`
-rebuilds it with `job.New` and no content and this package has no database
-access to size one. See `docs/job-lifecycle.md` for that window and the
-`restored*` fields covering it.
+job's whole time in the registry", and deliberately so — `dispatch.restore`
+rebuilds a job with `job.New` and no content, and this package has no database
+access to size a table or a record, so it cannot attach either. The
+application does, before the first tick: `Application.restoreProgress`, run
+from `StartWith`'s `beforeFirstTick`, attaches a `FileTable` and a seeded
+`JobProgress` to every registered job whose structure it can read.
+`restoreJobMetadata` carries only the download stamps and the par2 release
+reason, through `Job.RestoreProgressState`, and no longer sets recovery bytes;
+`AttachFiles` derives those from the table. `Row.RemainingBytes` is
+`Job.RemainingBytes()` for a job with progress, which for an unverified file
+reads the recorded-count estimate, and the header's NZB total for a job
+without — the one a failed restore leaves (decision D20). See
+`docs/job-lifecycle.md` for the `restored*` fields that cover the interval
+before the pass.
 
 What the dispatcher changes is only who computes manifest residency: it stops
 being a set the dispatcher maintains independently and becomes a function of

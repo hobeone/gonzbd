@@ -89,6 +89,7 @@ a mismatched table unattachable.
 **Why:** deleting them now would make a restored job report 0 recovery bytes
 before hydration, a behaviour change stage 1 must not make.
 **Cost:** a derived value stays persisted for one more stage.
+Closed by stage 2 (Task 4).
 
 ### D10 — Stage 1 is executed subagent-driven, implementers on Sonnet
 
@@ -129,6 +130,7 @@ broken. Pinned by `TestVerifyAndAttach_MissingDirectoryParksTheJob` and
 **Consequence for stage 2:** once the startup pass attaches a table to every
 queued job, "has a table" no longer means "ran in this process"; the
 articles-only branch must key on the Verified flag, not on `Files() != nil`.
+Realised in stage 2: `Hydrate` branches on `AllVerified()` (D18).
 **Cost if wrong:** none for stage 1; behaviour matches the former
 `RestoreContent` / `AttachContent` split.
 
@@ -171,3 +173,43 @@ would make `DO UPDATE` necessary is a parser change across builds, which
 Standing Rule 1 waives.
 **Cost if wrong:** one SQL clause. Stage 2, which makes `job_files` the
 restore source for every queued job, revisits this.
+
+### D17 — `AttachFiles(ft, seed)`
+
+**Call:** the door gains a `[]FileSeed` parameter. `nil` is ingest and the
+composite door (every file Verified); non-nil is the restore pass.
+**Why:** the design wrote this signature; stage 1 landed the one-argument form
+so each commit built; one door keeps one writer.
+**Cost if wrong:** every `AttachFiles(` caller gains `, nil`.
+
+### D18 — `Hydrate` requires an attached table
+
+**Call:** after the restore pass every registered job has a table (no store
+means no restored job), so the stage-1 `fileTableFromRows` branch inside
+`Hydrate` is unreachable and becomes an error. `fileTableFromRows` moves to
+the restore pass; the articles-only branch keys on `AllVerified()` (D13).
+**Why:** Standing Rule 1: a guard whose only justification is a state that
+cannot occur is deleted.
+**Cost if wrong:** tests that hydrate a bare job must seed a table first.
+
+### D19 — The restore read is its own row type
+
+**Call:** `durability.SeedRow{FileRow; Recorded int}` from one query over every
+job; `FileRow`/`FileRows` are unchanged.
+**Why:** a field meaningful only on one read path must not sit on the shared
+type.
+**Cost if wrong:** one small type.
+
+### D20 — The header-bytes fallback stays, narrowed, for the unrestorable class
+
+**Call:** `Dispatcher.List`, `rowFor` and `api.buildSlot` keep
+`if j.HasProgress() { rem = j.RemainingBytes() }` over the header's NZB total.
+The design (§4.4, §5) said to delete it; only `recovery_bytes` and
+`SetRecoveryBytes` go.
+**Why:** a registered job lacks progress only when the restore pass could not
+rebuild its structure (`failUnrestorable`, `internal/app/restore_progress.go`)
+or before that pass has run. Deleting the fallback would list such a job with
+zero remaining bytes, i.e. as finished; the header's total is the honest
+figure. `Job.RecoveryBytes()` on a job with no table returns 0, and that is
+what the API's `recovery_bytes` shows for it.
+**Cost if wrong:** one branch that a stricter reading would have removed.

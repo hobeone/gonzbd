@@ -86,7 +86,7 @@ func TestAPIContract_QueueResponse(t *testing.T) {
 		"bytes", "remaining_bytes", "percentage", "pp",
 		"failed_bytes", "recovery_bytes", "recovery_files", "repair_state",
 		"current_stage", "articles_remaining", "eta_seconds",
-		"current_file",
+		"current_file", "progress_verified",
 	}
 	for _, k := range slotKeys {
 		assertKey(t, slots[0], k, "queue.slots[0]")
@@ -143,7 +143,7 @@ func TestAPIContract_QueueJobDetail(t *testing.T) {
 	}
 
 	// QueueFile keys (from types.ts QueueFile interface)
-	fileKeys := []string{"name", "bytes", "bytes_downloaded", "state"}
+	fileKeys := []string{"name", "bytes", "bytes_downloaded", "state", "verified"}
 	for _, k := range fileKeys {
 		assertKey(t, qFiles[0], k, "detail.files[0]")
 	}

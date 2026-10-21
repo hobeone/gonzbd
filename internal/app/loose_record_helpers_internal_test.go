@@ -39,11 +39,19 @@ func lrBuiltJob(t *testing.T, a *lrApp, name string, nA, nB int) *job.Job {
 	return j
 }
 
-// verifyFromRecord is Hydrate's no-file-table branch for a job the dispatcher
-// does not hold: it reads j's record and calls verifyAndAttach with it, over m,
-// which was built from the table those rows describe.
+// verifyFromRecord is Hydrate's verifying branch for a job the dispatcher does
+// not hold: it attaches m's table to j seeded from the record, as the restore
+// pass does (seedOf), then reads j's record and calls verifyAndAttach with it,
+// over m, which was built from the table those rows describe.
 func (a *lrApp) verifyFromRecord(t *testing.T, j *job.Job, m *job.Manifest) error {
 	t.Helper()
+	seeds, unreadable, err := a.st.SeedRows(t.Context())
+	if err != nil || len(unreadable) != 0 {
+		t.Fatalf("SeedRows: %v, unreadable %v", err, unreadable)
+	}
+	if err := j.AttachFiles(m.Files(), seedOf(seeds[j.ID()])); err != nil {
+		t.Fatalf("AttachFiles: %v", err)
+	}
 	files, rows, err := a.residency.readRecord(t.Context(), j.ID())
 	if err != nil {
 		t.Fatalf("readRecord: %v", err)
@@ -111,8 +119,8 @@ func TestVerifyAndAttach_MissingDirectoryParksTheJob(t *testing.T) {
 	if fresh.Resident() {
 		t.Error("the job is resident after a verification that faulted")
 	}
-	if fresh.Files() != nil || fresh.HasProgress() {
-		t.Error("a verification that faulted left a file table or progress on the job: the next hydration would take the attach-articles-only path and never verify")
+	if fresh.Resident() || fresh.AllVerified() {
+		t.Error("a verification that faulted left the job resident or verified: the next hydration would take the attach-articles-only path and never verify")
 	}
 	rows, err := a.st.WrittenRows(t.Context(), j0.ID())
 	if err != nil {

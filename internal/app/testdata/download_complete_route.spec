@@ -71,11 +71,11 @@ file internal/app/startup_reconcile.go
 --- anchor
 		app.dropJobAlreadyInHistory(ctx, row.ID)
 	}
-	return app.fileOwedUnwantedFailures(ctx)
+	if err := app.restoreProgress(ctx); err != nil {
 --- replace
 		_ = row.ID
 	}
-	return app.fileOwedUnwantedFailures(ctx)
+	if err := app.restoreProgress(ctx); err != nil {
 --- end
 
 [a cancelled startup goes on dropping and sweeping jobs]

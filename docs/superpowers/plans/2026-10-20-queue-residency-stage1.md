@@ -312,9 +312,9 @@ Run: `go build ./... 2>&1 | head -40` — expect the remaining compile errors to
 - [ ] **Step 1: Write the failing tests**
 
 ```go
-func TestHydrate_BuildsTheFileTableFromJobFilesBeforeVerifying(t *testing.T) // job with rows, no files; after Hydrate: Files().Subject(0) == admitted subject, Resident()
+func TestHydrate_BuildsTheFileTableFromJobFilesBeforeVerifying(t *testing.T) // job with rows, no files; after Hydrate: Files().Subject(0) == admitted subject, Resident() <!-- doccite:ok TestHydrate_BuildsTheFileTableFromJobFilesBeforeVerifying — stage 2 moved the build to the restore pass; renamed TestRestoreProgress_BuildsTheFileTableFromJobFiles -->
 func TestHydrate_RefusesAManifestWhoseCountDisagreesWithTheRows(t *testing.T) // manifest file with one article fewer → error, !Resident(), not a residency fault (Review Focus 1)
-func TestHydrate_WithoutAStoreNeedsAnAttachedFileTable(t *testing.T)          // r.store nil, Files() nil → error containing "no record store" (Review Focus 4)
+func TestHydrate_WithoutAStoreNeedsAnAttachedFileTable(t *testing.T)          // r.store nil, Files() nil → error containing "no record store" (Review Focus 4) <!-- doccite:ok TestHydrate_WithoutAStoreNeedsAnAttachedFileTable — stage 2 (D18) replaced it with TestHydrate_RefusesAJobWithoutAFileTable -->
 func TestFileTableFromRows_RefusesAGap(t *testing.T)                           // rows {0,2} → error
 ```
 Adapt `verify_test.go` fixtures: where a test built `m := job.NewManifest(...)` to pass to `verifyJobFiles`, build `ft, m, _ := job.BuildContent(...)` and pass `ft`.

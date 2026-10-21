@@ -561,6 +561,7 @@ type durabilityStore interface {
 	Admit(ctx context.Context, jobID string, files []durability.AdmitFile) error
 	FileRows(ctx context.Context, jobID string) ([]durability.FileRow, error)
 	WrittenRows(ctx context.Context, jobID string) ([]durability.WrittenRow, error)
+	SeedRows(ctx context.Context) (rows map[string][]durability.SeedRow, unreadable map[string]error, err error)
 	Reclaim(ctx context.Context, id string, more ...string) error
 	SweepOrphans(ctx context.Context) error
 }

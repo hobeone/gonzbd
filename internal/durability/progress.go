@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"math"
 )
 
 // ErrIncomplete marks a read that failed partway: the rows returned with it are
@@ -123,4 +124,111 @@ func (s *Store) FileRows(ctx context.Context, jobID string) ([]FileRow, error) {
 		errs = append(errs, fmt.Errorf("durability: iterate job_files %s: %w: %w", jobID, ErrIncomplete, err))
 	}
 	return out, errors.Join(errs...)
+}
+
+// SeedRow is one job_files row plus the number of written_articles rows the
+// record holds for that file. Read by the restore pass,
+// Application.restoreProgress, which runs once per Start
+// (`git grep -n 'durable[.]SeedRows' -- '*.go' ':!*_test.go'` returns 1 line,
+// its call); FileRows is the per-job read and carries no count.
+type SeedRow struct {
+	FileRow
+	Recorded int
+}
+
+// SeedRows returns every job's readable rows, keyed by job ID, ordered by file
+// index within a job. A job with no job_files rows is absent from the map.
+//
+// A row whose columns do not read as their types (SQLite is dynamically typed,
+// so a damaged or hand-edited row can hold text where a count belongs) costs
+// its job and no other: every row of that job is dropped from the map, and the
+// job is named in unreadable with the file index and column of its first bad
+// row. err is only for a query or iteration that failed as a whole, and then
+// nothing returned is usable. written_articles is PRIMARY KEY (job_id,
+// file_idx, art_idx), so the GROUP BY is a key-prefix scan.
+func (s *Store) SeedRows(ctx context.Context) (rows map[string][]SeedRow, unreadable map[string]error, err error) {
+	res, err := s.db.QueryContext(ctx, `
+SELECT f.job_id, f.file_index, f.subject, f.bytes, f.article_count, f.filename, f.complete, f.fetch_policy, COALESCE(w.n, 0)
+FROM job_files f
+LEFT JOIN (SELECT job_id, file_idx, COUNT(*) AS n FROM written_articles GROUP BY job_id, file_idx) w
+  ON w.job_id = f.job_id AND w.file_idx = f.file_index
+ORDER BY f.job_id, f.file_index`)
+	if err != nil {
+		return nil, nil, fmt.Errorf("durability: load seed rows: %w", err)
+	}
+	defer func() { _ = res.Close() }()
+
+	rows = make(map[string][]SeedRow)
+	unreadable = make(map[string]error)
+	for res.Next() {
+		var jobID string
+		var cols [8]any
+		if err := res.Scan(&jobID, &cols[0], &cols[1], &cols[2], &cols[3], &cols[4], &cols[5], &cols[6], &cols[7]); err != nil {
+			// The key itself is unreadable: no job can be named.
+			return nil, nil, fmt.Errorf("durability: scan seed row key: %w", err)
+		}
+		if _, bad := unreadable[jobID]; bad {
+			continue
+		}
+		r, err := seedRowOf(cols)
+		if err != nil {
+			unreadable[jobID] = err
+			delete(rows, jobID)
+			continue
+		}
+		rows[jobID] = append(rows[jobID], r)
+	}
+	if err := res.Err(); err != nil {
+		return nil, nil, fmt.Errorf("durability: iterate seed rows: %w", err)
+	}
+	return rows, unreadable, nil
+}
+
+// seedRowOf converts one SeedRows result row's columns after job_id, in select
+// order, to a SeedRow, or names the file index and column that does not read.
+func seedRowOf(c [8]any) (SeedRow, error) {
+	idx, ok := c[0].(int64)
+	if !ok {
+		return SeedRow{}, fmt.Errorf("job_files row has a non-integer file_index (%T)", c[0])
+	}
+	bad := func(col string, v any) (SeedRow, error) {
+		return SeedRow{}, fmt.Errorf("job_files row at file index %d: column %s holds %T %v, not a value of its type", idx, col, v, v)
+	}
+	ints := [...]struct {
+		name string
+		v    any
+		max  int64
+	}{
+		{"bytes", c[2], math.MaxInt64},
+		{"article_count", c[3], math.MaxInt32},
+		{"complete", c[5], math.MaxInt64},
+		{"fetch_policy", c[6], 2},
+		{"recorded", c[7], math.MaxInt32},
+	}
+	var n [len(ints)]int64
+	for i, col := range ints {
+		v, ok := col.v.(int64)
+		if !ok || v < 0 || v > col.max {
+			return bad(col.name, col.v)
+		}
+		n[i] = v
+	}
+	subject, ok := c[1].(string)
+	if !ok {
+		return bad("subject", c[1])
+	}
+	filename, ok := c[4].(string)
+	if !ok {
+		return bad("filename", c[4])
+	}
+	return SeedRow{
+		FileIndex:    int(idx),
+		Subject:      subject,
+		Bytes:        n[0],
+		ArticleCount: int(n[1]),
+		Complete:     n[2] != 0,
+		FetchPolicy:  uint8(n[3]), //nolint:gosec // G115: range-checked to 0-2 above
+		Filename:     filename,
+		Recorded:     int(n[4]),
+	}, nil
 }

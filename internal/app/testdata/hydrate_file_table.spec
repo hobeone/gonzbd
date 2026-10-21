@@ -1,11 +1,12 @@
 pkg ./internal/app/
-run ^(TestFileTableFromRows_RefusesAGapAndADuplicate|TestHydrate_BuildsTheFileTableFromJobFilesBeforeVerifying|TestHydrate_RefusesAManifestWhoseCountDisagreesWithTheRows|TestAppResidency_HydrateThenEvict|TestVerifyAndAttach_MissingDirectoryParksTheJob|TestLooseRecord_ZeroedRangeIsRefetched)$
+run ^(TestFileTableFromRows_RefusesAGapAndADuplicate|TestRestoreProgress_BuildsTheFileTableFromJobFiles|TestHydrate_RefusesAManifestWhoseCountDisagreesWithTheRows|TestAppResidency_HydrateThenEvict|TestVerifyAndAttach_MissingDirectoryParksTheJob|TestLooseRecord_ZeroedRangeIsRefetched)$
 
-# A restored job has no file table until hydration builds one from its
-# job_files rows, and nothing is attached until the record has been verified.
+# The restore pass builds a restored job's file table from its job_files rows
+# and attaches it unverified; the job's first hydration verifies the record
+# before it attaches the articles.
 
 [fileTableFromRows accepts rows that skip or repeat an index]
-file internal/app/residency.go
+file internal/app/restore_progress.go
 run TestFileTableFromRows_RefusesAGapAndADuplicate
 --- anchor
 		if row.FileIndex != i {
@@ -13,39 +14,36 @@ run TestFileTableFromRows_RefusesAGapAndADuplicate
 		if false {
 --- end
 
-# Without the attach, AttachArticles refuses the manifest for want of a table,
-# so the hydration errors rather than leaving a job with articles and no files.
-[a hydration builds the table from the rows but never attaches it]
-file internal/app/residency.go
-run TestHydrate_BuildsTheFileTableFromJobFilesBeforeVerifying
+[the restore pass builds the table from the rows but never attaches it]
+file internal/app/restore_progress.go
+run TestRestoreProgress_BuildsTheFileTableFromJobFiles
 --- anchor
-	if err := j.AttachFiles(m.Files()); err != nil {
-		return err
-	}
+			err = j.AttachFiles(ft, seedOf(seeds))
 --- replace
+			_ = ft
 --- end
 
-# A job that has a table is hydrated from its articles alone; sent down the
-# verifying branch, its second AttachFiles is refused.
-[a re-hydration of a job with a file table takes the verifying branch]
+# A restored job holds a table from the start, so a hydration that branched on
+# the table would never verify it.
+[the hydration branches on the file table instead of the Verified flag]
 file internal/app/residency.go
-run TestAppResidency_HydrateThenEvict
+run TestRestoreProgress_BuildsTheFileTableFromJobFiles
 --- anchor
-	if hasFiles {
+	if j.AllVerified() {
 		return j.AttachArticles(m)
 	}
 --- replace
-	if false {
+	if ft != nil {
 		return j.AttachArticles(m)
 	}
 --- end
 
-# A verification that faults must leave the job as it found it, or the next
-# hydration finds a table, takes the articles-only branch and never verifies.
-[the files and articles are attached before the record is verified]
+# A verification that faults must leave the job as it found it, or the job is
+# resident on articles nothing verified.
+[the articles are attached before the record is verified]
 file internal/app/residency.go
 run ^(TestVerifyAndAttach_MissingDirectoryParksTheJob|TestLooseRecord_ZeroedRangeIsRefetched)$
-# The mutation moves both attaches above the verification.
+# The mutation moves the attach above the verification.
 --- anchor
 	res, err := verifyJobFiles(ctx, m.Files(), files, rows, locate, false)
 	if err != nil {
@@ -63,16 +61,10 @@ run ^(TestVerifyAndAttach_MissingDirectoryParksTheJob|TestLooseRecord_ZeroedRang
 	if j.State().State == job.Fetching {
 		cleanUnrecordedFetchingFiles(j.Name(), files, locate, r.log)
 	}
-	if err := j.AttachFiles(m.Files()); err != nil {
-		return err
-	}
 	if err := j.AttachArticles(m); err != nil {
 		return err
 	}
 --- replace
-	if err := j.AttachFiles(m.Files()); err != nil {
-		return err
-	}
 	if err := j.AttachArticles(m); err != nil {
 		return err
 	}
@@ -94,20 +86,20 @@ run ^(TestVerifyAndAttach_MissingDirectoryParksTheJob|TestLooseRecord_ZeroedRang
 	}
 --- end
 
-# A first hydration cancelled while it reads the articles must have attached
-# nothing.
-[the file table is attached before the articles are read]
+# A first hydration cancelled while it reads the articles must report the
+# cancellation, which the tick does not settle, rather than a success that
+# leaves the job unverified and not resident.
+[a hydration cancelled during the article read reports success]
 file internal/app/residency.go
 run TestHydrate_CancelledDuringArticleReadAttachesNothing
 --- anchor
-		if ft, err = fileTableFromRows(files); err != nil {
-			return fmt.Errorf("residency: hydrate %s: %w", id, err)
-		}
+	arts, err := r.readArticles(ctx, id)
+	if err != nil {
+		return fmt.Errorf("residency: hydrate %s: %w", id, err)
+	}
 --- replace
-		if ft, err = fileTableFromRows(files); err != nil {
-			return fmt.Errorf("residency: hydrate %s: %w", id, err)
-		}
-		if err := j.AttachFiles(ft); err != nil {
-			return err
-		}
+	arts, err := r.readArticles(ctx, id)
+	if err != nil {
+		return nil
+	}
 --- end

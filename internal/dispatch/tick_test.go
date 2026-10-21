@@ -809,9 +809,9 @@ func TestRemove_ConcurrentPersistDoesNotResurrectRowOrResidency(t *testing.T) {
 			t.Fatalf("trial %d: setup: job not saved to store", trial)
 		}
 
-		// Mutate job so persistIfChanged has new data. RecoveryBytes is
-		// job-level, so it lands whether or not the job is hydrated.
-		j.SetRecoveryBytes(int64(trial + 1))
+		// Mutate job so persistIfChanged has new data. Policy is job-level, so
+		// it lands whether or not the job is hydrated.
+		j.SetPolicy(job.Policy{Verify: true})
 
 		stop := make(chan struct{})
 		var wg sync.WaitGroup
@@ -888,9 +888,9 @@ func TestRemove_InFlightPersistBlockedByStoreMuDoesNotResurrect(t *testing.T) {
 	}
 	d.persistIfChanged(context.Background(), j)
 
-	// Mutate so it wants to persist. RecoveryBytes is job-level, so it lands
+	// Mutate so it wants to persist. Policy is job-level, so it lands
 	// whether or not the job is hydrated.
-	j.SetRecoveryBytes(100)
+	j.SetPolicy(job.Policy{Verify: true})
 
 	removeDone := make(chan error, 1)
 	go func() {
@@ -980,5 +980,42 @@ func TestEvictCancelledNeverRun_SkipsWhenLiveOrLaunched(t *testing.T) {
 	}
 	if _, ok := d.Job(j.ID()); ok {
 		t.Error("job still registered after evictCancelledNeverRun")
+	}
+}
+
+// TestSettleFailed_SettlesAnOpenAttemptAndRefusesANeverRunJob pins the door
+// the application's restore pass settles a job without structure through: a
+// job with an open attempt settles Failed and gives back its lease, and one
+// that never ran is refused with job.ErrNoOpenAttempt and left as it was.
+func TestSettleFailed_SettlesAnOpenAttemptAndRefusesANeverRunJob(t *testing.T) {
+	d := newTestDispatcher(t, withCaps(2, 2))
+	ran := job.New("ran", "ran", job.Policy{})
+	if err := d.Add(context.Background(), ran, Header{}); err != nil {
+		t.Fatalf("Add: %v", err)
+	}
+	d.tick(context.Background())
+	d.tick(context.Background())
+	if !ran.HoldsLease() {
+		t.Fatal("fixture: the job holds no lease after two ticks")
+	}
+	if err := d.SettleFailed(ran); err != nil {
+		t.Fatalf("SettleFailed: %v", err)
+	}
+	if o := ran.State().Outcome; o != job.OutcomeFailed {
+		t.Errorf("outcome = %v, want Failed", o)
+	}
+	if ran.HoldsLease() {
+		t.Error("a job settled Failed still holds its lease")
+	}
+
+	neverRun := job.New("never", "never", job.Policy{})
+	if err := d.Add(context.Background(), neverRun, Header{}); err != nil {
+		t.Fatalf("Add: %v", err)
+	}
+	if err := d.SettleFailed(neverRun); !errors.Is(err, job.ErrNoOpenAttempt) {
+		t.Errorf("SettleFailed(never run) = %v, want job.ErrNoOpenAttempt", err)
+	}
+	if o := neverRun.State().Outcome; o != job.OutcomePending {
+		t.Errorf("never-run outcome = %v, want pending", o)
 	}
 }

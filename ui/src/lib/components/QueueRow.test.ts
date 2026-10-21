@@ -55,6 +55,7 @@ describe('QueueRow', () => {
 		password: '',
 		failed_bytes: 0,
 		bytes_durable: 0,
+		progress_verified: true,
 		repair_state: 'intact',
 		recovery_bytes: 0,
 		recovery_files: 0,
@@ -235,9 +236,9 @@ describe('QueueRow', () => {
 					{
 						...baseSlot,
 						files: [
-							{ name: dupName, bytes: 1000, bytes_downloaded: 500, state: 'downloading' },
-							{ name: dupName, bytes: 2000, bytes_downloaded: 0, state: 'queued' },
-							{ name: dupName, bytes: 1500, bytes_downloaded: 1500, state: 'done' }
+							{ name: dupName, bytes: 1000, bytes_downloaded: 500, verified: true, state: 'downloading' },
+							{ name: dupName, bytes: 2000, bytes_downloaded: 0, verified: true, state: 'queued' },
+							{ name: dupName, bytes: 1500, bytes_downloaded: 1500, verified: true, state: 'done' }
 						]
 					}
 				]
@@ -291,8 +292,8 @@ describe('QueueRow', () => {
 		vi.useFakeTimers();
 		try {
 			const initialFiles = [
-				{ name: 'a.mkv', bytes: 1000, bytes_downloaded: 100, state: 'downloading' as const },
-				{ name: 'b.mkv', bytes: 1000, bytes_downloaded: 1000, state: 'done' as const }
+				{ name: 'a.mkv', bytes: 1000, bytes_downloaded: 100, verified: true, state: 'downloading' as const },
+				{ name: 'b.mkv', bytes: 1000, bytes_downloaded: 1000, verified: true, state: 'done' as const }
 			];
 			vi.mocked(fetchQueueJobDetail).mockResolvedValue({
 				status: true,
@@ -323,8 +324,8 @@ describe('QueueRow', () => {
 						{
 							...baseSlot,
 							files: [
-								{ name: 'a.mkv', bytes: 1000, bytes_downloaded: 500, state: 'downloading' as const },
-								{ name: 'b.mkv', bytes: 1000, bytes_downloaded: 1000, state: 'done' as const }
+								{ name: 'a.mkv', bytes: 1000, bytes_downloaded: 500, verified: true, state: 'downloading' as const },
+								{ name: 'b.mkv', bytes: 1000, bytes_downloaded: 1000, verified: true, state: 'done' as const }
 							]
 						}
 					]
@@ -383,7 +384,7 @@ describe('QueueRow', () => {
 			vi.mocked(fetchQueueJobDetail).mockResolvedValue({
 				status: true,
 				queue: { slots: [{ ...baseSlot, files: [
-					{ name: 'a.mkv', bytes: 1000, bytes_downloaded: 100, state: 'downloading' as const }
+					{ name: 'a.mkv', bytes: 1000, bytes_downloaded: 100, verified: true, state: 'downloading' as const }
 				] }] }
 			} as any);
 
@@ -434,7 +435,7 @@ describe('QueueRow', () => {
 			vi.mocked(fetchQueueJobDetail).mockResolvedValue({
 				status: true,
 				queue: { slots: [{ ...baseSlot, files: [
-					{ name: 'a.mkv', bytes: 1000, bytes_downloaded: 0, state: 'queued' as const }
+					{ name: 'a.mkv', bytes: 1000, bytes_downloaded: 0, verified: true, state: 'queued' as const }
 				] }] }
 			} as any);
 
@@ -448,9 +449,9 @@ describe('QueueRow', () => {
 			vi.mocked(fetchQueueJobDetail).mockResolvedValue({
 				status: true,
 				queue: { slots: [{ ...baseSlot, files: [
-					{ name: 'a.mkv', bytes: 1000, bytes_downloaded: 0, state: 'queued' as const },
-					{ name: 'b.mkv', bytes: 1000, bytes_downloaded: 0, state: 'queued' as const },
-					{ name: 'c.mkv', bytes: 1000, bytes_downloaded: 0, state: 'queued' as const }
+					{ name: 'a.mkv', bytes: 1000, bytes_downloaded: 0, verified: true, state: 'queued' as const },
+					{ name: 'b.mkv', bytes: 1000, bytes_downloaded: 0, verified: true, state: 'queued' as const },
+					{ name: 'c.mkv', bytes: 1000, bytes_downloaded: 0, verified: true, state: 'queued' as const }
 				] }] }
 			} as any);
 
@@ -542,9 +543,9 @@ describe('QueueRow', () => {
 
 		it('states the bytes excluded from the row, summing held and skipped', async () => {
 			withFiles([
-				{ name: 'release.rar', bytes: 1000, bytes_downloaded: 1000, state: 'done' },
-				{ name: 'x.vol000+01.par2', bytes: 300, bytes_downloaded: 0, state: 'held' },
-				{ name: 'x.vol001+02.par2', bytes: 500, bytes_downloaded: 0, state: 'skipped' }
+				{ name: 'release.rar', bytes: 1000, bytes_downloaded: 1000, verified: true, state: 'done' },
+				{ name: 'x.vol000+01.par2', bytes: 300, bytes_downloaded: 0, verified: true, state: 'held' },
+				{ name: 'x.vol001+02.par2', bytes: 500, bytes_downloaded: 0, verified: true, state: 'skipped' }
 			]);
 			await openDrawer();
 
@@ -559,8 +560,8 @@ describe('QueueRow', () => {
 
 		it('says nothing when no file is held back', async () => {
 			withFiles([
-				{ name: 'release.rar', bytes: 1000, bytes_downloaded: 1000, state: 'done' },
-				{ name: 'other.rar', bytes: 500, bytes_downloaded: 0, state: 'queued' }
+				{ name: 'release.rar', bytes: 1000, bytes_downloaded: 1000, verified: true, state: 'done' },
+				{ name: 'other.rar', bytes: 500, bytes_downloaded: 0, verified: true, state: 'queued' }
 			]);
 			await openDrawer();
 
@@ -729,6 +730,76 @@ describe('QueueRow', () => {
 			const title = screen.getByTestId('durability-tooltip').getAttribute('title') ?? '';
 			expect(title).toContain('written');
 			expect(title).toContain(formatSize(1048576));
+		});
+	});
+
+	describe('progress verification', () => {
+		const HINT = 'Progress from the download record; it is checked against the files when the job next runs.';
+
+		it('marks an unverified slot with the unverified class and the hint', () => {
+			const { container } = render(QueueRow, {
+				slot: { ...baseSlot, progress_verified: false },
+				onremove: () => {}
+			});
+			expect(container.querySelector('[role="progressbar"].unverified')).toBeTruthy();
+			expect(screen.getByTestId('progress-cell').getAttribute('title')).toBe(HINT);
+			expect(screen.getByText(HINT, { selector: '.sr-only' })).toBeInTheDocument();
+		});
+
+		it('renders neither the class nor the hint for a verified slot', () => {
+			const { container } = render(QueueRow, { slot: baseSlot, onremove: () => {} });
+			expect(container.querySelector('[role="progressbar"].unverified')).toBeNull();
+			expect(screen.getByTestId('progress-cell').getAttribute('title')).toBeFalsy();
+			expect(screen.queryByText(HINT)).toBeNull();
+		});
+
+		async function openDrawer(files: unknown[]) {
+			vi.mocked(fetchQueueJobDetail).mockResolvedValue({
+				status: true,
+				queue: { slots: [{ ...baseSlot, files }] }
+			} as any);
+			const view = render(QueueRow, { slot: baseSlot, onremove: () => {} });
+			const row = view.container.querySelector('tr[class*="cursor-pointer"]') as HTMLElement;
+			await fireEvent.click(row);
+			await vi.waitFor(() => expect(screen.getByText('a.mkv')).toBeInTheDocument());
+			return view;
+		}
+
+		it('shows a dot only for a drawer file that is not verified', async () => {
+			await openDrawer([
+				{ name: 'a.mkv', bytes: 1000, bytes_downloaded: 0, verified: false, state: 'queued' },
+				{ name: 'b.mkv', bytes: 1000, bytes_downloaded: 0, verified: true, state: 'queued' }
+			]);
+			const dots = screen.getAllByLabelText('not yet verified');
+			expect(dots).toHaveLength(1);
+			expect(screen.getByText('a.mkv').closest('tr')!.contains(dots[0])).toBe(true);
+		});
+
+		it('flips a file verified flag in place on refresh', async () => {
+			vi.useFakeTimers();
+			try {
+				await openDrawer([{ name: 'a.mkv', bytes: 1000, bytes_downloaded: 0, verified: false, state: 'queued' }]);
+				expect(screen.getAllByLabelText('not yet verified')).toHaveLength(1);
+				const before = screen.getByText('a.mkv').closest('tr');
+
+				vi.mocked(fetchQueueJobDetail).mockResolvedValue({
+					status: true,
+					queue: {
+						slots: [
+							{
+								...baseSlot,
+								files: [{ name: 'a.mkv', bytes: 1000, bytes_downloaded: 0, verified: true, state: 'queued' }]
+							}
+						]
+					}
+				} as any);
+				capturedWSHandler!({ event: 'queue_updated' });
+				await vi.advanceTimersByTimeAsync(2500);
+				await vi.waitFor(() => expect(screen.queryByLabelText('not yet verified')).toBeNull());
+				expect(screen.getByText('a.mkv').closest('tr')).toBe(before);
+			} finally {
+				vi.useRealTimers();
+			}
 		});
 	});
 });

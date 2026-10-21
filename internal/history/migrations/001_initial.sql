@@ -77,7 +77,7 @@ CREATE INDEX idx_history_archive_completed ON history(archive, completed DESC);
 -- UNIQUE(job_id, file_index) is also the access path, which is why there is no
 -- separate index on job_id.
 -- `git grep -nE '(INTO|UPDATE|FROM) job_file[s]' -- '*.go' ':!*_test.go'`
--- returns 6 lines: the INSERT and the SELECT in internal/durability/progress.go,
+-- returns 7 lines: the INSERT and the two SELECTs in internal/durability/progress.go,
 -- three in internal/durability/written.go (ApplyRecord's EXISTS guard on
 -- written_articles and its two UPDATEs), and a SELECT in test/crash/harness.go,
 -- which that filter keeps because it is build-tagged rather than named
@@ -216,21 +216,6 @@ CREATE TABLE dispatch_jobs (
     -- through to the "verified clean from index" line for a job where nothing
     -- was verified.
     par2_release_reason TEXT NOT NULL DEFAULT '',
-
-    -- Repair capacity, counted from subjects matching ".volNNN+MM.par2" -- the
-    -- files carrying recovery slices -- and not the set's index file, which
-    -- holds per-file checksums and no capacity. The convention is not a
-    -- guarantee: PAR2 recommends the .vol naming without requiring it, and
-    -- par2 reads packets rather than filenames, so zero here means "nothing
-    -- recognized", never "nothing to repair with".
-    --
-    -- Derived from the job's file table (FileTable.RecoveryBytes) rather than
-    -- measured here, but persisted rather than recomputed on load, because a
-    -- restarted job has no file table until it is first hydrated and because
-    -- zero is not a missing reading -- it is a definite claim of no repair
-    -- capacity, which the UI renders as "No repair data" and both abort gates
-    -- read as grounds to call a job hopeless. That must not be reachable from a degraded read.
-    recovery_bytes    INTEGER NOT NULL DEFAULT 0,
 
     -- The job's unwanted.State: 0 none, 1 blocked by the unwanted-extension
     -- check at ingest, 2 approved by the user. Persisted because approval is

@@ -222,10 +222,11 @@ Three things follow:
   true: some file has a resolved filename, which the pipeline's
   `registerFile` sets before the assembler creates the file, on the
   permanent-failure path as well as the success path, and verification
-  restores. A job restored at startup has no `JobProgress` until hydrated,
-  and its stored start stamp is zero after a retry or when every resolved
-  article failed, so `SetName` hydrates such a job first
-  (`Dispatcher.LoadProgress`). `HasRun` is the wrong
+  restores. A job restored at startup carries the filenames `job_files`
+  recorded in its seeded `JobProgress` from before the first tick, but its
+  stored start stamp is zero after a retry or when every resolved article
+  failed. `SetName` still hydrates such a job first
+  (`Dispatcher.LoadProgress`), which waits for a hydration in flight. `HasRun` is the wrong
   test for this: it is true for any job the tick has opened an attempt on,
   including one still waiting behind others.
   The check and the name write are one step under `Job.mu`
@@ -1010,8 +1011,10 @@ and running is filed before the first tick instead of downloading on. A filing
 without the peek's message (a redelivery, a restart) carries the prefix alone,
 since the names are not persisted; one racing the peek's own filing can
 therefore be the reason the history entry shows (names lost; the post-processing
-admission still lets only one filing through). A job that file completes is
-deferred to its Assessing worker, which files it. A pause of a Blocked
+admission still lets only one filing through). A resident job that file
+completes is deferred to its Assessing worker, which files it; a job that is
+not resident (its hydration failed) has no such worker and is filed at once
+(`fileOwedUnwantedFailure` defers only when `Job.Resident`). A pause of a Blocked
 `IntentRun` job (a user's, or a stall's) ends the derivation, since the intent
 is no longer `IntentRun`: the job is then held like a pause-action one, and
 `ResumeJob` refuses it while only the user's resume (`ResumeJobByUser`)
@@ -1184,7 +1187,10 @@ Maintaining a `JobProgress` counter needs a `*Manifest`: the article byte counts
 Reading one does not. The tiering is that boundary made
 explicit. The per-file structure — subject, size, article count, offsets —
 is the `FileTable`, which is not evictable and is not a tier of its own: it is
-attached with the progress record (`AttachFiles`) and `Evict` leaves it.
+attached with the progress record (`AttachFiles`) and `Evict` leaves it. Both
+are attached to a restored job by the restore pass before the first tick
+(below), so for a job whose structure could be read the manifest is the only
+tier that can be absent, and the only evictable one.
 
 | Tier | Needs | May fail? |
 |---|---|---|
@@ -1270,18 +1276,16 @@ disk" is data loss.
 a job removed or evicted mid-flight is ordinary and logs at Debug, while
 anything else keeps its Warn.
 
-### Always resident, and the one window where progress is not
+### Always resident, and the interval before the restore pass
 
 **Always resident once it exists:** header fields, the `FileTable`
 (`Job.Files`), `JobProgress`, and the sizes derived from the table —
 `Job.TotalBytes`, `Job.RecoveryBytes` and `Job.RecoveryFiles`, held on the
 `Job`, and the file and article counts `Job.NumFiles` (from the table) and
 `JobProgress.TotalArticles` (from the `JobProgress` sized to it). These are
-computed once from the table in `AttachFiles`, except that
-`Job.RecoveryBytes` is also seeded by `SetRecoveryBytes` at restore
-(`dispatch.go:1040`), before any table exists; `AttachFiles` supersedes it
-(`TestRecoveryBytesWriters_MatchTheEnumerationStatedInProse` pins the two
-writers). None changes afterwards, so they
+computed once from the table in `AttachFiles`, which is the only writer of
+`Job.RecoveryBytes` (`TestRecoveryBytesWriters_MatchTheEnumerationStatedInProse`).
+None changes afterwards, so they
 live in the always-resident tier rather than behind a fallible handle. `Evict`
 clears only the manifest, and `AttachFiles` is the only writer of the table
 pointer and of the progress pointer
@@ -1291,26 +1295,57 @@ pointer and of the progress pointer
 The consequence is the point of the whole design: **every reporting path is
 infallible.** Only mutation paths take the fallible handle.
 
-**But neither the `FileTable` nor `JobProgress` exists from ingest for a job
-restored at startup.** `dispatch.restore` rebuilds each job with `job.New` and
-no content: loading the `job_files` rows and the manifest is deferred to
-`Residency.Hydrate` by architectural discipline (the manifest half is enforced
-by `TestDispatchNamesNoManifestType`; `git grep -n 'FileRows' -- internal/dispatch ':!*_test.go'` returns no
-line, so the restore loop reads no `job_files` row either), so it has neither
-the file and article counts that sizing needs. Both arrive later, at first
-hydration.
-`grep -n 'j\.progress == nil\|j\.progress != nil' internal/job/*.go | grep -v
-_test.go` finds 45 lines, so "no caller checks for their absence" describes an
-intent rather than the code.
+**`dispatch.restore` attaches neither, and the application does before the
+first tick.** It rebuilds each job with `job.New` and no content: this package
+has no database access, and the manifest half is kept out of it by
+`TestDispatchNamesNoManifestType` (`git grep -n -F 'FileRows' -- internal/dispatch
+':!*_test.go'` returns no line, so the restore loop reads no `job_files` row
+either). `Application.restoreProgress` then attaches a `FileTable` and a seeded
+`JobProgress` to every registered job, from one read of `job_files` and the
+per-file count of `written_articles` rows, inside `reconcileBeforeFirstTick`
+(§12). A job whose rows are missing, or do not cover its file indices once
+each, has no structure to restore: it is given an operational error and settled
+`Failed`, and a job with no open attempt (one that never ran) is refused by
+that door, so it stays registered without a table or progress until the tick's
+first hydration fails it for want of a table (decision D20).
 
-That window is why `Job` carries a small set of `restored*` fields for
+So a registered job lacks progress only in that class, and in the interval
+between `dispatch.restore` and the pass, in which nothing ticks.
+`grep -n 'j\.progress == nil\|j\.progress != nil' internal/job/*.go | grep -v
+_test.go` finds 45 lines, so "no caller checks for their absence" still
+describes an intent rather than the code: those checks remain, and which of
+them the unrestorable class reaches is not enumerated here.
+
+That interval is why `Job` carries a small set of `restored*` fields for
 progress-tier state recovered from the queue-state row before the record exists
 — the download stamps and the par2 release reason.
 The Job-level accessors read them while `progress` is nil; `AttachFiles`
 seeds the fresh record from them **through the ordinary restore doors** and
 zeroes them, so the two are never both authoritative and the stamp filter is
 not reimplemented. Without that seeding those writes were simply dropped, and
-the next persist wrote the zeroes back over the stored row.
+the next persist wrote the zeroes back over the stored row. For every job the
+pass can restore the fields are zero before the first tick; a job it cannot
+restore keeps them.
+
+**A restored job's progress is a record of what was recorded, not of what was
+verified.** The seed (`FileSeed`, `newJobProgress`) gives each file the row
+count `written_articles` holds for it (`FileProgress.Recorded`), its `complete`
+flag, filename and fetch policy, and leaves it unverified
+(`FileProgress.Verified` false). It sets no article bit
+(`docs/durability-contract.md` §3), so `Pending`, `PendingArticles`,
+`FailedBytes` and `ArticlesFailed` hold the values of a job with nothing
+downloaded, for the files it fetches, until `AttachArticles` recomputes them. The downloaded bytes of an unverified file
+are estimated as `Bytes × Recorded / ArticleCount`, in the NZB's encoded unit
+(`fileBytesDownloaded`), so `RemainingBytes` and the percentage derived from it
+show roughly how far a half-downloaded job got; the record's own byte lengths,
+which are decoded payload, are never used. `InstallFileVerification` replaces
+the estimate with the maintained figure and is the only function that sets a
+file Verified after construction
+(`TestVerifiedWriters_MatchTheEnumerationStatedInProse`). `Hydrate` keys its
+articles-only branch on `Job.AllVerified`, not on the table's presence, so a
+job the pass seeded has every file verified at its first successful
+hydration, `complete=1` and row-less files included; the API reports the state as `progress_verified`
+and a file's `verified`.
 
 `AttachFiles` refuses a second attach rather than silently replacing a live
 record: it builds a *fresh* `JobProgress`, so a re-attach would discard every
@@ -1349,9 +1384,9 @@ the lease and launches the worker on the manifest already in memory.
 So what `reconcileResidency` keeps resident is bounded by the two pool
 capacities plus the jobs that were resident when paused, settled ones included,
 not by queue depth. Startup adds one more: `verifyPausedJobs` hydrates every
-job restored paused at `Fetching`, after `Start` has returned, so that its
-verified progress is reported, and the tick then keeps it as it keeps any
-paused job.
+job restored paused at `Fetching`, after `Start` has returned, so that the
+estimate its seeded progress reports is replaced by verified progress, and the
+tick then keeps it as it keeps any paused job.
 The paused jobs are deliberately not capped; a manifest is about 1.6 MB per
 20k articles (§13).
 
@@ -1442,7 +1477,8 @@ rather than a coincidence: both are "this job holds nothing and its work is
 unfinished". They differ only in residency: a job paused while resident keeps
 its manifest, so resume does not re-read it, and a job restored paused at
 `Fetching` is hydrated once after startup (`verifyPausedJobs`) so that its
-progress is reported, and keeps that manifest until it is resumed or removed.
+progress is verified rather than estimated, and keeps that manifest until it
+is resumed or removed.
 
 ### Who writes what
 
@@ -1490,18 +1526,22 @@ Outstanding. `docs/durability-contract.md` §3 is the contract.
 Rows index articles **globally**, so placing them needs the file boundaries.
 Those come from the `FileTable`'s offsets, the prefix sum it builds over its
 own file list (`internal/job/filetable.go`). The per-file width they are summed from is
-`job_files.article_count`, written once at admission: `Hydrate` builds the table
-from the job's `job_files` rows (`fileTableFromRows`) before it verifies
-anything, so the boundaries are always already in hand.
+`job_files.article_count`, written once at admission: the restore pass
+(`Application.restoreProgress`) builds the table from the job's `job_files`
+rows (`fileTableFromRows`) before the first tick, so `Hydrate`, which refuses
+a job without a table, finds the boundaries in hand.
 
-This is why there is no cheaper non-resident replay. A job that has not been
-hydrated has no `JobProgress` at all, so it reports its header's full byte count
-as remaining (`Dispatcher.List` and `Dispatcher.Row` each fall back to it
-independently) — a half-downloaded job shows as untouched after a restart until
-it is hydrated. A job restored paused at `Fetching` is the exception:
-`verifyPausedJobs` hydrates it after `Start` returns, so its progress is
-reported, once that load lands, although no tick will hydrate it until it is
-resumed.
+This is why there is no cheaper non-resident replay. A restored job carries the
+restore pass's `JobProgress` from before the first tick, with no article bit
+set: until its first hydration verifies it, its remaining bytes are estimated
+from each file's recorded row count (`fileBytesDownloaded`), so a
+half-downloaded job shows roughly how far it got. `Dispatcher.List` and
+`Dispatcher.Row` fall back to the header's byte count only for a job with no
+progress, which after the restore pass is one whose structure could not be
+read (`restoreProgress`). A job restored paused at `Fetching` is verified
+early: `verifyPausedJobs` hydrates it after `Start` returns, so its verified
+progress is reported once that load lands, although no tick will hydrate it
+until it is resumed.
 
 `emitted` is deliberately **not** restored: it is transient per-process state
 about what a downloader has in flight, and nothing that survived a restart is.
@@ -1509,8 +1549,11 @@ about what a downloader has in flight, and nothing that survived a restart is.
 ### Verification at the first hydration
 
 A job's written articles are verified when it is first hydrated after a
-restart, before anything is attached: by the tick, for a job that holds what
-its position requires; by `verifyPausedJobs`, for a job restored paused at
+restart, before its articles are attached. The restore pass has already
+attached its file table and seeded progress, and the seed carries no verdict:
+every file is unverified, and none is marked verified until the install that
+follows the attach (decision D13). The first hydration is made by the tick,
+for a job that holds what its position requires; by `verifyPausedJobs`, for a job restored paused at
 `Fetching` — which runs after `Application.Start` has returned, under a
 per-job deadline (`docs/durability-contract.md`, Accepted limitation 1); by
 `fileOwedUnwantedFailures`, before the first tick, for a restored job the
@@ -1519,7 +1562,9 @@ cannot complete for a reason about the device, nothing is attached, the job is
 parked until the user resumes that job, and the next hydration starts again — so a job a hydration attached
 was verified first (a freshly ingested job has no rows to verify, and a retry
 verifies its rebuilt job itself in `verifyRetry`), and a later eviction and
-re-hydration (`AttachArticles` alone) has nothing to re-check.
+re-hydration (`AttachArticles` alone, taken only while `Job.AllVerified`)
+has nothing to re-check. A file whose install errored stays unverified, and
+the next hydration verifies the job again.
 
 It reads every incomplete file with rows whatever the job's position, because a
 crash can leave a file finished but not yet flagged `complete=1` in a job that
@@ -1536,7 +1581,9 @@ and reads them all, because post-processing may have changed any of them.
 
 A job advertises `total_bytes` and `recovery_bytes`, with `recovery_files`
 alongside. Both are computed once from the job's `FileTable` (`AttachFiles`) and never
-recomputed; neither changes for the life of the job.
+recomputed; neither changes for the life of the job. Neither is persisted:
+`dispatch_jobs` has no `recovery_bytes` column, and a job restored with no table
+(decision D20) reports `recovery_bytes` 0.
 
 The split key is **recovery volume, not par2 file**. The par2 index is always
 downloaded and therefore counts as content. Conflating the two overstates
@@ -1551,19 +1598,25 @@ depending on residency. The byte counts no longer move with the manifest, but
 the pairing argument stands: two immutable figures have no such coupling at all.
 
 `content_bytes` is deliberately **not** stored: it has no consumer and it is
-exactly `TotalBytes - RecoveryBytes` from two scalars every job already carries.
+exactly `TotalBytes - RecoveryBytes` from two scalars every job with a table
+already carries.
 
 ### Remaining and expected are derived, not maintained
 
 ```
 remaining = Σ over files where !Complete && Fetch == FetchAlways
-            of max(0, Bytes - BytesDownloaded - FailedBytes)
+            of max(0, Bytes - downloaded - FailedBytes)
+
+downloaded = BytesDownloaded                    if the file is Verified
+           = Bytes × Recorded / ArticleCount    otherwise (fileBytesDownloaded)
 
 expected  = Σ over files where Fetch == FetchAlways of Bytes
 ```
 
 Both derive on the same walk and the same predicate, so they cannot drift, and
-they hold at any residency because they read `FileProgress` alone.
+they hold at any residency because they read `FileProgress` alone. `expected`
+reads no downloaded figure, so the estimate moves `remaining` and never
+`expected`.
 `FileProgress.Bytes` is copied from the `FileTable` when the record is built
 (`fileMetaFromTable`), so the derivation reads the progress record alone and
 needs neither the table nor the evictable manifest.
@@ -1603,7 +1656,9 @@ in one unit can be subtracted. That is **not** the unit the article record
 works in: a `written_articles` row's length is the decoded payload written,
 and runs a few percent lower. The two are not interchangeable. Routing the
 downloaded figure back through the durability record once made every
-non-resident job overstate its remaining bytes by the encoding overhead.
+non-resident job overstate its remaining bytes by the encoding overhead. The
+estimate for an unverified file keeps to this unit: it scales the file's NZB
+`Bytes` by the recorded fraction and never sums a row's length.
 
 Both figures live **only in memory**. `job_files` used to persist them, as
 `bytes_downloaded` and `failed_bytes`, defended as caches with a single writer
@@ -1633,6 +1688,7 @@ Per article, against the field types:
 | `Manifest` — `articleIDs []string`, `articleBytes`, `articleNumber` | ~86 B | ~1.6 MB |
 | `FileTable` — one entry per file (subject, bytes, article count, recovery flag) and one 8-byte offset | sized by files, not articles; not measured | — |
 | `JobProgress` — `done`/`failed`/`emitted` as bitsets | 0.375 B | ~7.5 KB |
+| `JobProgress.files` — one `FileProgress` per file, 88 B of which `Verified` and `Recorded` are 16 B | per file, not per article; derived from the layout, not measured | 1000 files: ≈88 KB |
 | `JobProgress.written` — one `durability.WrittenRow` per article of a file whose CRC is not settled | 40 B | up to ~800 KB |
 
 The manifest figure is dominated by `articleIDs`: a 16-byte string header plus
@@ -1652,10 +1708,11 @@ to 8 B = 40 B) plus one 8 B `offsets` entry, plus the subject's bytes, so
 48 B + len(subject) per file. At 1000 files with 100-byte subjects that is
 ≈148 KB (derived from the layout, not measured), against 7.5 KB of bitsets
 for a 20k-article job. That comparison leaves out the rest of the progress
-record, which holds one `FileProgress` per file (72 B, from `unsafe.Sizeof`
-on the struct as laid out) and an 8 B `fileStarts` entry beside the bitset
+record, which holds one `FileProgress` per file (88 B, derived from the struct
+layout, 16 B of it the `Verified` flag and the `Recorded` count) and an 8 B
+`fileStarts` entry beside the bitset
 bits. Per file, then, the table is 48 B + len(subject) and the progress record
-is about 80 B plus its share of the bitsets (derived, not measured): the same
+is about 96 B plus its share of the bitsets (derived, not measured): the same
 order, so neither is small next to the bitsets alone. What holds is that the
 manifest (≈86 B/article, measured) dwarfs both, and **that asymmetry — manifest against table plus progress — is the whole
 justification for evicting the manifest and nothing else.**
@@ -1775,8 +1832,9 @@ leaves an existing row whole, so the retry keeps the `subject`, `bytes` and
 `article_count` the first parse wrote and pairs them with a manifest built from
 a second parse of the backed-up NZB. Within one build that parse yields the same
 structure, so the pair agrees. A parser change across builds would break that,
-Standing Design Rule 1 waives that case, and stage 2, which builds a table for
-every queued job at restore, revisits it. A mismatch that reaches the guard means a truncated or damaged manifest blob,
+Standing Design Rule 1 waives that case. The restore pass builds each table
+from the `job_files` rows alone, so after a restart the pairing is the one the
+count check at `Hydrate` tests. A mismatch that reaches the guard means a truncated or damaged manifest blob,
 or a damaged `job_files.article_count`, either of which fails the count check
 (`TestHydrate_RefusesAManifestWhoseCountDisagreesWithTheRows`).
 

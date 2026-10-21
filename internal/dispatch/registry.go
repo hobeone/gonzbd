@@ -94,11 +94,14 @@ type Header struct {
 
 	// OperationalError is a free-text note set through SetOperationalError —
 	// `git grep -n 'SetOperationalError(' -- 'internal/app/*.go' ':!*_test.go'`
-	// returns 2 lines, one in each of its callers: persistAndCommit
+	// returns 3 lines, one in each of its callers: persistAndCommit
 	// (internal/app/job_finalizer.go), when removing a finalized job from the
 	// dispatcher fails and it remains registered for retry or restart
-	// handling, and holdUnreconciledJob (internal/app/durability.go), when a
-	// job's history lookup fails at startup and the job is paused. Unlike IngestAnomaly/DuplicateReason it is not an ingest-time
+	// handling, holdUnreconciledJob (internal/app/durability.go), when a
+	// job's history lookup fails at startup and the job is paused, and
+	// failUnrestorable (internal/app/restore_progress.go), when a restored
+	// job's file structure cannot be read and the job is settled Failed.
+	// Unlike IngestAnomaly/DuplicateReason it is not an ingest-time
 	// fact about the NZB — it can be set on any job — so it is kept in its
 	// own field rather than joined into one of them.
 	OperationalError string
@@ -667,6 +670,14 @@ func (d *Dispatcher) List() []Row {
 	views := d.q.RenderAll(js)
 	out := make([]Row, 0, len(ids))
 	for i, id := range ids {
+		// A registered job lacks progress only when the restore pass could not
+		// rebuild its structure (failUnrestorable, internal/app/restore_progress.go)
+		// or before that pass has run; the header's NZB total is the honest
+		// figure for it, where RemainingBytes alone would list it as finished.
+		// The progress tests are `git grep -n 'HasProgress()' -- '*.go' ':!*_test.go' ':!internal/job/*'`
+		// and return 5 lines: this sentence, the test below, rowFor's, and two
+		// in internal/api/queue.go (buildSlot; the second guards its
+		// pending-articles figure, not a byte figure).
 		rem := hs[i].Bytes
 		if js[i] != nil && js[i].HasProgress() {
 			rem = js[i].RemainingBytes()
@@ -714,6 +725,7 @@ func (d *Dispatcher) rowFor(id string, expected *job.Job) (Row, bool) {
 	j, h := e.j, e.h
 	d.mu.Unlock()
 
+	// The header total stands in for a job with no progress; see List.
 	rem := h.Bytes
 	if j.HasProgress() {
 		rem = j.RemainingBytes()
@@ -1135,7 +1147,7 @@ func (d *Dispatcher) SetPriority(id string, priority constants.Priority) error {
 	return nil
 }
 
-// setNameLoadTimeout bounds SetName's hydration of a job with no progress. The
+// setNameLoadTimeout bounds SetName's hydration of the job. The
 // hydration verifies the job's written articles against the disk, so it is
 // sized, like the app's startup verification of paused jobs, for a large job on
 // a remote mount. A rename that exceeds it fails, attaches nothing, and can be

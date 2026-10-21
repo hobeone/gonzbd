@@ -1331,8 +1331,9 @@ func (app *Application) Start(ctx context.Context) error {
 	if app.startedTransitionHook != nil {
 		app.startedTransitionHook()
 	}
-	// Dropping the jobs already in history, and filing the owed unwanted
-	// failures, run inside the dispatcher's start, between restoring the
+	// Dropping the jobs already in history, attaching each restored job's file
+	// table and seeded progress (restoreProgress), and filing the owed
+	// unwanted failures, run inside the dispatcher's start, between restoring the
 	// registry and the first tick; reconcileBeforeFirstTick has that
 	// placement's argument. A complete job restored at Fetching, or never run,
 	// is reported download-complete by its Fetching worker (appRunner.runFetch)
@@ -1787,7 +1788,14 @@ func (app *Application) completeFinalizedFile(fc FileComplete) error {
 // just before such a demotion and stamps just after it can leave a stale
 // finish on a job at Fetching; the dispatcher's row withholds it while the job
 // stays there, and the next exit does not replace it. The ErrNotResident branch
-// is not expected to run: IsComplete reads true only for a job with progress.
+// is not expected to run: IsComplete reads true only for a job with progress,
+// which MarkDownloadFinished needs. That progress can be the restore pass's
+// unverified seed, whose complete flags are job_files' (restoreProgress), so
+// IsComplete can read true before a restored job's files are verified. Both
+// callers run on a verified job: runFetch is the Fetching worker the tick
+// launches after it hydrates the job, and completeFinalizedFile handles a
+// completion of a resident job or a Resumed one, which a hydration queues
+// after its install marked every file verified (verifyAndAttach).
 func (app *Application) reportDownloadComplete(j *job.Job, rep reporter) (bool, error) {
 	if !j.IsComplete() || app.postProcAdmissions.has(j) {
 		return false, nil
@@ -2398,8 +2406,10 @@ func (app *Application) enqueuePostProc(j *job.Job, hdr dispatch.Header, failMsg
 	// Options.HandedOff), and an article still in flight cannot start the clock
 	// again once a finish is set (setDownloadStartedOnce). A job that already
 	// left Fetching, and was not demoted back, has its finish, and the slot is
-	// first-wins, so this is a no-op for it. A job that has not been hydrated
-	// since a restart has no progress, and the stamp fails with ErrNotResident.
+	// first-wins, so this is a no-op for it. A restored job carries the restore
+	// pass's progress whether or not it has been hydrated (restoreProgress),
+	// so the stamp lands; one whose structure could not be read has none, and
+	// the stamp fails with ErrNotResident.
 	if err := j.MarkDownloadFinished(time.Now()); err != nil {
 		app.log.Warn("postproc: could not record the download finish time", "job", j.ID(), "err", err)
 	}

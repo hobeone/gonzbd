@@ -21,14 +21,14 @@ func twoFileArticles() []JobArticle {
 // a second call would discard a live record, so it refuses.
 func TestAttachFiles_RefusesASecondAttach(t *testing.T) {
 	j := New("j", "j", Policy{})
-	if err := j.AttachFiles(nil); err == nil {
+	if err := j.AttachFiles(nil, nil); err == nil {
 		t.Error("AttachFiles(nil): nil error")
 	}
 	if j.Files() != nil {
 		t.Fatal("Files() is non-nil before a successful AttachFiles")
 	}
 	ft := NewFileTable(twoFileSpecs())
-	if err := j.AttachFiles(ft); err != nil {
+	if err := j.AttachFiles(ft, nil); err != nil {
 		t.Fatalf("first AttachFiles: %v", err)
 	}
 	if j.Files() != ft {
@@ -37,7 +37,7 @@ func TestAttachFiles_RefusesASecondAttach(t *testing.T) {
 	if got := j.NumFiles(); got != 2 {
 		t.Errorf("NumFiles = %d, want 2", got)
 	}
-	if err := j.AttachFiles(NewFileTable(twoFileSpecs())); err == nil {
+	if err := j.AttachFiles(NewFileTable(twoFileSpecs()), nil); err == nil {
 		t.Error("second AttachFiles returned nil; it must refuse rather than replace a live record")
 	}
 }
@@ -52,7 +52,7 @@ func TestAttachArticles_RefusesAManifestFromAnotherTable(t *testing.T) {
 		t.Fatalf("NewManifestFromArticles: %v", err)
 	}
 	j := New("j", "j", Policy{})
-	if err := j.AttachFiles(ft1); err != nil {
+	if err := j.AttachFiles(ft1, nil); err != nil {
 		t.Fatalf("AttachFiles: %v", err)
 	}
 	if err := j.AttachArticles(m2); err == nil {
@@ -97,5 +97,25 @@ func TestAttachArticles_RecomputesInPlace(t *testing.T) {
 	}
 	if err := j.AttachArticles(m); err == nil {
 		t.Error("AttachArticles on a resident job: nil error")
+	}
+}
+
+// AttachFiles is the only writer of Job.recoveryBytes, so a job reports its
+// recovery volumes' size exactly when a table carrying them is attached, and
+// reports 0 before then.
+func TestAttachFiles_SetsRecoveryBytesFromTheTable(t *testing.T) {
+	j := New("j", "j", Policy{})
+	if got := j.RecoveryBytes(); got != 0 {
+		t.Fatalf("RecoveryBytes() = %d before an attach, want 0", got)
+	}
+	ft := NewFileTable([]FileSpec{
+		{Subject: "a.rar", Bytes: 200, ArticleCount: 2},
+		{Subject: "a.vol01+01.par2", Bytes: 70, ArticleCount: 1},
+	})
+	if err := j.AttachFiles(ft, nil); err != nil {
+		t.Fatalf("AttachFiles: %v", err)
+	}
+	if got, want := j.RecoveryBytes(), int64(70); got != want {
+		t.Errorf("RecoveryBytes() = %d after AttachFiles, want %d (the table's recovery volumes)", got, want)
 	}
 }

@@ -1037,7 +1037,6 @@ func restoreJobMetadata(j *job.Job, p Persisted) {
 	// progress record, so both were silently lost and persistIfChanged then
 	// wrote the zeroes back over the stored row (#504).
 	j.RestoreProgressState(p.Par2ReleaseReason, started, finished)
-	j.SetRecoveryBytes(p.RecoveryBytes)
 }
 
 // markWritten is the only writer of d.written, and deregister the only

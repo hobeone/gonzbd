@@ -25,7 +25,7 @@ import (
 // store.
 func attachTestFiles(t *testing.T, j *job.Job) {
 	t.Helper()
-	if err := j.AttachFiles(job.NewFileTable([]job.FileSpec{{Subject: "test.rar", Bytes: 100, ArticleCount: 1}})); err != nil {
+	if err := j.AttachFiles(job.NewFileTable([]job.FileSpec{{Subject: "test.rar", Bytes: 100, ArticleCount: 1}}), nil); err != nil {
 		t.Fatalf("AttachFiles: %v", err)
 	}
 }

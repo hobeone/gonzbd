@@ -144,9 +144,15 @@ func (h *scenarioHarness) Stop() {
 // AddSimpleJob creates a single-file, single-article job and adds it to the queue.
 func (h *scenarioHarness) AddSimpleJob(name string, raw []byte) *job.Job {
 	h.t.Helper()
-	msgID := randomMsgID(h.t)
+	return h.AddSimpleJobServing(name, raw, yencSinglePart(name+".bin", raw))
+}
 
-	body := yencSinglePart(name+".bin", raw)
+// AddSimpleJobServing is AddSimpleJob with the server holding body for the
+// job's one article, registered before the job is added, so a started
+// application never fetches anything else for it.
+func (h *scenarioHarness) AddSimpleJobServing(name string, raw, body []byte) *job.Job {
+	h.t.Helper()
+	msgID := randomMsgID(h.t)
 	h.server.AddArticle(msgID, body)
 
 	parsed := &nzb.NZB{

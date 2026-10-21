@@ -12,18 +12,10 @@ func TestScenario_DecodeError(t *testing.T) {
 	t.Parallel()
 	h := newScenarioHarness(t)
 
-	// 1. Add a job
-	job := h.AddSimpleJob("decode-error", []byte("dummy"))
-
-	// 2. Identify the article ID and make it corrupt on the server
-	m, err := job.Manifest()
-	if err != nil {
-		t.Fatalf("job.Manifest: %v", err)
-	}
-	msgID := m.ArticleID(0)
-	h.server.AddArticle(msgID, []byte("this is not yenc"))
-
+	// Started first: Start refuses a job ingested before it. The job's one
+	// article is corrupt on the server from the moment it is added.
 	h.Start()
+	job := h.AddSimpleJobServing("decode-error", []byte("dummy"), []byte("this is not yenc"))
 
 	// Wait for the job to complete or fail.
 	// If the fix is NOT present, this will timeout because the article is neither Done nor Failed.
@@ -62,18 +54,10 @@ func TestScenario_DecodeJunkRecovery(t *testing.T) {
 	// 2. Add leading junk
 	junkBody := append([]byte("X-Antivirus: scan ok\r\n\r\n"), validBody...)
 
-	// 3. Add a job
-	job := h.AddSimpleJob("junk-recovery", payload)
-
-	// 4. Identify the article ID and register junk body on the server
-	m, err := job.Manifest()
-	if err != nil {
-		t.Fatalf("job.Manifest: %v", err)
-	}
-	msgID := m.ArticleID(0)
-	h.server.AddArticle(msgID, junkBody)
-
+	// 3. Start, then add a job whose article the server serves with the junk.
+	// Started first: Start refuses a job ingested before it.
 	h.Start()
+	job := h.AddSimpleJobServing("junk-recovery", payload, junkBody)
 
 	// Wait for the job to complete.
 	if !h.WaitForPostProc(job.ID(), 5*time.Second) {

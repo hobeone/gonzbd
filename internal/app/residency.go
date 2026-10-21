@@ -1,14 +1,12 @@
 package app
 
 import (
-	"cmp"
 	"compress/gzip"
 	"context"
 	"errors"
 	"fmt"
 	"log/slog"
 	"os"
-	"slices"
 	"sync"
 
 	"github.com/hobeone/gonzbd/internal/dispatch"
@@ -24,10 +22,10 @@ type recordReader interface {
 	WrittenRows(ctx context.Context, jobID string) ([]durability.WrittenRow, error)
 }
 
-// appResidency is the production dispatch.Residency: it builds a job's file
-// table from its job_files rows, loads its article list from the gzip-JSON
-// file the ingest path wrote, verifies the job's written articles against the
-// bytes on disk before attaching anything, and drops the manifest again.
+// appResidency is the production dispatch.Residency: it loads a job's article
+// list from the gzip-JSON file the ingest path wrote, over the file table the
+// job already holds, verifies a restored job's written articles against the
+// bytes on disk before attaching them, and drops the manifest again.
 //
 // It holds no registry of its own. The lookup function is the dispatcher's,
 // which is what keeps "which jobs exist" a single owner (Rule 2) rather than
@@ -80,25 +78,27 @@ func newAppResidency(lookup func(string) (*job.Job, bool), dir string, store rec
 	}
 }
 
-// Hydrate makes the job's articles resident, and its file table too when it
-// has none. It may block on disk I/O; the
+// Hydrate makes the job's articles resident. It may block on disk I/O; the
 // dispatcher calls it with no lock held (ports.go).
 //
-// A job with no file table yet (one restored at startup) gets it from its
-// job_files rows (fileTableFromRows), and the manifest from that table and the
-// article list in its manifest file. Its written articles are then verified
-// first (verifyJobFiles), and the verdicts committed, before anything is
-// attached: if either fails, nothing is attached — not the file table either —
-// and the next hydration starts again. The branch keys on Job.Files() != nil:
-// a job holding a table was ingested or hydrated in this process, its progress
-// is the authoritative record, and it gets its articles back alone
-// (Job.AttachArticles).
-// So a job Hydrate attached was verified first. Other jobs gain progress
-// without Hydrate: a freshly ingested job has no rows to verify, and a retry
-// verifies its rebuilt job itself (Application.verifyRetry). A verification
-// that could not complete for a reason about the device is parked through the
-// stall and returned wrapping dispatch.ErrResidencyFault, which the dispatcher
-// does not settle.
+// It needs the file table the restore pass (Application.restoreProgress) or
+// ingest attached, and refuses a job without one. The manifest is built from
+// that table and the article list in the job's manifest file. A job with a
+// file not yet verified in this process — every file of a job the restore
+// pass seeded, at its first hydration — has its written articles verified
+// first (verifyJobFiles) and the verdicts committed before its articles are
+// attached; if either fails, nothing is attached and no file is marked
+// verified, so the next hydration verifies again. After the attach, a file
+// whose Job.InstallFileVerification errors is logged and stays unverified
+// (installVerification) with the articles attached; AllVerified is then false,
+// and the next hydration after an eviction verifies again. The branch keys on
+// Job.AllVerified, never on the table: a job whose every file was verified
+// here (or that was ingested here, which has nothing to verify) has an
+// authoritative progress record, and gets its articles back alone
+// (Job.AttachArticles). A retry verifies its rebuilt job itself
+// (Application.verifyRetry). A verification that could not complete for a
+// reason about the device is parked through the stall and returned wrapping
+// dispatch.ErrResidencyFault, which the dispatcher does not settle.
 //
 // One hydration of a job runs at a time. A call that finds one in flight
 // waits for it, and is done if it attached; if it did not — it was cancelled,
@@ -148,30 +148,9 @@ func (r *appResidency) Hydrate(ctx context.Context, id string) error {
 		r.mu.Unlock()
 	}()
 
-	// A job with a file table attached has run in this process and been
-	// evicted since (or was ingested here): its progress is the authoritative
-	// record, it was verified when it was first attached, and only the
-	// articles are owed. Installing fresh progress would zero its counters.
-	// A job without one is built from the record, and nothing is attached
-	// until that record has been verified: a hydration that fails leaves the
-	// job exactly as it found it, so the next one verifies again.
 	ft := j.Files()
-	hasFiles := ft != nil
-	var (
-		files []durability.FileRow
-		rows  []durability.WrittenRow
-	)
-	if !hasFiles {
-		if r.store == nil {
-			return fmt.Errorf("residency: hydrate %s: no record store to build the file table from", id)
-		}
-		var err error
-		if files, rows, err = r.readRecord(ctx, id); err != nil {
-			return r.fault(ctx, j, storagefault.Classify("read record", "", err), err)
-		}
-		if ft, err = fileTableFromRows(files); err != nil {
-			return fmt.Errorf("residency: hydrate %s: %w", id, err)
-		}
+	if ft == nil {
+		return fmt.Errorf("residency: hydrate %s: no file table attached: the restore pass did not run or could not rebuild this job's structure from job_files", id)
 	}
 	arts, err := r.readArticles(ctx, id)
 	if err != nil {
@@ -181,34 +160,25 @@ func (r *appResidency) Hydrate(ctx context.Context, id string) error {
 	if err != nil {
 		return fmt.Errorf("residency: hydrate %s: %w", id, err)
 	}
-	if hasFiles {
+	if j.AllVerified() {
 		return j.AttachArticles(m)
+	}
+	// No store means no restored job (restoreProgress), and only the restore
+	// pass seeds an unverified file.
+	if r.store == nil {
+		return fmt.Errorf("residency: hydrate %s: a file is unverified and there is no record store to verify it from", id)
+	}
+	files, rows, err := r.readRecord(ctx, id)
+	if err != nil {
+		return r.fault(ctx, j, storagefault.Classify("read record", "", err), err)
 	}
 	return r.verifyAndAttach(ctx, j, m, files, rows)
 }
 
-// fileTableFromRows builds the job's file table from its job_files rows. The
-// rows must cover file indices 0..n-1 exactly once each; a gap or a duplicate
-// is an error naming the index, because a table built over them would index
-// every later file's articles against the wrong range. No rows is a table of
-// no files.
-func fileTableFromRows(rows []durability.FileRow) (*job.FileTable, error) {
-	sorted := slices.Clone(rows)
-	slices.SortFunc(sorted, func(a, b durability.FileRow) int { return cmp.Compare(a.FileIndex, b.FileIndex) })
-	specs := make([]job.FileSpec, len(sorted))
-	for i, row := range sorted {
-		if row.FileIndex != i {
-			return nil, fmt.Errorf("job_files rows do not cover file indices 0..%d once each: expected index %d, found %d",
-				len(sorted)-1, i, row.FileIndex)
-		}
-		specs[i] = job.FileSpec{Subject: row.Subject, Bytes: row.Bytes, ArticleCount: row.ArticleCount}
-	}
-	return job.NewFileTable(specs), nil
-}
-
-// verifyAndAttach is Hydrate's no-file-table branch: verify the record it read,
-// commit the verdicts, and only then attach the job's files and articles and
-// install what was verified. m was built over the table the rows describe.
+// verifyAndAttach is Hydrate's verifying branch: verify the record it read,
+// commit the verdicts, and only then attach the job's articles and install
+// what was verified, which marks every file verified. m was built over the
+// table attached to j.
 func (r *appResidency) verifyAndAttach(ctx context.Context, j *job.Job, m *job.Manifest,
 	files []durability.FileRow, rows []durability.WrittenRow) error {
 	locate := func(fn string) (jobFile, error) { return r.locate(j.Name(), fn) }
@@ -227,9 +197,6 @@ func (r *appResidency) verifyAndAttach(ctx context.Context, j *job.Job, m *job.M
 	}
 	if j.State().State == job.Fetching {
 		cleanUnrecordedFetchingFiles(j.Name(), files, locate, r.log)
-	}
-	if err := j.AttachFiles(m.Files()); err != nil {
-		return err
 	}
 	if err := j.AttachArticles(m); err != nil {
 		return err

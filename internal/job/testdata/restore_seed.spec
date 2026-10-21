@@ -1,0 +1,132 @@
+pkg ./internal/job/
+run ^(TestAttachFiles_SeedSetsNoDoneBit|TestAttachFiles_NilSeedIsVerified|TestFileBytesDownloaded_EstimateIsBoundedAndInBytesUnits|TestInstallFileVerification_MarksVerifiedAndZeroesRecorded|TestRemainingBytes_UsesTheEstimateWhileUnverified|TestAttachFiles_RefusesASeedOfTheWrongLength|TestAttachFiles_SeededNonFetchedFileOwesNoPending|TestVerifiedWriters_MatchTheEnumerationStatedInProse|TestFileReaders_AnswerNothingForANilRecordOrAnUnknownFile)$
+
+[FileVerified reads past the end of the file list]
+file internal/job/progress.go
+--- anchor
+func (p *JobProgress) FileVerified(fi int) bool {
+	if p == nil || fi < 0 || fi >= len(p.files) {
+--- replace
+func (p *JobProgress) FileVerified(fi int) bool {
+	if p == nil || fi < 0 {
+--- end
+
+[FileBytesDownloaded reads a nil record]
+file internal/job/progress.go
+--- anchor
+func (p *JobProgress) FileBytesDownloaded(fi int) int64 {
+	if p == nil || fi < 0 || fi >= len(p.files) {
+--- replace
+func (p *JobProgress) FileBytesDownloaded(fi int) int64 {
+	if fi < 0 || fi >= len(p.files) {
+--- end
+
+[the seed loop also sets a Done bit for the first Recorded articles]
+file internal/job/progress.go
+--- anchor
+		f.Recorded = seed[fi].Recorded
+--- replace
+		f.Recorded = seed[fi].Recorded
+		for k := 0; k < seed[fi].Recorded; k++ {
+			p.done.Set(p.fileStarts[fi] + k)
+		}
+--- end
+
+[fileBytesDownloaded ignores Verified and always estimates]
+file internal/job/progress.go
+--- anchor
+	if f.Verified {
+		return f.BytesDownloaded
+	}
+--- replace
+--- end
+
+[the estimate does not clamp a count above the file's articles]
+file internal/job/progress.go
+--- anchor
+	recorded := min(max(int64(f.Recorded), 0), n)
+--- replace
+	recorded := max(int64(f.Recorded), 0)
+--- end
+
+[the estimate does not clamp a negative count]
+file internal/job/progress.go
+--- anchor
+	recorded := min(max(int64(f.Recorded), 0), n)
+--- replace
+	recorded := min(int64(f.Recorded), n)
+--- end
+
+[InstallFileVerification does not mark the file Verified]
+file internal/job/verification.go
+--- anchor
+	p.files[fi].Verified = true
+--- replace
+--- end
+
+[a nil seed yields unverified files]
+file internal/job/progress.go
+--- anchor
+		f.Verified = seed == nil
+--- replace
+		f.Verified = false
+--- end
+
+[InstallFileVerification leaves Recorded standing]
+file internal/job/verification.go
+--- anchor
+	p.files[fi].Recorded = 0
+--- replace
+--- end
+
+[a seed of the wrong length is accepted]
+file internal/job/content.go
+--- anchor
+	if seed != nil && len(seed) != ft.NumFiles() {
+--- replace
+	if false {
+--- end
+
+[a second function marks a file Verified]
+file internal/job/content.go
+--- anchor
+func (p *JobProgress) setFileFetchPolicy(fi int, policy FetchPolicy) {
+	f := &p.files[fi]
+--- replace
+func (p *JobProgress) setFileFetchPolicy(fi int, policy FetchPolicy) {
+	f := &p.files[fi]
+	f.Verified = true
+--- end
+
+[the seed's fetch policy is not applied]
+file internal/job/progress.go
+--- anchor
+		p.setFileFetchPolicy(fi, seed[fi].Fetch)
+--- replace
+--- end
+
+[sizeFigures reads BytesDownloaded directly]
+file internal/job/progress.go
+--- anchor
+		if left := f.Bytes - p.fileBytesDownloaded(fi) - f.FailedBytes; left > 0 {
+--- replace
+		if left := f.Bytes - f.BytesDownloaded - f.FailedBytes; left > 0 {
+--- end
+
+[the seed drops the recorded filename]
+file internal/job/progress.go
+run TestAttachFiles_SeedSetsNoDoneBit
+--- anchor
+		f.Filename = seed[fi].Filename
+--- replace
+--- end
+
+[the estimate divides by a file's zero article count]
+file internal/job/progress.go
+run TestFileBytesDownloaded_EstimateIsBoundedAndInBytesUnits
+--- anchor
+	if n == 0 {
+		return 0
+	}
+--- replace
+--- end

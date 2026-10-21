@@ -54,7 +54,7 @@ file internal/job/content.go
 	j.manifest = m
 	return nil
 --- replace
-	j.progress = newJobProgress(m.Files())
+	j.progress = newJobProgress(m.Files(), nil)
 	j.manifest = m
 	return nil
 --- end

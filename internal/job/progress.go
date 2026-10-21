@@ -192,6 +192,22 @@ type FileProgress struct {
 	// Maintained live by markDone and markFailedUncovered (the uncharged part
 	// of a failed article), and rebuilt by recompute, all from the manifest.
 	BytesDownloaded int64
+	// Verified is true once this process has installed this file's
+	// verification (InstallFileVerification), and false from a restore seed
+	// until then — for EVERY restored file, including one with complete=1 and
+	// one with no rows. A complete=1 file has no Done bits, no failed set and
+	// no settled CRC until the install puts them there (verification.go), and
+	// a row-less file still owes verification its DeleteAll verdict and the
+	// unrecorded-file cleanup. A freshly ingested file is Verified: nothing
+	// was recorded, so there is nothing to install.
+	//
+	// Writers are pinned by TestVerifiedWriters_MatchTheEnumerationStatedInProse:
+	// InstallFileVerification sets it, newJobProgress initialises it.
+	Verified bool
+	// Recorded is the number of this file's articles the record holds a row for,
+	// read at restore. Meaningful only while !Verified; display derives an
+	// estimate from it (fileBytesDownloaded). Never maintained live; replaced by the bits.
+	Recorded int
 	// FailedBytes is the sum of bytes belonging to this file's permanently
 	// failed articles. Carried per file, not just job-wide, so remaining
 	// derives from progress alone: a failed article was never downloaded, so
@@ -343,12 +359,87 @@ func fileMetaFromTable(ft *FileTable) []FileMeta {
 	return files
 }
 
+// FileSeed is what the record held for one file at restore, applied by
+// newJobProgress before the first tick. It carries no article bit: a Done bit
+// after restart exists only because a device read matched its row's CRC
+// (docs/durability-contract.md §3), and that is InstallFileVerification's job.
+type FileSeed struct {
+	Recorded int
+	Complete bool
+	Filename string
+	Fetch    FetchPolicy
+}
+
 // newJobProgress returns a fresh JobProgress sized to ft: every file's Pending
-// starts at its article count and pendingArticles at ft.TotalArticles(), so
-// RemainingBytes() — derived from per-file state, see derivedRemainingBytes —
-// starts at ft.TotalBytes().
-func newJobProgress(ft *FileTable) *JobProgress {
-	return newJobProgressSized(fileMetaFromTable(ft))
+// starts at its article count (0 for a file whose seed Fetch is not
+// FetchAlways) and pendingArticles at the sum. RemainingBytes() is derived
+// from per-file state (sizeFigures): for a nil seed it starts at
+// ft.TotalBytes(); for a seed it starts at the sum, over the FetchAlways files
+// that are not Complete, of the file's Bytes less its estimated downloaded
+// bytes (fileBytesDownloaded, from the seeded Recorded).
+//
+// A nil seed is a freshly ingested job: every file Verified, Recorded 0. A
+// non-nil seed (the caller has checked len(seed) == ft.NumFiles()) leaves
+// every file !Verified with the seeded Recorded, Complete, Filename and Fetch.
+// No seed sets a Done bit.
+func newJobProgress(ft *FileTable, seed []FileSeed) *JobProgress {
+	p := newJobProgressSized(fileMetaFromTable(ft))
+	for fi := range p.files {
+		f := &p.files[fi]
+		f.Verified = seed == nil
+		if seed == nil {
+			continue
+		}
+		f.Recorded = seed[fi].Recorded
+		f.Complete = seed[fi].Complete
+		f.Filename = seed[fi].Filename
+		// Through the one writer of Fetch, which re-derives Pending. A
+		// non-Always seed is therefore marked changed and re-flushed once.
+		p.setFileFetchPolicy(fi, seed[fi].Fetch)
+	}
+	return p
+}
+
+// fileBytesDownloaded is file fi's downloaded bytes for display: the
+// maintained BytesDownloaded once the file is Verified, and before that an
+// estimate, Bytes×Recorded/ArticleCount. Both are in the NZB-claimed unit of
+// Bytes; the record's decoded length is never used. A file with no articles
+// estimates 0, and Recorded is clamped to [0, ArticleCount], so the estimate
+// stays within [0, Bytes] whatever count the record held.
+func (p *JobProgress) fileBytesDownloaded(fi int) int64 {
+	f := &p.files[fi]
+	if f.Verified {
+		return f.BytesDownloaded
+	}
+	n := int64(p.fileStarts[fi+1] - p.fileStarts[fi])
+	if n == 0 {
+		return 0
+	}
+	recorded := min(max(int64(f.Recorded), 0), n)
+	return f.Bytes * recorded / n
+}
+
+// AllVerified reports whether every file is Verified; vacuously true for a
+// job with no files. A nil receiver reports false.
+func (p *JobProgress) AllVerified() bool {
+	if p == nil {
+		return false
+	}
+	for fi := range p.files {
+		if !p.files[fi].Verified {
+			return false
+		}
+	}
+	return true
+}
+
+// FileVerified reports whether file fi is Verified. Out-of-range and nil
+// receivers report false.
+func (p *JobProgress) FileVerified(fi int) bool {
+	if p == nil || fi < 0 || fi >= len(p.files) {
+		return false
+	}
+	return p.files[fi].Verified
 }
 
 // NumFiles returns the number of files tracked by the progress record.
@@ -406,7 +497,7 @@ func (p *JobProgress) FileBytesDownloaded(fi int) int64 {
 	if p == nil || fi < 0 || fi >= len(p.files) {
 		return 0
 	}
-	return p.files[fi].BytesDownloaded
+	return p.fileBytesDownloaded(fi)
 }
 
 // FileFailedBytes returns the sum of bytes belonging to permanently failed
@@ -580,7 +671,7 @@ func (p *JobProgress) sizeFigures() (expected, remaining int64) {
 		if f.Complete {
 			continue
 		}
-		if left := f.Bytes - f.BytesDownloaded - f.FailedBytes; left > 0 {
+		if left := f.Bytes - p.fileBytesDownloaded(fi) - f.FailedBytes; left > 0 {
 			remaining += left
 		}
 	}
@@ -705,8 +796,8 @@ func isJobStamp(t time.Time) bool { return t.Unix() > 0 }
 // It exists so the filter has one application rather than two. Restored stamps
 // reach a job by two routes — restoreDownloadStamps into a live JobProgress,
 // and Job.RestoreProgressState into the Job-level copy a job carries before
-// hydration — and a stamp accepted by one route and rejected by the other
-// would read differently from the same accessor before and after hydration.
+// AttachFiles — and a stamp accepted by one route and rejected by the other
+// would read differently from the same accessor before and after AttachFiles.
 func jobStampOrZero(t time.Time) time.Time {
 	if isJobStamp(t) {
 		return t
@@ -808,7 +899,7 @@ func (p *JobProgress) clearDownloadStamps() {
 // returns 2 files — this file (the declaration, and comments naming it) and
 // content.go,
 // where AttachFiles seeds a fresh JobProgress from the stamps
-// RestoreProgressState recorded on the Job before hydration (#504), and
+// RestoreProgressState recorded on the Job before AttachFiles (#504), and
 // RestoreProgressState installs them into a live one. It reads a stamp the
 // process did not mint, which is what this method is the door for.
 func (p *JobProgress) restoreDownloadStamps(started, finished time.Time) {

@@ -333,24 +333,50 @@ row's CRC, or because its file was `complete=1`** (and not reset by a retry).
 
 #### When
 
-Verification runs **before** the job's content is attached, and its outcome
-decides whether attaching happens at all. `appResidency.Hydrate`, on the branch
-where the job has no file table yet (`verifyAndAttach`):
+Before the first tick, the restore pass (`Application.restoreProgress`) gives
+every restored job whose structure it can read its file table, built from its `job_files` rows
+(`fileTableFromRows`), and a progress record seeded with each file's recorded
+row count, `complete` flag, filename and fetch policy, with every file
+unverified. **It sets no article bit.**
 
-1. reads the job's `job_files` and `written_articles` rows, builds the file
-   table from the `job_files` rows (`fileTableFromRows`) and the manifest from
-   that table and the article list in the manifest file;
+**A recorded count sits beside the bits and is not one.** The restore read
+(`Store.SeedRows`) returns, with each file's `job_files` row, how many
+`written_articles` rows the file has, and the seed keeps that number on the file
+(`FileProgress.Recorded`). While the file is unverified, its downloaded bytes
+are estimated as `Bytes × Recorded / ArticleCount` (`fileBytesDownloaded`), in
+the NZB's encoded unit and clamped to `[0, Bytes]`; installing the file's
+verification replaces the estimate with the maintained figure and zeroes the
+count. A count of rows is not a read-back: it can overstate what the device
+still holds, and the verification that follows may delete rows. That is why it
+may only feed an estimate. In `internal/job`, `git grep -n -F '.Recorded' --
+internal/job ':!*_test.go' ':!*.spec'` returns 3 lines: the seed and the
+zeroing write it, and `fileBytesDownloaded` is the one read. The statement
+above is unchanged by it. The pin is `TestRestoreProgress_SeedsNoDoneBit`,
+mutated by `internal/app/testdata/restore_progress.spec`.
+
+Verification runs **before** the job's articles are attached, and its outcome
+decides whether attaching happens at all. `appResidency.Hydrate`, on the branch
+where a file is not yet verified in this process (`verifyAndAttach`):
+
+1. builds the manifest from the attached table and the article list in the
+   manifest file, and reads the job's `job_files` and `written_articles` rows;
 2. calls `verifyJobFiles`, which reads bytes and returns a verdict without
    touching the job or a row;
 3. commits the verdict's deletes and `complete` changes through `recorder.apply`;
-4. only then calls `Job.AttachFiles` and `Job.AttachArticles` and installs what
-   was verified (`installVerification`).
+4. only then calls `Job.AttachArticles` and installs what was verified for
+   every file (`installVerification`), which marks each file verified.
 
-If any step fails or is cancelled, nothing is attached and the next hydration
-starts again from step 1. So **a job `Hydrate` attached was verified first**,
-and `Hydrate`'s early `AttachArticles` for a job with a file table is sound: the
-other ways a job gains progress verify too, or have nothing to verify — a
-freshly ingested job has no rows, and a retry verifies its rebuilt job itself
+If any of steps 1 to 3 fails or is cancelled, no article is attached and no file
+is marked verified, so the next hydration starts again from step 1. A failure
+in step 4 is per file: `Job.InstallFileVerification` returns an error having
+changed nothing (the job is not resident, or the index names no file),
+`installVerification` logs it and goes on, and that file stays unverified with
+the job's articles attached. `Job.AllVerified` is then false, so the next
+hydration after an eviction verifies again. So **a job `Hydrate` attached was
+verified first**, and `Hydrate`'s early `AttachArticles` for a job whose every
+file is verified is sound: the other ways a job gains progress
+verify too, or have nothing to verify — a freshly ingested job has no rows and
+is verified from the start, and a retry verifies its rebuilt job itself
 (`verifyRetry`).
 
 Every path that attaches content to a job with rows goes through this, or
@@ -362,7 +388,8 @@ verifies itself:
   launches last, after the API can listen: each job restored at `Fetching`
   with `IntentPause` is hydrated, and so verified, one at a time under a
   per-job deadline (`pausedVerifyTimeout`, 10 minutes), so that `mode=queue`
-  reports its progress rather than 0 % without the user resuming it;
+  reports its verified progress rather than the restore pass's estimate
+  without the user resuming it;
 - `Dispatcher.SetName` → `LoadProgress`. A rename is refused once
   `Job.DownloadBegun()` is true and moves nothing on disk; verification runs
   first, so the restored filenames make the job "begun" (`verifyJobFiles`
@@ -737,6 +764,19 @@ to fill in; a row that already exists is left whole. It is a precondition
 for the recorder: an `UPDATE` matching no row is not an error, so a file with
 no seed row would silently persist nothing. A retry re-seeds, inserting only
 missing rows.
+
+**Readers.** `Store.FileRows` reads one job's rows (hydration, `app.go`'s
+retry read), and `Store.SeedRows` reads every job's at once, with the count of
+`written_articles` rows per file, for the restore pass
+(`Application.restoreProgress`, once per `Start`). `git grep -n 'FROM
+job_files' -- internal ':!*_test.go'` returns 3 lines: those two reads and
+`insertRows`' existence check, which reads no column. The restore pass's
+read names a job whose row does not read as its column types in a second
+return value and drops that job's rows, so the restore pass settles that job
+Failed and no other; only a query or iteration failure fails the call. It is
+one query, not a transaction across the two tables, which is sound
+because `Application.Start` starts the assembler, which feeds the recorder,
+only after `StartWith` returns.
 
 **Departure.** The reclaim rule (`internal/durability/reclaim.go`) deletes a
 job's rows from both tables when nothing reaches the job — no queue row, and
@@ -1463,18 +1503,20 @@ recorded here so the next reader does not mistake them for design.
    read on the Fetching worker.
 
    **At startup the paused jobs are verified after the API listens, and a
-   job reports no progress until its own verification lands.**
+   job reports only an estimate until its own verification lands.**
    `verifyPausedJobs` (`internal/app/startup_reconcile.go`) hydrates, and so
    verifies, every job restored at `Fetching` with `IntentPause`, one at a
    time, on a goroutine `Application.Start` launches last; `cmd/gonzbd/main.go`
    starts its HTTP server after `Start` returns, so the read-back runs while
-   the API serves. Until a job's load lands, `mode=queue` reports its header's
-   byte count as remaining (0 %), as it does for any restored job before its
-   first hydration; the loads run in listing (dispatch) order, so a job low in the queue
-   waits behind the bytes of those above it. Each load runs under a per-job
+   the API serves. Until a job's load lands, `mode=queue` reports the restore
+   pass's estimate from each file's recorded row count (§3), as it does for any
+   restored job with an unverified file, so the progress is visible without
+   this verifier and the verifier only replaces the estimate with the
+   verified figure. The loads run in listing (dispatch) order, so a job low in
+   the queue waits behind the bytes of those above it. Each load runs under a per-job
    deadline (`pausedVerifyTimeout`, 10 minutes): a job whose read-back exceeds
-   it is left unloaded, parks nothing and keeps its rows, and reports 0 %
-   until its resume lets the tick hydrate it — the cost of a deadline too
+   it is left unverified, parks nothing and keeps its rows, and reports that
+   estimate until its resume lets the tick hydrate it — the cost of a deadline too
    short for a large job on a slow mount. A hung hard-mounted share still
    blocks the read in the syscall, which no deadline interrupts (limitation
    6); it then holds `Shutdown`'s `wg.Wait` step to its budget, since the

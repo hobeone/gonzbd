@@ -3,6 +3,7 @@ package app
 import (
 	"context"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/hobeone/gonzbd/internal/history"
@@ -11,14 +12,18 @@ import (
 	"github.com/hobeone/gonzbd/internal/types"
 )
 
-// TestStart_PreservesPersistedFailedArticlesAcrossStartup pins that Application.Start
-// does not wipe out failed article state or refund failedBytes on registered jobs.
+// TestStart_RefusesAJobCarryingProgressBeforeTheRestorePass pins that Start
+// fails, naming the job, when a registered job already holds a file table
+// before the restore pass (Application.restoreProgress), and leaves that
+// job's progress as it found it.
 //
-// Previously (#523), Application.Start executed a reload-shaped ClearEmittedForReload
-// sweep over all registered jobs. For any resident job, that call invoked resetForReload,
-// clearing the failed bit and refunding failedBytes for failed articles in incomplete files,
-// undoing the failed-article state restored from persistence and racing hydration.
-func TestStart_PreservesPersistedFailedArticlesAcrossStartup(t *testing.T) {
+// This replaces the #523 pin, which registered a job carrying a failed
+// article before Start and checked that Start did not clear it: Start then ran
+// a reload-shaped ClearEmittedForReload sweep over every registered job. That
+// fixture is now refused here, and a restored job reaches Start with no
+// failed bit, the restore pass seeding no article bit, so none exists for
+// such a sweep to clear before the job's first hydration.
+func TestStart_RefusesAJobCarryingProgressBeforeTheRestorePass(t *testing.T) {
 	adminDir := t.TempDir()
 	cfg := testConfigInternal(t, adminDir)
 
@@ -50,32 +55,23 @@ func TestStart_PreservesPersistedFailedArticlesAcrossStartup(t *testing.T) {
 	if err := application.Dispatcher().Add(context.Background(), j, hdr); err != nil {
 		t.Fatalf("Add: %v", err)
 	}
-
-	// Mark article 0 as failed so the job carries a failed article into startup.
 	if err := j.MarkArticleFailed(0, job.WholeArticle); err != nil {
 		t.Fatalf("MarkArticleFailed: %v", err)
-	}
-	if !j.Progress().ArticleFailed(0) {
-		t.Fatal("setup failed: article 0 is not marked failed")
-	}
-	if got := j.Progress().FailedBytes(); got != 512 {
-		t.Fatalf("setup failed: FailedBytes = %d, want 512", got)
 	}
 
 	application.PauseDownloads()
 	application.Dispatcher().Pause()
 	ctx, cancel := context.WithCancel(t.Context())
 	defer cancel()
-	if err := application.Start(ctx); err != nil {
-		t.Fatalf("Start: %v", err)
+	err = application.Start(ctx)
+	if err == nil {
+		t.Cleanup(func() { _ = application.Shutdown() })
+		t.Fatal("Start accepted a job that held a file table before the restore pass")
 	}
-	t.Cleanup(func() { _ = application.Shutdown() })
-
-	// The startup sequence must not un-fail articles or clear failed bits.
-	if !j.Progress().ArticleFailed(0) {
-		t.Errorf("article 0 failed bit was cleared across Start; ClearEmittedForReload wiped out the failure")
+	if !strings.Contains(err.Error(), "job1 already has a file table") {
+		t.Errorf("Start = %v, want the restore pass's refusal naming job1", err)
 	}
-	if got := j.Progress().FailedBytes(); got != 512 {
-		t.Errorf("FailedBytes = %d across Start, want 512", got)
+	if !j.Progress().ArticleFailed(0) || j.Progress().FailedBytes() != 512 {
+		t.Error("a refused Start changed the job's failed article")
 	}
 }

@@ -53,7 +53,8 @@ func unwantedFailMessage(names []string) string {
 // job. failMsg is the peek's message naming the files; the names are not
 // persisted, so a call with "" (a redelivery or the startup sweep) files with
 // the prefix alone. Filing is idempotent through the post-processing
-// admission, and defers to the Assessing worker for a job that is complete.
+// admission, and defers to the Assessing worker for a resident job that is
+// complete.
 func (app *Application) fileOwedUnwantedFailure(j *job.Job, failMsg string) {
 	row, owed := app.unwantedFilingOwed(j)
 	if !owed {
@@ -62,7 +63,14 @@ func (app *Application) fileOwedUnwantedFailure(j *job.Job, failMsg string) {
 	if failMsg == "" {
 		failMsg = unwantedFailPrefix
 	}
-	app.enqueuePostProc(j, row.Header, failMsg, true)
+	// Deferred to Assessing only for a resident job. A job whose hydration
+	// failed (an unreadable manifest) is not resident and has no worker to
+	// reach Assessing: the first tick's reconcileResidency fails the same
+	// hydration and settles it Failed at Fetching, so a filing deferred for
+	// it would never be made even though restoreProgress's seeded Complete
+	// flags make it read complete. A resident complete job defers, so its
+	// Assessing worker takes the reason.
+	app.enqueuePostProc(j, row.Header, failMsg, j.Resident())
 }
 
 // unwantedFilingOwed is the one predicate for a filing owed to j: it is

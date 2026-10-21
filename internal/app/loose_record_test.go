@@ -889,6 +889,9 @@ func TestLooseRecord_ResumedCompletionSurvivesEviction(t *testing.T) {
 		a.residency.finished = func(_ string, fi int, _ string) { owed = append(owed, fi) }
 	})
 	id := j.ID()
+	if err := a2.restoreProgress(t.Context()); err != nil {
+		t.Fatalf("restoreProgress: %v", err)
+	}
 	if err := a2.dispatcher.LoadProgress(t.Context(), id); err != nil {
 		t.Fatalf("LoadProgress: %v", err)
 	}
@@ -949,6 +952,10 @@ func TestLooseRecord_CompleteFileInstallsItsFailedSet(t *testing.T) {
 	}
 	if !p.ArticleDone(0) || !p.ArticleDone(2) || p.ArticleFailed(0) || p.ArticleFailed(2) {
 		t.Error("the complete file's rows are not installed as Done")
+	}
+	// The byte half: the one article without a row is the whole failed total.
+	if got := p.FailedBytes(); got != lrArtLen {
+		t.Errorf("FailedBytes = %d, want %d (the one article with no row)", got, lrArtLen)
 	}
 }
 

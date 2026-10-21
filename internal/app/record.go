@@ -436,8 +436,8 @@ func (r *recorder) apply(ctx context.Context, j *job.Job, v []durability.FileVer
 // is handleFileUntrusted, on the assembler's worker, which is also the one
 // goroutine that notes rows. apply does not carry the debt, and does not
 // need to: its callers name an instance that owes nothing — a hydration
-// verifies a job with no progress in this process, so one that wrote no row
-// here, and a retry's instance is new (`git grep -n 'recorder\.apply(' -- '*.go' ':!*_test.go'`
+// verifies a restored job, which has written no row here, and a retry's
+// instance is new (`git grep -n 'recorder\.apply(' -- '*.go' ':!*_test.go'`
 // returns 4 lines, the hydration's commit and the retry's three).
 func (r *recorder) untrust(ctx context.Context, j *job.Job, fileIdx int) error {
 	v := untrustVerdict(fileIdx)

@@ -40,7 +40,7 @@ const columns = `id, sort_key, name, category, priority, bytes,
 	state, next, activity, outcome, assessed, intent,
 	filename, ingest_anomaly, fail_reason, duplicate_reason, operational_error, script, password, pp, nzb_backup, url, md5,
 	added, download_started, download_finished, par2_release_reason,
-	recovery_bytes, unwanted_ext`
+	unwanted_ext`
 
 // Load returns every stored job in queue order.
 //
@@ -99,7 +99,7 @@ func (s *Store) Load(ctx context.Context) ([]dispatch.Persisted, error) {
 			&p.Header.Script, &p.Header.Password,
 			&pp, &p.Header.NZBBackup, &p.Header.URL, &p.Header.MD5,
 			&p.Header.Added, &p.DownloadStarted, &p.DownloadFinished, &p.Par2ReleaseReason,
-			&p.RecoveryBytes, &p.Header.Unwanted,
+			&p.Header.Unwanted,
 		); err != nil {
 			s.log.Error("dispatch/store: load scan failed", "job_id", p.ID, "err", err)
 			continue
@@ -123,7 +123,7 @@ func (s *Store) Load(ctx context.Context) ([]dispatch.Persisted, error) {
 func (s *Store) Save(ctx context.Context, p dispatch.Persisted) error {
 	_, err := s.db.ExecContext(ctx,
 		`INSERT INTO dispatch_jobs (`+columns+`)
-		 VALUES (?,?,?,?,?,?, ?,?,?,?, ?,?,?,?,?,?, ?,?,?,?,?,?,?,?,?,?,?, ?,?,?,?, ?,?)
+		 VALUES (?,?,?,?,?,?, ?,?,?,?, ?,?,?,?,?,?, ?,?,?,?,?,?,?,?,?,?,?, ?,?,?,?, ?)
 		 ON CONFLICT(id) DO UPDATE SET
 		   sort_key=excluded.sort_key, name=excluded.name,
 		   category=excluded.category, priority=excluded.priority,
@@ -142,7 +142,6 @@ func (s *Store) Save(ctx context.Context, p dispatch.Persisted) error {
 		   added=excluded.added, download_started=excluded.download_started,
 		   download_finished=excluded.download_finished,
 		   par2_release_reason=excluded.par2_release_reason,
-		   recovery_bytes=excluded.recovery_bytes,
 		   unwanted_ext=excluded.unwanted_ext`,
 		p.ID, p.SortKey, p.Header.Name, p.Header.Category, p.Header.Priority, p.Header.Bytes,
 		p.Policy.Verify, p.Policy.Repair, p.Policy.Unpack, p.Policy.Delete,
@@ -153,7 +152,7 @@ func (s *Store) Save(ctx context.Context, p dispatch.Persisted) error {
 		p.Header.Script, p.Header.Password,
 		p.Header.PP.Int(), p.Header.NZBBackup, p.Header.URL, p.Header.MD5,
 		p.Header.Added, p.DownloadStarted, p.DownloadFinished, p.Par2ReleaseReason,
-		p.RecoveryBytes, p.Header.Unwanted,
+		p.Header.Unwanted,
 	)
 	if err != nil {
 		return fmt.Errorf("dispatch/store: save %s: %w", p.ID, err)

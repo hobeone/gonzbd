@@ -126,10 +126,13 @@ func TestReconcile_FilesAFailBlockedJobAndHoldsAPauseBlockedOne(t *testing.T) {
 			if in := a.j.Intent(); in != c.intent {
 				t.Fatalf("Intent = %v, want %v", in, c.intent)
 			}
-			// As restored: the content tier is not resident.
+			// As restored: the content tier is not resident. The sweep is
+			// called on its own: the job was ingested in this process, which
+			// the restore pass that precedes it in reconcileBeforeFirstTick
+			// refuses.
 			a.j.Evict()
-			if err := a.reconcileBeforeFirstTick(t.Context()); err != nil {
-				t.Fatalf("reconcileBeforeFirstTick: %v", err)
+			if err := a.fileOwedUnwantedFailures(t.Context()); err != nil {
+				t.Fatalf("fileOwedUnwantedFailures: %v", err)
 			}
 			// A pause never hydrates: the sweep loads only a job it files.
 			if _, err := a.j.Manifest(); errors.Is(err, job.ErrNotResident) == c.filed {

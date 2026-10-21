@@ -59,6 +59,7 @@ export interface QueueSlot {
 	operational_error?: string;
 	/** Bytes written: the encoded size of resolved articles. The key keeps its old name; it does not mean fsynced. */
 	bytes_durable: number;
+	progress_verified: boolean;
 	failed_bytes: number;
 	recovery_bytes: number;
 	recovery_files: number;
@@ -93,6 +94,7 @@ export interface QueueFile {
 	bytes: number;
 	bytes_downloaded: number;
 	state: 'queued' | 'downloading' | 'done' | 'failed' | 'held' | 'skipped';
+	verified: boolean;
 }
 
 export interface QueueDetail {
