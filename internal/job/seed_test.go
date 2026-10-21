@@ -24,11 +24,14 @@ func doneCount(b bitset) int {
 func TestAttachFiles_SeedSetsNoDoneBit(t *testing.T) {
 	ft := NewFileTable(seedSpecs())
 	j := New("j", "j", Policy{})
-	seed := []FileSeed{{Recorded: 4}, {Recorded: 2}, {Recorded: 1, Complete: true}}
+	seed := []FileSeed{{Recorded: 4, Filename: "a.real"}, {Recorded: 2}, {Recorded: 1, Complete: true}}
 	if err := j.AttachFiles(ft, seed); err != nil {
 		t.Fatalf("AttachFiles: %v", err)
 	}
 	p := j.progress
+	if got := p.FileFilename(0); got != "a.real" || p.FileVerified(0) {
+		t.Errorf("FileFilename(0) = %q, FileVerified(0) = %v, want the seeded name on an unverified file", got, p.FileVerified(0))
+	}
 	if n := doneCount(p.done); n != 0 {
 		t.Errorf("done.Count() = %d after a seed, want 0", n)
 	}
@@ -138,6 +141,17 @@ func TestFileBytesDownloaded_EstimateIsBoundedAndInBytesUnits(t *testing.T) {
 	}
 	if got := out.progress.FileBytesDownloaded(2); got != 50 {
 		t.Errorf("Recorded 2 of 1: %d, want the file's 50 bytes", got)
+	}
+
+	// A file with no articles estimates 0 whatever the record held, rather
+	// than dividing by its article count.
+	empty := New("e", "e", Policy{})
+	emptyTable := NewFileTable([]FileSpec{{Subject: "z.bin", Bytes: 10, ArticleCount: 0}})
+	if err := empty.AttachFiles(emptyTable, []FileSeed{{Recorded: 3}}); err != nil {
+		t.Fatalf("AttachFiles: %v", err)
+	}
+	if got := empty.progress.FileBytesDownloaded(0); got != 0 {
+		t.Errorf("a file with no articles: %d, want 0", got)
 	}
 }
 

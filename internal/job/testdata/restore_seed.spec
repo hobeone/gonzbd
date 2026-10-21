@@ -112,3 +112,21 @@ file internal/job/progress.go
 --- replace
 		if left := f.Bytes - f.BytesDownloaded - f.FailedBytes; left > 0 {
 --- end
+
+[the seed drops the recorded filename]
+file internal/job/progress.go
+run TestAttachFiles_SeedSetsNoDoneBit
+--- anchor
+		f.Filename = seed[fi].Filename
+--- replace
+--- end
+
+[the estimate divides by a file's zero article count]
+file internal/job/progress.go
+run TestFileBytesDownloaded_EstimateIsBoundedAndInBytesUnits
+--- anchor
+	if n == 0 {
+		return 0
+	}
+--- replace
+--- end
