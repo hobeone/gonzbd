@@ -458,7 +458,8 @@ Each step lands green on its own, as a PR.
 - The `restored*` stamp fields stay as the hand-off from `reconstruct`;
   only the window in which they are the sole copy is deleted.
 - A job whose `job_files` structure cannot be read or scanned at restore
-  is settled `Failed` then, rather than left header-only until a tick.
+  is settled `Failed` then when it has an open attempt; a never-run one
+  stays progress-less until the tick's first hydration fails it (D20).
 - `durability.FileRow` is widened rather than a second reader type added.
 - Read-back stays at first hydration; no background verifier. (Open
   question 2 from the options round; the owner did not choose, so the

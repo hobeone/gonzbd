@@ -1686,7 +1686,7 @@ Per article, against the field types:
 | `Manifest` — `articleIDs []string`, `articleBytes`, `articleNumber` | ~86 B | ~1.6 MB |
 | `FileTable` — one entry per file (subject, bytes, article count, recovery flag) and one 8-byte offset | sized by files, not articles; not measured | — |
 | `JobProgress` — `done`/`failed`/`emitted` as bitsets | 0.375 B | ~7.5 KB |
-| `JobProgress.files` — one `FileProgress` per file, 88 B of which `Verified` and `Recorded` are 16 B | per file, not per article; layout, `unsafe.Sizeof` | 1000 files: ≈88 KB |
+| `JobProgress.files` — one `FileProgress` per file, 88 B of which `Verified` and `Recorded` are 16 B | per file, not per article; derived from the layout, not measured | 1000 files: ≈88 KB |
 | `JobProgress.written` — one `durability.WrittenRow` per article of a file whose CRC is not settled | 40 B | up to ~800 KB |
 
 The manifest figure is dominated by `articleIDs`: a 16-byte string header plus
@@ -1706,9 +1706,9 @@ to 8 B = 40 B) plus one 8 B `offsets` entry, plus the subject's bytes, so
 48 B + len(subject) per file. At 1000 files with 100-byte subjects that is
 ≈148 KB (derived from the layout, not measured), against 7.5 KB of bitsets
 for a 20k-article job. That comparison leaves out the rest of the progress
-record, which holds one `FileProgress` per file (88 B, from `unsafe.Sizeof`
-on the struct as laid out, 16 B of it the `Verified` flag and the `Recorded`
-count) and an 8 B `fileStarts` entry beside the bitset
+record, which holds one `FileProgress` per file (88 B, derived from the struct
+layout, 16 B of it the `Verified` flag and the `Recorded` count) and an 8 B
+`fileStarts` entry beside the bitset
 bits. Per file, then, the table is 48 B + len(subject) and the progress record
 is about 96 B plus its share of the bitsets (derived, not measured): the same
 order, so neither is small next to the bitsets alone. What holds is that the

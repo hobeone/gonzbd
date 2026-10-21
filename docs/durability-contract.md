@@ -334,7 +334,7 @@ row's CRC, or because its file was `complete=1`** (and not reset by a retry).
 #### When
 
 Before the first tick, the restore pass (`Application.restoreProgress`) gives
-every restored job its file table, built from its `job_files` rows
+every restored job whose structure it can read its file table, built from its `job_files` rows
 (`fileTableFromRows`), and a progress record seeded with each file's recorded
 row count, `complete` flag, filename and fetch policy, with every file
 unverified. **It sets no article bit.**
