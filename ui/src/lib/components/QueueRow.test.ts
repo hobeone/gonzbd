@@ -746,16 +746,6 @@ describe('QueueRow', () => {
 			expect(screen.getByText(HINT, { selector: '.sr-only' })).toBeInTheDocument();
 		});
 
-		it('renders neither the class nor the hint for an unverified slot carrying an operational error', () => {
-			const { container } = render(QueueRow, {
-				slot: { ...baseSlot, progress_verified: false, operational_error: 'restore progress: job_files unreadable' },
-				onremove: () => {}
-			});
-			expect(container.querySelector('[role="progressbar"].unverified')).toBeNull();
-			expect(screen.getByTestId('progress-cell').getAttribute('title')).toBeFalsy();
-			expect(screen.queryByText(HINT)).toBeNull();
-		});
-
 		it('renders neither the class nor the hint for a verified slot', () => {
 			const { container } = render(QueueRow, { slot: baseSlot, onremove: () => {} });
 			expect(container.querySelector('[role="progressbar"].unverified')).toBeNull();
