@@ -7,14 +7,18 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
+	"syscall"
 	"testing"
 	"time"
 
 	"github.com/hobeone/gonzbd/internal/constants"
+	"github.com/hobeone/gonzbd/internal/dispatch"
 	"github.com/hobeone/gonzbd/internal/history"
 	"github.com/hobeone/gonzbd/internal/job"
 	"github.com/hobeone/gonzbd/internal/nzb"
 	"github.com/hobeone/gonzbd/internal/types"
+	"github.com/hobeone/gonzbd/internal/unwanted"
 )
 
 // TestReconcileBeforeFirstTick_StopsOnACancelledContext pins that the step
@@ -178,7 +182,7 @@ func TestStart_LeavesAJobRestoredPausedAtFetchingUnverified(t *testing.T) {
 }
 
 // TestStart_FilesAnOwedJobInsideStart pins the sweep's place in
-// reconcileBeforeFirstTick: a restored job the archive peek owes a filing is
+// reconcileBeforeFirstTick: a restored job owed an unwanted-extension filing is
 // filed inside Start, before the first tick, over a real restarted queue. The
 // paused job is there to show that an owed filing inside Start leaves an
 // unrelated paused job paused (the IntentPause assertion).
@@ -248,7 +252,82 @@ func TestFileOwedUnwantedFailures_FailedHydrationIsLoggedAndFiled(t *testing.T) 
 	if !a2.postProcAdmissions.has(owed2) {
 		t.Error("a job whose hydration failed was not filed")
 	}
-	if got := logs.String(); !strings.Contains(got, "level=WARN") || !strings.Contains(got, "it is filed unless the failure parked it") {
+	if got := logs.String(); !strings.Contains(got, "level=WARN") || !strings.Contains(got, "it is filed without its verified files") {
 		t.Errorf("the failed hydration was not logged at Warn; log:\n%s", got)
+	}
+}
+
+// TestFileOwedUnwantedFailures_StorageFaultThenUserResumeStillFiles pins that
+// a storage fault in the startup hydration of a job the fail action blocked
+// does not turn the owed filing into an approval choice (#1033). The fault
+// parks the job with a "resume to retry" reason; the user's resume, made after
+// the fault has cleared, must not approve the block, and the job is filed
+// Failed with the unwanted-extension message rather than downloaded.
+//
+// Not parallel: preadAt is a package-level seam.
+func TestFileOwedUnwantedFailures_StorageFaultThenUserResumeStillFiles(t *testing.T) {
+	env := newLREnv(t)
+	a1 := env.newApp(t)
+	owed := a1.addJob(t, "owed", 3, 2)
+	env.writeFileA(t, owed, 3, 0, 1)
+	a1.recordFileA(t, owed.ID(), false, 0, 1)
+	a1.dispatcher.Tick(t.Context())
+	a1.dispatcher.Tick(t.Context())
+	if st := owed.State().State; st != job.Fetching {
+		t.Fatalf("fixture: the owed job is at %v, want Fetching", st)
+	}
+	if moved, err := a1.dispatcher.BlockUnwanted(owed, false); err != nil || !moved {
+		t.Fatalf("BlockUnwanted = (%v, %v)", moved, err)
+	}
+	a1.dispatcher.Tick(t.Context()) // persists the block
+
+	// The startup hydration's read-back of file A's second article fails.
+	var failing atomic.Bool
+	failing.Store(true)
+	var faults atomic.Int32
+	prev := preadAt
+	preadAt = func(f *os.File, b []byte, off int64) (int, error) {
+		if off == lrArtLen && failing.Load() {
+			faults.Add(1)
+			return 0, &os.PathError{Op: "pread", Path: f.Name(), Err: syscall.EIO}
+		}
+		return prev(f, b, off)
+	}
+	t.Cleanup(func() { preadAt = prev })
+
+	a2 := env.newApp(t)
+	a2.start(t)
+	if faults.Load() == 0 {
+		t.Fatal("fixture: the startup hydration never hit the injected fault")
+	}
+
+	// The fault clears, and the user resumes the job as the API's per-job
+	// resume does. The job may already be on its way out, filed: cancelled
+	// by its finalize (the intent is latched), or gone.
+	failing.Store(false)
+	if err := a2.dispatcher.ResumeJobByUser(owed.ID()); err != nil &&
+		!errors.Is(err, dispatch.ErrNotFound) && !errors.Is(err, job.ErrIntentLatched) {
+		t.Fatalf("ResumeJobByUser: %v", err)
+	}
+	a2.ReevaluateStalls()
+	if row, ok := a2.dispatcher.Row(owed.ID()); ok && row.Header.Unwanted == unwanted.StateApproved {
+		t.Errorf("the user's resume after a storage fault approved a job the fail action blocked")
+	}
+
+	if status := a2.lrWaitFinalized(t, owed.ID()); status != string(constants.StatusFailed) {
+		t.Errorf("history status = %q, want %q", status, constants.StatusFailed)
+	}
+	e, err := a2.repo.Get(t.Context(), owed.ID())
+	if err != nil {
+		t.Fatalf("history Get: %v", err)
+	}
+	if !strings.HasPrefix(e.FailMessage, unwantedFailPrefix) {
+		t.Errorf("fail message = %q, want the unwanted-extension message", e.FailMessage)
+	}
+	if e.Unwanted != unwanted.StateBlocked {
+		t.Errorf("history unwanted_ext = %d, want %d (blocked), so Retry asks for approval", e.Unwanted, unwanted.StateBlocked)
+	}
+	if _, ok := a2.dispatcher.Job(owed.ID()); ok {
+		t.Error("the filed job is still registered")
 	}
 }

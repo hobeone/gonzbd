@@ -303,14 +303,17 @@ is not loaded at startup: it reports the estimate the restore pass seeded
 until a resume lets the tick hydrate it, or a rename hydrates it through
 the first load (after which, being paused, it stays resident until resumed).
 The second is `Application.fileOwedUnwantedFailures`, before the first tick, which
-calls the residency's `Hydrate` directly for a restored job the archive peek
-owes a filing, so the filing sees its verified files; it records no load.
+calls the residency's `Hydrate` directly for a restored job owed an
+unwanted-extension filing (`unwanted.StateFailOwed`), so the filing sees its
+verified files; it records no load.
 A job filed at once departs; a complete job, whose filing is deferred to its
 Assessing worker, holds a lease at the first tick, whose reconcile then
 hydrates it (`Hydrate` returns at once for a resident job) and records it
 resident like any other. A hydration that cannot verify the job's files
 returns an error wrapping `ErrResidencyFault`, which no caller settles: the
-job has been parked (`docs/durability-contract.md` §3).
+job has been parked (`docs/durability-contract.md` §3). For the startup sweep
+the park does not end the filing: a job is owed by its unwanted state, which
+the park's pause does not change, so the sweep files it anyway (#1033).
 
 Only the manifest tier is evictable: nothing drops a `FileTable` or a `JobProgress` once it
 exists, and header fields never leave. That is weaker than "resident for a

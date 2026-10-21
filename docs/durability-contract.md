@@ -410,7 +410,8 @@ rows goes through this, or verifies itself:
   rename that exceeds it fails, attaches nothing, and can be retried
   (`registry.go`);
 - `Application.fileOwedUnwantedFailures` → `appResidency.Hydrate`, before the
-  first tick, for a restored job the archive peek owes a filing;
+  first tick, for a restored job owed an unwanted-extension filing
+  (`unwanted.StateFailOwed`);
 - `Application.verifyRetry`, for a retried job: it is rebuilt by
   `BuildIngestJob`, which attaches its files and articles, so `Hydrate` would return
   early and never verify it (see *Retry* below).
@@ -602,6 +603,13 @@ verifies it again. A sector that stays unreadable therefore keeps the job
 parked until the user resumes that job, and each such resume costs one
 read-back pass. Deleting the file sends it down the `ENOENT` arm and
 refetches it.
+
+The park is not a decision about the job, and nothing reads it as one. A job
+the startup sweep loads because the fail action blocked it
+(`fileOwedUnwantedFailures`) is filed Failed after a fault parks it, since it
+is owed by its unwanted state (`unwanted.StateFailOwed`) and not by its
+intent; and a resume of a parked job approves only a job the pause action
+blocked, never one owed a filing (#1033).
 
 A context error is returned as it is, parks nothing, and settles nothing.
 

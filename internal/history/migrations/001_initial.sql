@@ -225,11 +225,14 @@ CREATE TABLE dispatch_jobs (
     par2_release_reason TEXT NOT NULL DEFAULT '',
 
     -- The job's unwanted.State: 0 none, 1 blocked by the unwanted-extension
-    -- check at ingest, 2 approved by the user. Persisted because approval is
-    -- an event, not a function of the NZB: an approved job must not be
-    -- paused again, nor have its files removed after unpack, after a
-    -- restart.
-    unwanted_ext      INTEGER NOT NULL DEFAULT 0 CHECK (unwanted_ext BETWEEN 0 AND 2)
+    -- check under the pause action, 2 approved by the user, 3 blocked under
+    -- the fail action and owed its filing as Failed. Persisted because
+    -- approval is an event, not a function of the NZB: an approved job must
+    -- not be paused again, nor have its files removed after unpack, after a
+    -- restart; and because a filing owed must survive a restart whatever the
+    -- job's intent reads. history.unwanted_ext never holds 3: a filed job
+    -- owes nothing, and is recorded at 1 (unwanted.State.ForHistory).
+    unwanted_ext      INTEGER NOT NULL DEFAULT 0 CHECK (unwanted_ext BETWEEN 0 AND 3)
 );
 
 CREATE INDEX idx_dispatch_jobs_sort_key ON dispatch_jobs(sort_key);

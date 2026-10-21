@@ -363,7 +363,7 @@ func TestPeek_ApprovedJobIsNotChecked(t *testing.T) {
 	a := newPeekApp(t, unwanted.ActionPause, onlyTxt, false,
 		[]peekFile{{"x.rar", unpackFixture(t, "single_rar5.rar")}})
 	// The user approves before the volume completes.
-	if _, err := a.dispatcher.BlockUnwanted(a.j, false); err != nil {
+	if _, err := a.dispatcher.BlockUnwanted(a.j, true); err != nil {
 		t.Fatal(err)
 	}
 	if err := a.dispatcher.ResumeJobByUser(a.j.ID()); err != nil {
@@ -508,6 +508,24 @@ func TestPeek_FlaggedVolumeIsNotFedToDirectUnpack(t *testing.T) {
 	a.complete(t, 1)
 	if _, ok := a.duOrch.status(a.j.ID()); ok {
 		t.Error("a later volume of a blocked job started an unpacker")
+	}
+}
+
+// TestPeek_FailOwedJobIsNotFedToDirectUnpack pins that the feed refuses a
+// job the fail action blocked (unwanted.StateFailOwed), as it does one the
+// pause action blocked: completeFinalizedFile feeds the flagged volume after
+// the peek's move and before the job is filed, and the filing's hand-over
+// waits for any unpacker it finds.
+func TestPeek_FailOwedJobIsNotFedToDirectUnpack(t *testing.T) {
+	t.Parallel()
+	a := newPeekApp(t, unwanted.ActionFail, []string{"bin"}, true,
+		[]peekFile{{"multi_new.part01.rar", unpackFixture(t, "multi_new.part01.rar")}})
+	if moved, err := a.dispatcher.BlockUnwanted(a.j, false); err != nil || !moved {
+		t.Fatalf("BlockUnwanted = (%v, %v)", moved, err)
+	}
+	a.duOrch.maybeStart(FileComplete{JobID: a.j.ID(), FileIdx: 0})
+	if _, ok := a.duOrch.status(a.j.ID()); ok {
+		t.Error("an unpacker was started for a job owed an unwanted-extension filing")
 	}
 }
 

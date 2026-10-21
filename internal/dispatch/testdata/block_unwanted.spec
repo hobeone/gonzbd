@@ -26,8 +26,28 @@ file internal/dispatch/registry.go
 file internal/dispatch/registry.go
 --- anchor
 	if pause {
+		if err := j.SetIntent(job.IntentPause); err != nil {
 --- replace
 	if false {
+		if err := j.SetIntent(job.IntentPause); err != nil {
+--- end
+
+[the fail action's move records a block the user's resume approves, not a filing owed]
+file internal/dispatch/registry.go
+--- anchor
+	e.h.Unwanted = unwanted.StateFailOwed
+--- replace
+	e.h.Unwanted = unwanted.StateBlocked
+--- end
+
+[the pause action's move records a filing owed]
+file internal/dispatch/registry.go
+--- anchor
+	if pause {
+		e.h.Unwanted = unwanted.StateBlocked
+--- replace
+	if false {
+		e.h.Unwanted = unwanted.StateBlocked
 --- end
 
 [ResumeJob lets go of d.mu between deciding and setting the intent]
@@ -68,6 +88,8 @@ file internal/dispatch/registry.go
 file internal/dispatch/registry.go
 --- anchor
 	if pause {
+		if err := j.SetIntent(job.IntentPause); err != nil {
 --- replace
 	if true {
+		if err := j.SetIntent(job.IntentPause); err != nil {
 --- end

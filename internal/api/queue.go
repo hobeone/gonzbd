@@ -856,8 +856,10 @@ func (s *Server) queueResumeJobs(w http.ResponseWriter, r *http.Request) {
 // other refusal is logged at Warn, and the response is the same success.
 //
 // A resume is also the approval of a job the unwanted-extension check
-// blocked, and approval needs the full API key: a caller with only the NZB
-// key who names a blocked job is refused with 403, and no job is resumed.
+// blocked under the pause action (unwanted.StateBlocked), and approval needs
+// the full API key: a caller with only the NZB key who names such a job is
+// refused with 403, and no job is resumed. A job the fail action blocked
+// (unwanted.StateFailOwed) is never approved by a resume, so it is not refused.
 // It reports whether the request was carried out.
 func (s *Server) queueSetPaused(w http.ResponseWriter, r *http.Request, verb string) bool {
 	value, ok := s.requireParam(w, r, "value", "")

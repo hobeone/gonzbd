@@ -68,25 +68,49 @@ func (a Action) Valid() bool {
 
 // State is a job's standing against the check. It is persisted with the job
 // (dispatch_jobs.unwanted_ext) and with its history entry
-// (history.unwanted_ext), as the integers below; the values match SABnzbd's
-// nzo.unwanted_ext.
+// (history.unwanted_ext), as the integers below. StateNone, StateBlocked and
+// StateApproved match SABnzbd's nzo.unwanted_ext; StateFailOwed is a queue
+// state only, and a history entry records it as StateBlocked (ForHistory).
 type State uint8
 
 const (
 	// StateNone means the ingest check found nothing, or did not run.
 	StateNone State = iota
-	// StateBlocked means the ingest check found an unwanted file and the
-	// job was paused or failed for it.
+	// StateBlocked means the check found an unwanted file under the pause
+	// action: the job is paused, and the user's resume approves it. A
+	// history entry at StateBlocked is one the check failed, under either
+	// action.
 	StateBlocked
 	// StateApproved means the user accepted the job anyway, by resuming it
 	// or by retrying it with allow_unwanted. An approved job is not checked
 	// again at ingest and its files are not removed after unpack.
 	StateApproved
+	// StateFailOwed means the check found an unwanted file under the fail
+	// action: the job owes a filing as Failed, and no resume approves it.
+	// Persisted, so the filing is still owed after a restart whatever the
+	// job's pause intent reads.
+	StateFailOwed
 )
 
 // Valid reports whether s is one of the declared states.
 func (s State) Valid() bool {
-	return s <= StateApproved
+	return s <= StateFailOwed
+}
+
+// Blocked reports whether the check found an unwanted file in the job and the
+// user has not approved it: StateBlocked or StateFailOwed.
+func (s State) Blocked() bool {
+	return s == StateBlocked || s == StateFailOwed
+}
+
+// ForHistory is the state a history entry records for a job filed at s. A
+// filed job owes nothing, so StateFailOwed is recorded as StateBlocked, which
+// a retry holds to approval; every other state is recorded as it is.
+func (s State) ForHistory() State {
+	if s == StateFailOwed {
+		return StateBlocked
+	}
+	return s
 }
 
 // Rules is a validated extension list read in one mode, plus the action that
