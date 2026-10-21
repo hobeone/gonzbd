@@ -222,6 +222,7 @@
 			if (c.bytes !== n.bytes) c.bytes = n.bytes;
 			if (c.bytes_downloaded !== n.bytes_downloaded) c.bytes_downloaded = n.bytes_downloaded;
 			if (c.state !== n.state) c.state = n.state;
+			if (c.verified !== n.verified) c.verified = n.verified;
 		}
 	}
 
@@ -407,6 +408,21 @@
 		beyond_capacity: { text: 'Beyond repair', color: 'text-red-600 dark:text-red-400' }
 	};
 
+	/**
+	 * Hint for the progress cell, keyed by the backend's progress_verified.
+	 * No arithmetic and no comparison of figures: the API says whether the
+	 * percentage has been checked against the files. Add a case here, never a
+	 * condition.
+	 */
+	const PROGRESS_HINTS: Record<'verified' | 'unverified', string> = {
+		verified: '',
+		unverified:
+			'Progress from the download record; it is checked against the files when the job next runs.'
+	};
+
+	let progressVerified = $derived(slot.progress_verified);
+	let progressHint = $derived(PROGRESS_HINTS[progressVerified ? 'verified' : 'unverified']);
+
 	function healthLabel(): { text: string; color: string; hint?: string } {
 		// An unrecognized state is a backend the UI has not caught up with.
 		// Reporting that beats guessing a verdict for it.
@@ -506,13 +522,25 @@
 		</div>
 	</td>
 	<td class="px-5 py-3.5">
-		<div class="flex w-32 items-center gap-2">
+		<div
+			class="flex w-32 items-center gap-2"
+			title={progressHint || undefined}
+			data-testid="progress-cell"
+		>
 			<Progress
 				value={percentage}
 				max={100}
-				class={cn('h-1.5 flex-1 bg-muted', isActive && 'animate-pulse')}
+				class={cn(
+					'h-1.5 flex-1 bg-muted',
+					progressVerified
+						? isActive && 'animate-pulse'
+						: 'unverified bg-transparent ring-1 ring-inset ring-muted-foreground/60 [&>*]:bg-muted-foreground/30'
+				)}
 			/>
 			<span class="text-xs font-mono tabular-nums text-muted-foreground w-9 text-right font-semibold">{slot.percentage}%</span>
+			{#if progressHint}
+				<span class="sr-only">{progressHint}</span>
+			{/if}
 		</div>
 	</td>
 	<td
@@ -809,7 +837,16 @@
 							<tbody>
 								{#each files as f, i (i)}
 									<tr class="border-b border-m3-outline/5 last:border-0 hover:bg-m3-surface-variant/10">
-										<td class="py-1.5 pr-4 font-mono truncate max-w-xs text-m3-on-surface" title={f.name}>{f.name}</td>
+										<td class="py-1.5 pr-4 font-mono truncate max-w-xs text-m3-on-surface" title={f.name}>
+											{#if !f.verified}
+												<span
+													class="dot unverified mr-1.5 inline-block size-2 rounded-full border border-muted-foreground align-middle"
+													role="img"
+													aria-label="not yet verified"
+													title="Not yet verified against the file on disk"
+												></span>
+											{/if}{f.name}
+										</td>
 										<td class="py-1.5 pr-4 text-right font-mono whitespace-nowrap text-m3-on-surface font-medium">{formatBytes(f.bytes)}</td>
 										<td class="py-1.5 pr-4 text-right font-mono whitespace-nowrap text-m3-on-surface font-medium">{formatBytes(f.bytes_downloaded)}</td>
 										<td class="py-1.5 pr-4">

@@ -204,6 +204,14 @@ type queueSlot struct {
 	// with size/sizeleft/mb, which are the encoded NZB figures beside it.
 	BytesDurable int64 `json:"bytes_durable"`
 
+	// ProgressVerified is true when every file of the job has been checked
+	// against what is on disk (Job.AllVerified). False means Percentage and
+	// the remaining figures are an estimate from the download record. A
+	// registered job with no progress record (its job_files structure could
+	// not be restored; the tick fails it at first hydration) reads false.
+	// An added key: SABnzbd clients ignore unknown slot fields.
+	ProgressVerified bool `json:"progress_verified"`
+
 	// Files is the per-file breakdown for the row's expansion drawer.
 	// Only populated when the caller requests it via files=1; otherwise
 	// nil and omitted from JSON to keep default queue payloads small.
@@ -223,6 +231,10 @@ type queueFile struct {
 	// unnecessary — and are the reason the drawer's file sizes can total more
 	// than the row's size, which excludes them.
 	State string `json:"state"`
+	// Verified is whether this file has been checked against what is on disk
+	// (JobProgress.FileVerified); false means BytesDownloaded is from the
+	// download record.
+	Verified bool `json:"verified"`
 }
 
 // queueResponse is the outer JSON object returned for default queue listings.
@@ -364,6 +376,7 @@ func buildQueueFiles(j *job.Job) []queueFile {
 			Bytes:           ft.Bytes(fi),
 			BytesDownloaded: p.FileBytesDownloaded(fi),
 			State:           fileState(ft, p, fi),
+			Verified:        p.FileVerified(fi),
 		})
 	}
 	return out
@@ -473,8 +486,14 @@ func buildSlot(r dispatch.Row, j *job.Job, paused bool, speed float64, index int
 	totalBytes := r.Header.Bytes
 	remainingBytes := r.RemainingBytes
 	var failedBytes int64
-	if j != nil && j.HasProgress() {
-		totalBytes, remainingBytes, failedBytes = j.ProgressFigures()
+	// A row whose job is already gone is being removed: nothing is left to
+	// verify, so it reads verified rather than flashing the estimate styling.
+	progressVerified := true
+	if j != nil {
+		progressVerified = j.AllVerified()
+		if j.HasProgress() {
+			totalBytes, remainingBytes, failedBytes = j.ProgressFigures()
+		}
 	}
 
 	var pct int
@@ -559,6 +578,7 @@ func buildSlot(r dispatch.Row, j *job.Job, paused bool, speed float64, index int
 		Labels:            slotLabels(r.Header),
 		StallReason:       stallReason,
 		BytesDurable:      durableBytes,
+		ProgressVerified:  progressVerified,
 	}
 }
 
