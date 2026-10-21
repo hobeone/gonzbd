@@ -57,8 +57,9 @@ func TestPeek_FailActionFilesTheJobAfterTheFileIsMarkedComplete(t *testing.T) {
 
 // The filing is owed by the job's state, not by a message carried in one
 // call: a completion refused before its mark (the job was evicted after the
-// peek blocked it) leaves the job Blocked and running, and the redelivered
-// completion, which finds the job already Blocked, files it.
+// peek blocked it) leaves the job owed its filing (StateFailOwed) and
+// running, and the redelivered completion, which finds the job already
+// blocked, files it.
 func TestPeek_FailActionFilingSurvivesAnEvictionBeforeTheMark(t *testing.T) {
 	t.Parallel()
 	a := newPeekApp(t, unwanted.ActionFail, onlyTxt, false,
@@ -77,8 +78,8 @@ func TestPeek_FailActionFilingSurvivesAnEvictionBeforeTheMark(t *testing.T) {
 	if err := a.completeFinalizedFile(fc); !errors.Is(err, job.ErrNotResident) {
 		t.Fatalf("first completion = %v, want job.ErrNotResident", err)
 	}
-	if got := a.state(t); got != unwanted.StateBlocked {
-		t.Fatalf("Unwanted = %d, want blocked", got)
+	if got := a.state(t); got != unwanted.StateFailOwed {
+		t.Fatalf("Unwanted = %d, want StateFailOwed", got)
 	}
 	if a.postProcAdmissions.has(a.j) {
 		t.Fatal("the job was filed although its mark failed")
@@ -99,18 +100,22 @@ func TestPeek_FailActionFilingSurvivesAnEvictionBeforeTheMark(t *testing.T) {
 }
 
 // A restored job that the fail action blocked but did not file is filed at
-// startup, before it can run on; one the pause action blocked is held, not
-// filed.
+// startup, before it can run on, whether or not it was paused since (#1033);
+// one the pause action blocked is held, not filed.
 func TestReconcile_FilesAFailBlockedJobAndHoldsAPauseBlockedOne(t *testing.T) {
 	t.Parallel()
 	for _, c := range []struct {
-		name   string
-		pause  bool
-		filed  bool
-		intent job.Intent
+		name  string
+		pause bool
+		// pausedSince pauses the job after the move, as a stall or the user
+		// would.
+		pausedSince bool
+		filed       bool
+		intent      job.Intent
 	}{
-		{"fail action", false, true, job.IntentRun},
-		{"pause action", true, false, job.IntentPause},
+		{"fail action", false, false, true, job.IntentRun},
+		{"fail action paused since", false, true, true, job.IntentPause},
+		{"pause action", true, false, false, job.IntentPause},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			t.Parallel()
@@ -122,6 +127,11 @@ func TestReconcile_FilesAFailBlockedJobAndHoldsAPauseBlockedOne(t *testing.T) {
 			// The persisted state between the move and the filing.
 			if moved, err := a.dispatcher.BlockUnwanted(a.j, c.pause); err != nil || !moved {
 				t.Fatalf("BlockUnwanted = (%v, %v)", moved, err)
+			}
+			if c.pausedSince {
+				if err := a.dispatcher.PauseJob(a.j.ID()); err != nil {
+					t.Fatalf("PauseJob: %v", err)
+				}
 			}
 			if in := a.j.Intent(); in != c.intent {
 				t.Fatalf("Intent = %v, want %v", in, c.intent)

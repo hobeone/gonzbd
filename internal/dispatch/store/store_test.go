@@ -205,7 +205,7 @@ func TestStore_RoundTripsEveryEnumMember(t *testing.T) {
 			t.Errorf("Activity %s round-tripped as %s", a, got.State.Activity)
 		}
 	}
-	for _, u := range []unwanted.State{unwanted.StateNone, unwanted.StateBlocked, unwanted.StateApproved} {
+	for _, u := range []unwanted.State{unwanted.StateNone, unwanted.StateBlocked, unwanted.StateApproved, unwanted.StateFailOwed} {
 		p := base
 		p.Header.Unwanted = u
 		if got := save(t, p); got.Header.Unwanted != u {
@@ -219,7 +219,7 @@ func TestStore_RoundTripsEveryEnumMember(t *testing.T) {
 // something a check site would have to interpret.
 func TestStore_RefusesAnUndeclaredUnwantedState(t *testing.T) {
 	s := newTestStore(t)
-	p := dispatch.Persisted{ID: "j", Header: dispatch.Header{Name: "n", Unwanted: unwanted.StateApproved + 1}}
+	p := dispatch.Persisted{ID: "j", Header: dispatch.Header{Name: "n", Unwanted: unwanted.StateFailOwed + 1}}
 	if err := s.Save(t.Context(), p); err == nil {
 		t.Fatal("Save of an undeclared unwanted state succeeded")
 	}

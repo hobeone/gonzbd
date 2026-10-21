@@ -102,7 +102,7 @@ file internal/app/app.go
 [the owed filing ignores the job's state]
 file internal/app/unwanted.go
 --- anchor
-	if !ok || row.Header.Unwanted != unwanted.StateBlocked || j.Intent() != job.IntentRun {
+	if !ok || row.Header.Unwanted != unwanted.StateFailOwed {
 --- replace
 	if !ok {
 --- end
@@ -110,9 +110,17 @@ file internal/app/unwanted.go
 [a pause-blocked job counts as owed]
 file internal/app/unwanted.go
 --- anchor
-	if !ok || row.Header.Unwanted != unwanted.StateBlocked || j.Intent() != job.IntentRun {
+	if !ok || row.Header.Unwanted != unwanted.StateFailOwed {
 --- replace
-	if !ok || row.Header.Unwanted != unwanted.StateBlocked {
+	if !ok || !row.Header.Unwanted.Blocked() {
+--- end
+
+[a paused job no longer owes its filing, as before #1033]
+file internal/app/unwanted.go
+--- anchor
+	if !ok || row.Header.Unwanted != unwanted.StateFailOwed {
+--- replace
+	if !ok || row.Header.Unwanted != unwanted.StateFailOwed || j.Intent() != job.IntentRun {
 --- end
 
 [the startup sweep hydrates a job before checking that it owes a filing]
@@ -215,7 +223,15 @@ file internal/app/archive_peek.go
 [the unpacker feed does not refuse a blocked job]
 file internal/app/directunpack_orchestrator.go
 --- anchor
-	if st, _ := app.dispatcher.UnwantedState(fc.JobID); st == unwanted.StateBlocked {
+	if st, _ := app.dispatcher.UnwantedState(fc.JobID); st.Blocked() {
 --- replace
-	if st, _ := app.dispatcher.UnwantedState(fc.JobID); st == unwanted.StateBlocked && false {
+	if st, _ := app.dispatcher.UnwantedState(fc.JobID); st.Blocked() && false {
+--- end
+
+[the unpacker feed refuses only a pause-blocked job]
+file internal/app/directunpack_orchestrator.go
+--- anchor
+	if st, _ := app.dispatcher.UnwantedState(fc.JobID); st.Blocked() {
+--- replace
+	if st, _ := app.dispatcher.UnwantedState(fc.JobID); st.Blocked() && st.ForHistory() == st {
 --- end

@@ -82,3 +82,19 @@ file internal/api/history.go
 --- replace
 		if false && errors.Is(err, app.ErrUnwantedRefused) {
 --- end
+
+[an NZB-key resume of a fail-owed job is refused]
+file internal/api/queue.go
+--- anchor
+			if row, ok := s.dispatcher.Row(id); ok && row.Header.Unwanted == unwanted.StateBlocked {
+--- replace
+			if row, ok := s.dispatcher.Row(id); ok && row.Header.Unwanted.Blocked() {
+--- end
+
+[a fail-owed job loses its label]
+file internal/api/queue.go
+--- anchor
+	if h.Unwanted != unwanted.StateNone {
+--- replace
+	if h.Unwanted == unwanted.StateBlocked || h.Unwanted == unwanted.StateApproved {
+--- end

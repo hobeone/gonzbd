@@ -217,12 +217,33 @@ func TestEnumValid(t *testing.T) {
 	if Action("x").Valid() {
 		t.Error(`Action "x" Valid`)
 	}
-	for _, s := range []State{StateNone, StateBlocked, StateApproved} {
+	for _, s := range []State{StateNone, StateBlocked, StateApproved, StateFailOwed} {
 		if !s.Valid() {
 			t.Errorf("State %d not Valid", s)
 		}
 	}
-	if State(3).Valid() {
-		t.Error("State 3 Valid")
+	if State(4).Valid() {
+		t.Error("State 4 Valid")
+	}
+}
+
+func TestState_BlockedAndForHistory(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		s          State
+		blocked    bool
+		forHistory State
+	}{
+		{StateNone, false, StateNone},
+		{StateBlocked, true, StateBlocked},
+		{StateApproved, false, StateApproved},
+		{StateFailOwed, true, StateBlocked},
+	} {
+		if got := tc.s.Blocked(); got != tc.blocked {
+			t.Errorf("State %d Blocked() = %v, want %v", tc.s, got, tc.blocked)
+		}
+		if got := tc.s.ForHistory(); got != tc.forHistory {
+			t.Errorf("State %d ForHistory() = %d, want %d", tc.s, got, tc.forHistory)
+		}
 	}
 }

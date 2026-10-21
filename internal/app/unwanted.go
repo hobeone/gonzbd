@@ -37,24 +37,21 @@ func unwantedFailMessage(names []string) string {
 }
 
 // fileOwedUnwantedFailure files j as failed when persisted state says the
-// archive peek owes it a filing: the job is Blocked and its intent is
-// IntentRun. Under the pause action BlockUnwanted sets IntentPause in the
-// same d.mu span as the move, and the ingest check pauses what it blocks, so
-// IntentRun on a Blocked job comes only from the fail action's move, which
-// leaves the filing to this function. The enumeration is
-// `git grep -nE '\.Unwanted\s*=[^=]' -- '*.go' ':!*_test.go'` (the writers of
-// Header.Unwanted: screenUnwanted, BlockUnwanted, resume) and
-// `git grep -n 'SetIntent(job[.]IntentRun)' -- '*.go' ':!*_test.go'` (resume,
-// the one non-test call, which approves or refuses a Blocked job).
+// check owes it a filing: its Header.Unwanted is unwanted.StateFailOwed, which
+// only the fail action writes (screenUnwanted at ingest, BlockUnwanted for the
+// archive peek). The writers of Header.Unwanted are enumerated by
+// `git grep -nE '\.Unwanted\s*=[^=]' -- '*.go' ':!*_test.go'`: screenUnwanted,
+// BlockUnwanted and resume, which approves only unwanted.StateBlocked. So
+// neither a pause nor a resume, the user's or the stall's, changes whether a
+// job is owed (#1033).
 //
 // Being derived from state, the filing survives what a message in a local
 // variable did not: a completion whose mark failed and is redelivered, and a
-// restart (reconcileBeforeFirstTick). It is the one place that files such a
-// job. failMsg is the peek's message naming the files; the names are not
-// persisted, so a call with "" (a redelivery or the startup sweep) files with
-// the prefix alone. Filing is idempotent through the post-processing
-// admission, and defers to the Assessing worker for a resident job that is
-// complete.
+// restart (reconcileBeforeFirstTick). failMsg is the peek's message naming
+// the files; the names are not persisted, so a call with "" (a redelivery or
+// the startup sweep) files with the prefix alone. Filing is idempotent through
+// the post-processing admission, and defers to the Assessing worker for a
+// resident job that is complete.
 func (app *Application) fileOwedUnwantedFailure(j *job.Job, failMsg string) {
 	row, owed := app.unwantedFilingOwed(j)
 	if !owed {
@@ -74,13 +71,13 @@ func (app *Application) fileOwedUnwantedFailure(j *job.Job, failMsg string) {
 }
 
 // unwantedFilingOwed is the one predicate for a filing owed to j: it is
-// registered, Blocked, and has IntentRun. fileOwedUnwantedFailure acts on it
+// registered at unwanted.StateFailOwed. fileOwedUnwantedFailure acts on it
 // and the startup sweep uses it to decide whether to hydrate a job at all, so
-// a paused Blocked job is never loaded for it. It returns j's row, read in the
-// same call.
+// a job the pause action blocked is never loaded for it. It returns j's row,
+// read in the same call.
 func (app *Application) unwantedFilingOwed(j *job.Job) (dispatch.Row, bool) {
 	row, ok := app.dispatcher.RowJob(j)
-	if !ok || row.Header.Unwanted != unwanted.StateBlocked || j.Intent() != job.IntentRun {
+	if !ok || row.Header.Unwanted != unwanted.StateFailOwed {
 		return dispatch.Row{}, false
 	}
 	return row, true
@@ -102,8 +99,10 @@ func (app *Application) unwantedFilingOwed(j *job.Job) (dispatch.Row, bool) {
 // entry, or one the user asked to run with allow_unwanted — and such a job
 // is not checked. Otherwise the check reads the filenames the NZB names
 // (FileTable.Subject) against the live rules. Under ActionPause a
-// blocked job's intent is set to pause; under ActionFail too, so it does not
-// launch before the caller files it, and the failure message is returned.
+// blocked job is recorded unwanted.StateBlocked and its intent is set to
+// pause. Under ActionFail it is recorded unwanted.StateFailOwed and paused
+// too, so it does not launch before the caller files it, and the failure
+// message is returned.
 //
 // It fails closed: if the rules or the job's file list cannot be read, it
 // returns an error and the caller must refuse the job rather than add it
@@ -141,6 +140,9 @@ func (app *Application) screenUnwanted(j *job.Job, hdr *dispatch.Header, approve
 		failText = unwantedFailMessage(found)
 	}
 	hdr.Unwanted = unwanted.StateBlocked
+	if rules.Action() == unwanted.ActionFail {
+		hdr.Unwanted = unwanted.StateFailOwed
+	}
 	if err := j.SetIntent(job.IntentPause); err != nil {
 		return "", fmt.Errorf("unwanted-extension check: pause the job: %w", err)
 	}

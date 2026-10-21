@@ -133,7 +133,7 @@ func buildHistoryEntry(ppJob *postproc.Job) history.Entry {
 		TimeAdded:    ppJob.Job.Added(),
 		URLInfo:      repairSummary,
 		Meta:         strings.Join(serverStatsParts, ", "),
-		Unwanted:     ppJob.Unwanted,
+		Unwanted:     ppJob.Unwanted.ForHistory(),
 		ScriptLog:    []byte(ppJob.ScriptLog()),
 		ScriptLine:   ppJob.ScriptLine(),
 	}

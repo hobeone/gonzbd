@@ -108,10 +108,11 @@ type Header struct {
 
 	// Unwanted is the job's standing against the unwanted-extension check.
 	// The application's ingest and retry paths set it before the job is
-	// registered; once registered, BlockUnwanted (None to Blocked) and
-	// ResumeJobByUser (Blocked to Approved) are its only runtime writers
-	// (restore aside, see above): `git grep -n 'e[.]h[.]Unwanted = '
-	// -- 'internal/dispatch/*.go' ':!*_test.go'` returns 2 lines, those two.
+	// registered; once registered, BlockUnwanted (None to Blocked or
+	// FailOwed) and ResumeJobByUser (Blocked to Approved) are its only
+	// runtime writers (restore aside, see above): `git grep -n 'e[.]h[.]Unwanted = '
+	// -- 'internal/dispatch/*.go' ':!*_test.go'` returns 3 lines, two in
+	// BlockUnwanted and one in resume.
 	Unwanted unwanted.State
 
 	Script    string
@@ -351,8 +352,8 @@ func (d *Dispatcher) sortKeyOf(id string) int64 {
 // It also takes j's Snapshot in that span. BlockUnwanted and ResumeJobByUser
 // change the Header's Unwanted state and the intent under d.mu, so a Header and
 // an intent read in two spans can pair a Blocked state with the intent of a
-// resume that approved it, and a row persisted so would, after a crash, read
-// as a fail-action filing owed (fileOwedUnwantedFailure). Job.Snapshot is a
+// resume that approved it, and a row persisted so would, after a crash,
+// restart a job still Blocked with IntentRun. Job.Snapshot is a
 // read of Job.mu with no I/O and no call into sched.Queue, so D-B9 (which is
 // about the Queue) is not engaged; resume already takes Job.mu under d.mu.
 func (d *Dispatcher) entryFor(j *job.Job) (Header, int64, job.Snapshot, bool) {
@@ -830,20 +831,23 @@ func (d *Dispatcher) UnwantedState(id string) (unwanted.State, bool) {
 
 // BlockUnwanted records that an archive the job has downloaded names a file
 // with an unwanted extension. It moves the job from unwanted.StateNone to
-// unwanted.StateBlocked, and is the one function that makes that move on a
-// registered job (the ingest check sets the state before registration).
+// unwanted.StateBlocked with pause (the pause action), or to
+// unwanted.StateFailOwed without it (the fail action), and is the one function
+// that makes either move on a registered job (the ingest check sets the state
+// before registration).
 //
-// moved reports whether this call made the move. A job already Blocked or
-// Approved is left as it is and moved is false, so two completions that find
-// the same hit produce one move, and a job the user approved is not blocked
-// again. The decision is taken under d.mu. The error is ErrNotFound with moved
-// false, or a refused pause with moved true: the job is Blocked either way
-// the caller reads moved, and only the pause failed.
+// moved reports whether this call made the move. A job already blocked,
+// owed a filing or approved is left as it is and moved is false, so two
+// completions that find the same hit produce one move, and a job the user
+// approved is not blocked again. The decision is taken under d.mu. The error
+// is ErrNotFound with moved false, or a refused pause with moved true: the job
+// is Blocked either way the caller reads moved, and only the pause failed.
 //
 // With pause the job is paused as PauseJob does, so the user's resume
 // approves it (ResumeJobByUser). Without it the caller files the job and the
 // intent is left alone: a pause here would hold a failure reason waiting for
-// an Assessing worker until the user resumed, which approves the job. The new
+// an Assessing worker until something resumed the job. A StateFailOwed job is
+// owed its filing whatever its intent, and no resume approves it. The new
 // state reaches dispatch_jobs at the next persist, as ResumeJobByUser's does.
 func (d *Dispatcher) BlockUnwanted(j *job.Job, pause bool) (moved bool, err error) {
 	if j == nil {
@@ -862,7 +866,10 @@ func (d *Dispatcher) BlockUnwanted(j *job.Job, pause bool) (moved bool, err erro
 		d.mu.Unlock()
 		return false, nil
 	}
-	e.h.Unwanted = unwanted.StateBlocked
+	e.h.Unwanted = unwanted.StateFailOwed
+	if pause {
+		e.h.Unwanted = unwanted.StateBlocked
+	}
 	// The intent is set in the same d.mu span as the state, so a ResumeJob
 	// that decided before this call has also set its intent before it, and
 	// one that decides after sees Blocked: the two cannot leave the job
@@ -890,8 +897,9 @@ func (d *Dispatcher) BlockUnwanted(j *job.Job, pause bool) (moved bool, err erro
 // IsLatched), so this returns that error rather than silently doing nothing.
 // Silently succeeding would tell the API a cancelled job had been resumed.
 //
-// It refuses a job the unwanted-extension check blocked
-// (ErrUnwantedBlocked), so ResumeJobByUser is the one way to unblock one.
+// It refuses a job the unwanted-extension check blocked under the pause
+// action (ErrUnwantedBlocked), so ResumeJobByUser is the one way to unblock
+// one.
 func (d *Dispatcher) ResumeJob(id string) error {
 	return d.resume(id, nil, false)
 }
@@ -920,7 +928,9 @@ func (d *Dispatcher) ResumeInstance(j *job.Job) error {
 // A byUser resume of a blocked job approves it before the intent changes, so
 // no tick can see the job running while still blocked. A resume refused
 // because the job is cancelled leaves a cancelled job approved, which nothing
-// reads.
+// reads. Only unwanted.StateBlocked is approved or refused here: a job at
+// unwanted.StateFailOwed is resumed like any other and stays owed its filing,
+// so a resume of a job a storage fault parked is not an approval (#1033).
 func (d *Dispatcher) resume(id string, expected *job.Job, byUser bool) error {
 	d.mu.Lock()
 	e, ok := d.byID[id]
@@ -951,7 +961,8 @@ func (d *Dispatcher) resume(id string, expected *job.Job, byUser bool) error {
 }
 
 // ResumeJobByUser is ResumeJob for a resume the user asked for, and it is
-// also the user's approval of a job the unwanted-extension check blocked:
+// also the user's approval of a job the unwanted-extension check blocked
+// under the pause action:
 // such a job moves from unwanted.StateBlocked to unwanted.StateApproved, as
 // SABnzbd's resume after an "unwanted" pause does. An approved job is not
 // paused by the check again and keeps its files after unpack. The new state

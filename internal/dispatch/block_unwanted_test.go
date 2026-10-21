@@ -48,9 +48,11 @@ func TestBlockUnwanted_PauseMovesNoneToBlockedAndPersists(t *testing.T) {
 }
 
 // TestBlockUnwanted_WithoutPauseLeavesTheIntent pins that the fail action's
-// call blocks but does not pause: its caller files the job.
+// call records the filing owed (StateFailOwed) but does not pause: its caller
+// files the job.
 func TestBlockUnwanted_WithoutPauseLeavesTheIntent(t *testing.T) {
-	d := newTestDispatcher(t)
+	st := &fakeStore{}
+	d := newTestDispatcher(t, withStore(st))
 	j := job.New("a", "Job A", job.PolicyFromPP(3))
 	if err := d.Add(context.Background(), j, Header{Name: "Job A"}); err != nil {
 		t.Fatalf("Add: %v", err)
@@ -62,13 +64,51 @@ func TestBlockUnwanted_WithoutPauseLeavesTheIntent(t *testing.T) {
 	if in := j.Intent(); in != job.IntentRun {
 		t.Errorf("Intent = %v, want IntentRun", in)
 	}
+	if got, _ := d.UnwantedState("a"); got != unwanted.StateFailOwed {
+		t.Errorf("UnwantedState = %d, want StateFailOwed", got)
+	}
+	d.tick(context.Background())
+	if p, ok := st.row("a"); !ok || p.Header.Unwanted != unwanted.StateFailOwed {
+		t.Errorf("persisted Unwanted = %d (row %v), want StateFailOwed", p.Header.Unwanted, ok)
+	}
+}
+
+// TestResume_LeavesAFilingOwed pins that no resume approves a job the fail
+// action blocked (#1033): a job a storage fault paused and the user resumed
+// is still owed its filing. ResumeJob is not refused either, so a stall's
+// re-evaluation or a deferred hand-over can resume the job for the worker
+// that files it.
+func TestResume_LeavesAFilingOwed(t *testing.T) {
+	for _, byUser := range []bool{false, true} {
+		d := newTestDispatcher(t)
+		j := job.New("a", "Job A", job.PolicyFromPP(3))
+		if err := d.Add(context.Background(), j, Header{Name: "Job A", Unwanted: unwanted.StateFailOwed}); err != nil {
+			t.Fatalf("Add: %v", err)
+		}
+		if err := d.PauseJob("a"); err != nil {
+			t.Fatalf("PauseJob: %v", err)
+		}
+		resume := d.ResumeJob
+		if byUser {
+			resume = d.ResumeJobByUser
+		}
+		if err := resume("a"); err != nil {
+			t.Errorf("byUser %v: resume = %v, want nil", byUser, err)
+		}
+		if got, _ := d.UnwantedState("a"); got != unwanted.StateFailOwed {
+			t.Errorf("byUser %v: UnwantedState = %d after a resume, want StateFailOwed", byUser, got)
+		}
+		if in := j.Intent(); in != job.IntentRun {
+			t.Errorf("byUser %v: Intent = %v, want IntentRun", byUser, in)
+		}
+	}
 }
 
 // TestBlockUnwanted_LeavesBlockedAndApprovedAlone pins that only StateNone
 // moves: an approved job is never blocked again, and a blocked one is not
 // paused a second time.
 func TestBlockUnwanted_LeavesBlockedAndApprovedAlone(t *testing.T) {
-	for _, from := range []unwanted.State{unwanted.StateBlocked, unwanted.StateApproved} {
+	for _, from := range []unwanted.State{unwanted.StateBlocked, unwanted.StateApproved, unwanted.StateFailOwed} {
 		d := newTestDispatcher(t)
 		j := job.New("a", "Job A", job.PolicyFromPP(3))
 		if err := d.Add(context.Background(), j, Header{Name: "Job A", Unwanted: from}); err != nil {

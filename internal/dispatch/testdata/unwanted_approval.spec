@@ -1,5 +1,5 @@
 pkg ./internal/dispatch/
-run TestResumeJobByUser_
+run TestResumeJobByUser_|TestResume_LeavesAFilingOwed
 
 [the user's resume does not approve a blocked job]
 file internal/dispatch/registry.go
@@ -29,4 +29,14 @@ file internal/dispatch/registry.go
 		if !byUser {
 --- replace
 		if false && !byUser {
+--- end
+
+[a resume approves, or refuses, a job owed its filing (#1033)]
+file internal/dispatch/registry.go
+--- anchor
+	if e.h.Unwanted == unwanted.StateBlocked {
+		if !byUser {
+--- replace
+	if e.h.Unwanted.Blocked() {
+		if !byUser {
 --- end

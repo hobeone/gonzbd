@@ -52,7 +52,7 @@ func TestScreenUnwanted(t *testing.T) {
 		wantErr   bool
 	}{
 		{name: "pause blocks", action: unwanted.ActionPause, files: []string{clean, bad}, wantState: unwanted.StateBlocked, wantPause: true},
-		{name: "fail blocks and fails", action: unwanted.ActionFail, files: []string{clean, bad}, wantState: unwanted.StateBlocked, wantPause: true, wantFail: true},
+		{name: "fail blocks and fails", action: unwanted.ActionFail, files: []string{clean, bad}, wantState: unwanted.StateFailOwed, wantPause: true, wantFail: true},
 		{name: "off checks nothing", action: unwanted.ActionOff, files: []string{bad}, wantState: unwanted.StateNone},
 		{name: "a clean job is not blocked", action: unwanted.ActionFail, files: []string{clean}, prior: unwanted.StateApproved, wantState: unwanted.StateNone},
 		{name: "an approved job is not checked", action: unwanted.ActionFail, files: []string{bad}, approved: true, wantState: unwanted.StateApproved},

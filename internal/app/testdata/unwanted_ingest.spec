@@ -59,8 +59,10 @@ file internal/app/unwanted.go
 file internal/app/unwanted.go
 --- anchor
 	if rules.Action() == unwanted.ActionFail {
+		return failText, nil
 --- replace
 	if false && rules.Action() == unwanted.ActionFail {
+		return failText, nil
 --- end
 
 [the fail message drops the count of the rest]
@@ -118,7 +120,7 @@ file internal/app/app.go
 [the history entry drops the job's unwanted state]
 file internal/app/history_helper.go
 --- anchor
-		Unwanted:     ppJob.Unwanted,
+		Unwanted:     ppJob.Unwanted.ForHistory(),
 --- replace
 		Unwanted:     0,
 --- end

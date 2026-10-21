@@ -29,8 +29,18 @@ file internal/app/unwanted.go
 file internal/app/unwanted.go
 --- anchor
 	if rules.Action() == unwanted.ActionFail {
+		return failText, nil
 --- replace
 	if false && rules.Action() == unwanted.ActionFail {
+		return failText, nil
+--- end
+
+[the fail action records a block the user's resume approves, not a filing owed]
+file internal/app/unwanted.go
+--- anchor
+		hdr.Unwanted = unwanted.StateFailOwed
+--- replace
+		hdr.Unwanted = unwanted.StateBlocked
 --- end
 
 [a rules error lets the job through]

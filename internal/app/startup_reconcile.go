@@ -8,7 +8,7 @@ import (
 // reconcileBeforeFirstTick is Application.Start's beforeFirstTick step for
 // Dispatcher.StartWith. It drops every restored job that is already filed in
 // history, then attaches each remaining job's file table and seeded progress
-// (restoreProgress), then files the jobs the archive peek owes a filing
+// (restoreProgress), then files the jobs owed an unwanted-extension filing
 // (fileOwedUnwantedFailures), whose hydration needs the table.
 //
 // The drop is placed before the first tick because a tick routes a restored
@@ -32,12 +32,12 @@ func (app *Application) reconcileBeforeFirstTick(ctx context.Context) error {
 	return app.fileOwedUnwantedFailures(ctx)
 }
 
-// fileOwedUnwantedFailures files every restored job the archive peek had
-// blocked under the fail action but not yet filed (fileOwedUnwantedFailure),
-// so that such a job does not run on after a restart. It runs before the
-// first tick, so a resident complete job is deferred to its Assessing worker
-// and any other, including one that could not be hydrated, is handed over
-// before it can launch.
+// fileOwedUnwantedFailures files every restored job the fail action blocked
+// but did not file (unwanted.StateFailOwed; fileOwedUnwantedFailure), so that
+// such a job does not run on after a restart. It runs before the first tick,
+// so a resident complete job is deferred to its Assessing worker and any
+// other, including one that could not be hydrated, is handed over before it
+// can launch.
 func (app *Application) fileOwedUnwantedFailures(ctx context.Context) error {
 	for _, row := range app.dispatcher.List() {
 		if err := ctx.Err(); err != nil {
@@ -47,21 +47,21 @@ func (app *Application) fileOwedUnwantedFailures(ctx context.Context) error {
 		if !ok {
 			continue
 		}
-		// Decided before hydrating: a paused job, which is every Blocked one
-		// but the fail action's, is never loaded by this sweep.
+		// Decided before hydrating: a job the pause action blocked is never
+		// loaded by this sweep.
 		if _, owed := app.unwantedFilingOwed(j); !owed {
 			continue
 		}
-		// A failed hydration does not by itself stop the filing: the call
-		// below re-reads unwantedFilingOwed, so a job still owed is filed
-		// without its verified files, and at once: a job that is not resident
-		// has no Assessing worker to take a deferred reason, however complete
-		// the restore pass's seeded flags read (fileOwedUnwantedFailure). One
-		// the failure parked (a residency fault pauses it, parkVerifyFault) is
-		// no longer owed and is not filed.
+		// A failed hydration does not stop the filing: a job is owed by its
+		// unwanted state alone, which a hydration's storage fault does not
+		// change even though it pauses the job (parkVerifyFault). Such a job,
+		// or one whose manifest is unreadable, is filed without its verified
+		// files, and at once: a job that is not resident has no Assessing
+		// worker to take a deferred reason, however complete the restore
+		// pass's seeded flags read (fileOwedUnwantedFailure).
 		if app.residency != nil {
 			if err := app.residency.Hydrate(ctx, row.ID); err != nil {
-				app.log.Warn("startup: loading a job owed an unwanted-extension filing failed; it is filed unless the failure parked it",
+				app.log.Warn("startup: loading a job owed an unwanted-extension filing failed; it is filed without its verified files",
 					"job", row.ID, "err", err)
 			}
 		}
