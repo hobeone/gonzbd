@@ -74,7 +74,7 @@ func (app *Application) failUnrestorable(j *job.Job, cause error) {
 	app.log.Warn("restore progress: settling a job whose structure cannot be read Failed", "job", j.ID(), "err", cause)
 	warnUnlessGone(app.log, "record the operational error", j.ID(), app.dispatcher.SetOperationalError(j.ID(), msg))
 	if err := app.dispatcher.SettleFailed(j); err != nil {
-		app.log.Warn("restore progress: could not settle the job now; its first hydration settles it", "job", j.ID(), "err", err)
+		app.log.Warn("restore progress: could not settle the job now; a never-run job is settled by the tick's first hydration, an already-settled job needs nothing further", "job", j.ID(), "err", err)
 	}
 }
 

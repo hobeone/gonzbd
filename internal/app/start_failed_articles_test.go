@@ -21,8 +21,8 @@ import (
 // article before Start and checked that Start did not clear it: Start then ran
 // a reload-shaped ClearEmittedForReload sweep over every registered job. That
 // fixture is now refused here, and a restored job reaches Start with no
-// progress at all, the restore pass seeding no article bit, so no failed bit
-// exists for such a sweep to clear before the job's first hydration.
+// failed bit, the restore pass seeding no article bit, so none exists for
+// such a sweep to clear before the job's first hydration.
 func TestStart_RefusesAJobCarryingProgressBeforeTheRestorePass(t *testing.T) {
 	adminDir := t.TempDir()
 	cfg := testConfigInternal(t, adminDir)

@@ -30,6 +30,10 @@ var ErrNotResident = errors.New("job: content tier not resident")
 // seed is nil for a freshly ingested job (every file Verified) and, for the
 // restore pass, one FileSeed per file (every file !Verified); a seed of any
 // other length is refused with nothing attached. No seed sets an article bit.
+//
+// Non-test callers: AttachContent (below) and Application.restoreProgress
+// (internal/app/restore_progress.go) — `git grep -n 'AttachFiles(' -- '*.go' ':!*_test.go'`
+// returns 4 lines, those two calls, this declaration and this sentence.
 func (j *Job) AttachFiles(ft *FileTable, seed []FileSeed) error {
 	if ft == nil {
 		return fmt.Errorf("job %s: AttachFiles: nil file table", j.id)
