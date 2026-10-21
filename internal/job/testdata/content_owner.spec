@@ -4,7 +4,7 @@ run TestAttachContent_IsTheSoleConstructorOfThePair
 [AttachFiles stops deriving progress and leaves it nil]
 file internal/job/content.go
 --- anchor
-	j.progress = newJobProgress(ft)
+	j.progress = newJobProgress(ft, seed)
 --- replace
 	j.progress = nil
 --- end

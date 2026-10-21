@@ -228,7 +228,7 @@ func (r *appResidency) verifyAndAttach(ctx context.Context, j *job.Job, m *job.M
 	if j.State().State == job.Fetching {
 		cleanUnrecordedFetchingFiles(j.Name(), files, locate, r.log)
 	}
-	if err := j.AttachFiles(m.Files()); err != nil {
+	if err := j.AttachFiles(m.Files(), nil); err != nil {
 		return err
 	}
 	if err := j.AttachArticles(m); err != nil {

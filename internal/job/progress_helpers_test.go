@@ -18,7 +18,7 @@ func TestMarkEmittedClearEmitted_Pair(t *testing.T) {
 		{ID: "a1", Bytes: 100},
 		{ID: "a2", Bytes: 100},
 	}}})
-	p := newJobProgress(m.Files())
+	p := newJobProgress(m.Files(), nil)
 	// recompute is not needed to seed the counters — newJobProgress sets
 	// pendingArticles now that it delegates to newJobProgressSized — but it
 	// is what production runs before these helpers ever see the progress, so
@@ -130,7 +130,7 @@ func TestResetForReload_FailedArticle(t *testing.T) {
 		{ID: "a0", Bytes: 100},
 		{ID: "a1", Bytes: 100},
 	}}})
-	p := newJobProgress(m.Files())
+	p := newJobProgress(m.Files(), nil)
 	p.markFailed(m, 0)
 	p.emitted.Set(0) // simulate a reload racing an in-flight (re-)dispatch
 
@@ -178,7 +178,7 @@ func TestResetForReload_NotFailedArticle(t *testing.T) {
 		{ID: "a0", Bytes: 100},
 		{ID: "a1", Bytes: 100},
 	}}})
-	p := newJobProgress(m.Files())
+	p := newJobProgress(m.Files(), nil)
 	p.markDone(m, 0) // successfully completed, not failed
 	p.emitted.Set(0)
 
@@ -222,7 +222,7 @@ func TestJobProgressClone_DeepCopy(t *testing.T) {
 		{ID: "a0", Bytes: 100},
 		{ID: "a1", Bytes: 100},
 	}}})
-	p := newJobProgress(m.Files())
+	p := newJobProgress(m.Files(), nil)
 	p.done.Set(0)
 	p.files[0].Filename = "original.bin"
 	p.serverStats = map[string]int64{"srv1": 5}

@@ -26,9 +26,16 @@ var ErrNotResident = errors.New("job: content tier not resident")
 // TestProgressPointerWriters_MatchTheEnumerationStatedInProse pin.
 // AttachArticles, below, installs a manifest beside the progress record the
 // job already holds and never replaces that record.
-func (j *Job) AttachFiles(ft *FileTable) error {
+//
+// seed is nil for a freshly ingested job (every file Verified) and, for the
+// restore pass, one FileSeed per file (every file !Verified); a seed of any
+// other length is refused with nothing attached. No seed sets an article bit.
+func (j *Job) AttachFiles(ft *FileTable, seed []FileSeed) error {
 	if ft == nil {
 		return fmt.Errorf("job %s: AttachFiles: nil file table", j.id)
+	}
+	if seed != nil && len(seed) != ft.NumFiles() {
+		return fmt.Errorf("job %s: AttachFiles: seed has %d entries for a table of %d files", j.id, len(seed), ft.NumFiles())
 	}
 	j.contentMu.Lock()
 	defer j.contentMu.Unlock()
@@ -45,7 +52,7 @@ func (j *Job) AttachFiles(ft *FileTable) error {
 		return fmt.Errorf("job %s: AttachFiles: files already attached; use AttachArticles to install a manifest alongside existing progress", j.id)
 	}
 	j.fileTable = ft
-	j.progress = newJobProgress(ft)
+	j.progress = newJobProgress(ft, seed)
 	j.totalBytes = ft.TotalBytes()
 	j.recoveryBytes = ft.RecoveryBytes()
 	j.recoveryFiles = ft.RecoveryFiles()
@@ -112,10 +119,18 @@ func (j *Job) AttachContent(m *Manifest) error {
 	if m == nil {
 		return fmt.Errorf("job %s: AttachContent: nil manifest", j.id)
 	}
-	if err := j.AttachFiles(m.Files()); err != nil {
+	if err := j.AttachFiles(m.Files(), nil); err != nil {
 		return err
 	}
 	return j.AttachArticles(m)
+}
+
+// AllVerified reports whether every file's verification is installed
+// (JobProgress.AllVerified); false when no progress record is attached.
+func (j *Job) AllVerified() bool {
+	j.contentMu.RLock()
+	defer j.contentMu.RUnlock()
+	return j.progress.AllVerified()
 }
 
 // Files returns the job's file table, or nil before AttachFiles.
@@ -324,8 +339,8 @@ func (j *Job) SetFileFetchPolicy(fi int, policy FetchPolicy) error {
 // setFileFetchPolicy is the one writer of a file's fetch policy:
 // `git grep -nE '\.Fetch\s*=[^=]' -- '*.go' ':!*_test.go'` finds 1 line, the
 // assignment below. SetFileFetchPolicy, Job.InstallFileVerification's
-// restore, undeferRecovery and DiscardDeferredPar2 all call it. A fresh
-// progress starts at the FetchAlways zero. The `job_files.fetch_policy` CHECK
+// restore, undeferRecovery, DiscardDeferredPar2 and newJobProgress (a restore
+// seed's policy) all call it. A fresh progress starts at the FetchAlways zero. The `job_files.fetch_policy` CHECK
 // (0-2) is the only range guard a restored value has. The caller holds
 // contentMu and has range-checked fi.
 //

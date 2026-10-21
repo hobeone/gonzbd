@@ -18,7 +18,7 @@ import (
 // field apart from an unrelated struct that happens to reuse the same field
 // name. Of the package's non-test struct types —
 // `git grep -n '^typ[e] [A-Za-z]* struct' -- 'internal/job/*.go' ':!internal/job/*_test.go'`
-// returns 25 — only the owners listed below declare any of these fields;
+// returns 26 — only the owners listed below declare any of these fields;
 // TestFieldOwners_AreTheOnlyDeclarers enforces that, so this sentence is
 // orientation rather than the guarantee.
 var fieldOwner = map[string]string{
@@ -29,6 +29,7 @@ var fieldOwner = map[string]string{
 	"lease":             "Job",
 	"par2ReleaseReason": "JobProgress",
 	"recoveryBytes":     "Job",
+	"Verified":          "FileProgress",
 	"progress":          "Job",
 	"fileTable":         "Job",
 	"manifest":          "Job",
@@ -458,5 +459,21 @@ func TestFieldOwners_AreTheOnlyDeclarers(t *testing.T) {
 				"Either rename the new field, or teach scanWriters to resolve receiver "+
 				"types — a sentence in fieldOwner's comment is not enough.", field, got, owner)
 		}
+	}
+}
+
+// TestVerifiedWriters_MatchTheEnumerationStatedInProse asserts that
+// InstallFileVerification is the only function that sets a file Verified after
+// construction, and newJobProgress the only one that initialises it. The scan
+// counts every assignment to .Verified, so a literal `= true` elsewhere and an
+// expression both show up.
+func TestVerifiedWriters_MatchTheEnumerationStatedInProse(t *testing.T) {
+	writers := scanWriters(t, "Verified")
+	want := []string{"InstallFileVerification", "newJobProgress"}
+	if !slices.Equal(writers, want) {
+		t.Errorf("functions assigning .Verified = %v, want %v\n\n"+
+			"Verified gates the restore estimate and the verification install; a second "+
+			"writer is how a file comes to read as verified without its bits installed.",
+			writers, want)
 	}
 }

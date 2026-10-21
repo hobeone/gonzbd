@@ -21,14 +21,14 @@ func twoFileArticles() []JobArticle {
 // a second call would discard a live record, so it refuses.
 func TestAttachFiles_RefusesASecondAttach(t *testing.T) {
 	j := New("j", "j", Policy{})
-	if err := j.AttachFiles(nil); err == nil {
+	if err := j.AttachFiles(nil, nil); err == nil {
 		t.Error("AttachFiles(nil): nil error")
 	}
 	if j.Files() != nil {
 		t.Fatal("Files() is non-nil before a successful AttachFiles")
 	}
 	ft := NewFileTable(twoFileSpecs())
-	if err := j.AttachFiles(ft); err != nil {
+	if err := j.AttachFiles(ft, nil); err != nil {
 		t.Fatalf("first AttachFiles: %v", err)
 	}
 	if j.Files() != ft {
@@ -37,7 +37,7 @@ func TestAttachFiles_RefusesASecondAttach(t *testing.T) {
 	if got := j.NumFiles(); got != 2 {
 		t.Errorf("NumFiles = %d, want 2", got)
 	}
-	if err := j.AttachFiles(NewFileTable(twoFileSpecs())); err == nil {
+	if err := j.AttachFiles(NewFileTable(twoFileSpecs()), nil); err == nil {
 		t.Error("second AttachFiles returned nil; it must refuse rather than replace a live record")
 	}
 }
@@ -52,7 +52,7 @@ func TestAttachArticles_RefusesAManifestFromAnotherTable(t *testing.T) {
 		t.Fatalf("NewManifestFromArticles: %v", err)
 	}
 	j := New("j", "j", Policy{})
-	if err := j.AttachFiles(ft1); err != nil {
+	if err := j.AttachFiles(ft1, nil); err != nil {
 		t.Fatalf("AttachFiles: %v", err)
 	}
 	if err := j.AttachArticles(m2); err == nil {

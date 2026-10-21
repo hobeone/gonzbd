@@ -19,7 +19,7 @@ run TestFileTableFromRows_RefusesAGapAndADuplicate
 file internal/app/residency.go
 run TestHydrate_BuildsTheFileTableFromJobFilesBeforeVerifying
 --- anchor
-	if err := j.AttachFiles(m.Files()); err != nil {
+	if err := j.AttachFiles(m.Files(), nil); err != nil {
 		return err
 	}
 --- replace
@@ -63,14 +63,14 @@ run ^(TestVerifyAndAttach_MissingDirectoryParksTheJob|TestLooseRecord_ZeroedRang
 	if j.State().State == job.Fetching {
 		cleanUnrecordedFetchingFiles(j.Name(), files, locate, r.log)
 	}
-	if err := j.AttachFiles(m.Files()); err != nil {
+	if err := j.AttachFiles(m.Files(), nil); err != nil {
 		return err
 	}
 	if err := j.AttachArticles(m); err != nil {
 		return err
 	}
 --- replace
-	if err := j.AttachFiles(m.Files()); err != nil {
+	if err := j.AttachFiles(m.Files(), nil); err != nil {
 		return err
 	}
 	if err := j.AttachArticles(m); err != nil {
@@ -107,7 +107,7 @@ run TestHydrate_CancelledDuringArticleReadAttachesNothing
 		if ft, err = fileTableFromRows(files); err != nil {
 			return fmt.Errorf("residency: hydrate %s: %w", id, err)
 		}
-		if err := j.AttachFiles(ft); err != nil {
+		if err := j.AttachFiles(ft, nil); err != nil {
 			return err
 		}
 --- end

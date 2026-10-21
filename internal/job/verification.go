@@ -75,5 +75,8 @@ func (j *Job) InstallFileVerification(v FileVerification) (dropped int, err erro
 	if v.Complete || v.Settle {
 		settleFileCRC(m, p, fi)
 	}
+	// Last, so an error above leaves the file unverified.
+	p.files[fi].Verified = true
+	p.files[fi].Recorded = 0
 	return dropped, nil
 }

@@ -24,7 +24,7 @@ func TestMarkNotDone_RefusesAPermanentlyFailedArticle(t *testing.T) {
 		Bytes:    300,
 		Articles: []JobArticle{{ID: "<1@x>", Bytes: 100}, {ID: "<2@x>", Bytes: 100}, {ID: "<3@x>", Bytes: 100}},
 	}})
-	p := newJobProgress(m.Files())
+	p := newJobProgress(m.Files(), nil)
 
 	// Article 0: done via a successful path. markNotDone must undo it.
 	p.done.Set(0)
@@ -94,7 +94,7 @@ func TestDerivedRemainingBytes_TracksCompletionAndFetchPolicy(t *testing.T) {
 		{Subject: "a.rar", Bytes: 100, Articles: []JobArticle{{ID: "<1@x>", Bytes: 100}}},
 		{Subject: "b.rar", Bytes: 200, Articles: []JobArticle{{ID: "<2@x>", Bytes: 200}}},
 	})
-	p := newJobProgress(m.Files())
+	p := newJobProgress(m.Files(), nil)
 
 	if got := p.derivedRemainingBytes(); got != 300 {
 		t.Errorf("derivedRemainingBytes on a fresh job = %d, want 300", got)
@@ -122,7 +122,7 @@ func TestSizeFigures_ExcludesDifferOnCompleteOnly(t *testing.T) {
 		{Subject: "b.rar", Bytes: 200, Articles: []JobArticle{{ID: "<2@x>", Bytes: 200}}},
 		{Subject: "c.rar", Bytes: 400, Articles: []JobArticle{{ID: "<3@x>", Bytes: 400}}},
 	})
-	p := newJobProgress(m.Files())
+	p := newJobProgress(m.Files(), nil)
 
 	expected, remaining := p.sizeFigures()
 	if expected != 700 || remaining != 700 {
@@ -161,7 +161,7 @@ func TestSizeFigures_ExcludesDifferOnCompleteOnly(t *testing.T) {
 // accessor reports the round trip rather than either setter in isolation.
 func TestPar2ReleaseReason_SetAndClear(t *testing.T) {
 	m := NewManifest([]JobFile{{Subject: "a.rar", Bytes: 100, Articles: []JobArticle{{ID: "<1@x>", Bytes: 100}}}})
-	p := newJobProgress(m.Files())
+	p := newJobProgress(m.Files(), nil)
 
 	if got := p.Par2ReleaseReason(); got != "" {
 		t.Errorf("a fresh JobProgress reports par2 release reason %q, want empty", got)
