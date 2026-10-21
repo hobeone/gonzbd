@@ -189,8 +189,8 @@ E2E_NZB=/tmp/test.nzb go test -timeout=10m ./test/e2e/
 
 **When to run:** After any change to `internal/durability`, `internal/assembler`,
 the record cadence in `internal/app/record.go`, the restart verifier in
-`internal/app/verify.go` and `internal/app/residency.go`, or the queue's
-per-article persistence.
+`internal/app/verify.go` and `internal/app/residency.go`, the restore pass in
+`internal/app/restore_progress.go`, or the queue's per-article persistence.
 Not run automatically (see "Continuous Integration" in AGENTS.md — `ci.yml`
 is dispatch-only for every suite, not specifically this one), but it **is**
 part of `scripts/run_tests.sh` (step 4/7) and, when `ci.yml` is dispatched by
@@ -227,6 +227,15 @@ The tests that pin `docs/durability-contract.md`:
 
 The last four cover four external modifications of a partial file between
 runs: truncate, delete, append, mtime-only touch.
+
+Two further tests probe the add path rather than `docs/durability-contract.md`
+§3 (`git grep -n '^func Test' -- test/crash` returns 9 lines: these two, the six
+above and `TestMain`). `TestSIGKILL_AddThenImmediateKill_PositiveControl` waits
+until the job's manifest file and its queue slot exist, kills the daemon, and
+fails unless the job is still queued after the restart.
+`TestSIGKILL_AddThenImmediateKill` kills straight after the add and fails only
+if the job is absent after the restart; it logs, and does not fail on, an
+orphaned `job_files` row or manifest file.
 
 ### What a pass does and does not bound
 
@@ -283,7 +292,9 @@ against a real defect (#362): a partial truncated or deleted between runs
 **completed with a hole in it**, because restored progress outranked the
 restart's finding that its bytes were gone. Under the loose record a restart
 installs no Done bit for an incomplete file except from a row whose bytes it
-has just read back, so there is no restored state left to outrank the device.
+has just read back, so no restored Done bit is left to outrank the device (the
+restore pass's recorded row count only feeds an estimate, which the file's
+verification replaces).
 
 **Do not silence a failing test here by weakening it.** The assertions are
 about WHICH articles came back over the wire, and a test that only checked the
