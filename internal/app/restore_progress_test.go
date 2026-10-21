@@ -543,9 +543,12 @@ func TestFileOwedUnwantedFailures_CompleteJobWithUnreadableManifestIsFiled(t *te
 	if e.Status != "Failed" || e.FailMessage != unwantedFailPrefix {
 		t.Errorf("history Status, FailMessage = %q, %q, want Failed, %q", e.Status, e.FailMessage, unwantedFailPrefix)
 	}
-	if _, ok := a2.dispatcher.Job(owed.ID()); ok {
-		t.Error("the filed job is still registered in the dispatcher")
-	}
+	// The finalizer files the entry and then removes the job: two steps, so
+	// the removal is waited for rather than read at the instant of the filing.
+	lrWaitFor(t, "the filed job to leave the dispatcher", func() bool {
+		_, ok := a2.dispatcher.Job(owed.ID())
+		return !ok
+	})
 }
 
 // TestRestoreProgress_SeedsFilenameAndFetchPolicy pins two columns of the
