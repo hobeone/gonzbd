@@ -1716,7 +1716,7 @@ to 8 B = 40 B) plus one 8 B `offsets` entry, plus the subject's bytes, so
 ≈148 KB (derived from the layout, not measured), against 7.5 KB of bitsets
 for a 20k-article job. That comparison leaves out the rest of the progress
 record, which holds one `FileProgress` per file (88 B, measured with
-`unsafe.Sizeof` in stage 2; no test pins it; 16 B of it the `Verified` flag and
+`unsafe.Sizeof`; no test pins it; 16 B of it the `Verified` flag and
 the `Recorded` count) and an 8 B `fileStarts` entry (derived) beside the bitset
 bits. Per file, then, the table is 48 B + len(subject) and the progress record
 is about 96 B (88 B measured, plus the 8 B `fileStarts` entry) plus its share of

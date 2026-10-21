@@ -388,7 +388,8 @@ file is verified is sound. A job gains progress in three other ways, and only th
 verified when it arrives: the restore pass seeds it with every file unverified
 and sets no article bit, so the job's first hydration takes the verifying
 branch; a freshly ingested job has no rows and is verified from the start; a
-retry verifies its rebuilt job itself (`verifyRetry`).
+retry's rebuilt job arrives flagged verified (it is built as an ingest is) and
+`verifyRetry` reads its rows back itself.
 
 Every path that attaches a job's articles (`Job.AttachArticles`) to a job with
 rows goes through this, or verifies itself:
@@ -417,8 +418,9 @@ The file table and the seeded progress are attached
 earlier and separately, by the restore pass (above), which does not go through
 this. Of the four paths, the tick is the residency rule; `SetName`'s
 `LoadProgress` and `fileOwedUnwantedFailures`' direct `Hydrate` load a job the
-rule would not (`SetName`'s: a paused job, which the tick never hydrates;
-`fileOwedUnwantedFailures`': a job before the first tick), and `verifyRetry`
+rule would not (`SetName`'s: any job, paused or not holding what its position
+requires, which the tick would not hydrate; `fileOwedUnwantedFailures`': a job
+before the first tick), and `verifyRetry`
 verifies a job built with its articles.
 
 A paused job is not hydrated by the tick even while it holds a compute slot
@@ -981,10 +983,10 @@ both `Stall` and `parkVerifyFault`, refuses to pause a job while it is set, or
 once `app.ctx` is cancelled. The pause would be
 the one that cannot be undone: it is persisted, the stall list that would
 re-evaluate it is in memory and dies with the process, and nothing at startup
-resumes it. A pause does not have to be undone for the files to be checked: a
-resumed job's first hydration after the restart verifies its files, and a job
-restored paused reports the recorded-count estimate, not a verified figure,
-until it is resumed or a rename loads it (§3).
+resumes it. A pause the shutdown persisted stays in force after the restart, so
+that job is not verified until it is resumed or a rename loads it (§3), and it
+reports the recorded-count estimate, not a verified figure, until then. A job
+that was resumed is verified at its first hydration.
 
 **A permanent fault still fails the job**, and `Application.Fail` has no
 stopping guard, because nothing it persists positions the job for

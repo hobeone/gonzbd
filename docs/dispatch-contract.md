@@ -45,7 +45,7 @@ and `releaseFor` (pool B, the sole releaser), both of which `Settle`, `Park`,
 constructs it in `New` and nothing else holds a reference (`sched.New` is
 called from exactly one production site, `dispatch.New` —
 `git grep -n ' sched[.]New(' -- 'internal/dispatch/*.go' ':!*_test.go'` returns
-one line, `internal/dispatch/dispatch.go:334`; a repository-wide
+one line, in `internal/dispatch/dispatch.go`; a repository-wide
 `git grep -n 'sched[.]New(' -- '*.go' ':!*_test.go'` returns 2, the other being
 a comment in `internal/sched/pool.go`).
 This is forced by the eviction described below, not a matter of taste: only
