@@ -44,7 +44,10 @@ and `releaseFor` (pool B, the sole releaser), both of which `Settle`, `Park`,
 `internal/dispatch.Dispatcher` owns the `*sched.Queue` outright: it
 constructs it in `New` and nothing else holds a reference (`sched.New` is
 called from exactly one production site, `dispatch.New` —
-`git grep -n 'sched.New(' -- '*.go' | grep -v _test.go` returns one line).
+`git grep -n ' sched[.]New(' -- 'internal/dispatch/*.go' ':!*_test.go'` returns
+one line, `internal/dispatch/dispatch.go:334`; a repository-wide
+`git grep -n 'sched[.]New(' -- '*.go' ':!*_test.go'` returns 2, the other being
+a comment in `internal/sched/pool.go`).
 This is forced by the eviction described below, not a matter of taste: only
 the dispatcher has a registry to evict a job from, so the eviction of a
 cancelled never-run job runs in its tick (`evictCancelledNeverRun`), keyed on
@@ -317,9 +320,9 @@ access to size a table or a record, so it cannot attach either. The
 application does, before the first tick: `Application.restoreProgress`, run
 from `StartWith`'s `beforeFirstTick`, attaches a `FileTable` and a seeded
 `JobProgress` to every registered job whose structure it can read.
-`restoreJobMetadata` carries only the download stamps and the par2 release
-reason, through `Job.RestoreProgressState`, and no longer sets recovery bytes;
-`AttachFiles` derives those from the table. `Row.RemainingBytes` is
+`restoreJobMetadata` sets the job's added time and, through
+`Job.RestoreProgressState`, the download stamps and the par2 release reason;
+it sets no recovery bytes, which `AttachFiles` derives from the table. `Row.RemainingBytes` is
 `Job.RemainingBytes()` for a job with progress, which for an unverified file
 reads the recorded-count estimate, and the header's NZB total for a job
 without — the one a failed restore leaves (decision D20). See
@@ -335,8 +338,9 @@ runs inside `Advance` under `Queue.mu`, so the dispatcher learns a job
 acquired resources only after `Advance` returns, and `Hydrate` (disk I/O)
 must run unlocked. A job can therefore hold a lease with no manifest for the
 length of one disk read: nothing consumes that window, because a worker is
-only launched after hydration succeeds, and a failed read settles the job
-`Failed` in the same tick, returning both pools via `sched.Queue.Settle`.
+only launched after hydration succeeds, and a failed hydration, other than a
+cancellation or a residency fault (below), settles the job `Failed` in the same
+tick, returning both pools via `sched.Queue.Settle`.
 
 A context cancellation during `Hydrate` is treated differently from every
 other read failure: `reconcileResidency` checks `ctx.Err()` and the
@@ -344,10 +348,13 @@ other read failure: `reconcileResidency` checks `ctx.Err()` and the
 match returns the error **without** settling. `Outcome` is write-once, so
 settling a job `Failed` because the process happened to be shutting down
 while its manifest was mid-read would be permanent and wrong — the user
-would find a healthy job marked failed after a restart. Every other read
-failure (a short read, a corrupt gzip stream, a missing file) is a fact
-about the job — it can never run — so it settles `Failed` and frees both
-pools.
+would find a healthy job marked failed after a restart. A residency fault
+(`ErrResidencyFault`, a fact about the device) is returned without settling
+too: residency parks the job and a later hydration verifies it again. Every
+other failure (a short read, a corrupt gzip stream, a missing file, or a job
+with no file table attached because the restore pass could not rebuild its
+structure) is a fact about the job — it can never run — so it settles `Failed`
+and frees both pools.
 
 **`markResident` gates on registration alone, never on `admitsLocked`.** A
 `Remove` can begin while `Hydrate` runs, and the load that `Hydrate` completes
