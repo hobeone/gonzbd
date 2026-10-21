@@ -91,10 +91,10 @@ ON CONFLICT(job_id, file_index) DO NOTHING`)
 // FileRows returns a job's job_files rows, ordered by file index.
 //
 // A row that fails to scan is skipped and the rest are still returned, with
-// the error wrapping ErrIncomplete. The rows returned alongside that error
-// are for a caller that wants to inspect the partial result; the production
-// callers in internal/app (app.go verifyRetry, residency.go readRecord)
-// return on a non-nil error without using them.
+// the error wrapping ErrIncomplete. The partial result is returned for a
+// caller that wants to inspect it; none does today — every non-test call
+// returns on the error without reading the rows
+// (`git grep -n '[.]FileRows(ctx' -- '*.go' ':!*_test.go'` returns 4 lines).
 func (s *Store) FileRows(ctx context.Context, jobID string) ([]FileRow, error) {
 	rows, err := s.db.QueryContext(ctx,
 		`SELECT file_index, subject, bytes, article_count, filename, complete, fetch_policy FROM job_files WHERE job_id = ? ORDER BY file_index`, jobID)
