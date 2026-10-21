@@ -392,6 +392,8 @@ verifies itself:
   `LoadProgress` calls `Hydrate` even for a job with progress, so it waits
   for a hydration that has attached content but not yet installed its
   filenames;
+- `Application.fileOwedUnwantedFailures` → `appResidency.Hydrate`, before the
+  first tick, for a restored job the archive peek owes a filing;
 - `Application.verifyRetry`, for a retried job: it is rebuilt by
   `BuildIngestJob`, which attaches its files and articles, so `Hydrate` would return
   early and never verify it (see *Retry* below).
@@ -1532,7 +1534,15 @@ recorded here so the next reader does not mistake them for design.
 
 6. **A remote NFS/SMB mount can stall untimed calls.** A `pwrite` or `fsync`
    that does not return blocks the assembler's single worker, and so every
-   job's writes; a verification read blocks the tick; a manifest read or removal on the filesystem hosting `admin_dir`
+   job's writes; a verification read blocks the tick; a rename's caller
+   (`Dispatcher.SetName`'s `LoadProgress`, under `setNameLoadTimeout`, which
+   bounds the wait but cannot interrupt the syscall); `Start`, through
+   `Application.fileOwedUnwantedFailures`; and a removal
+   (`mode=queue&name=delete`) waiting in `appResidency.Evict` for the
+   hydration it cancelled: the hydration's read-back stops at its next row,
+   but a read-back read blocked in the syscall holds the removal until that
+   read returns, and whatever verdicts the hydration committed reach SQLite
+   before the removal's reclaim deletes the rows; a manifest read or removal on the filesystem hosting `admin_dir`
    blocks its caller, except a hydration's manifest read, which its caller
    abandons when its context ends (`appResidency.readArticles`) and leaves
    to return on its own goroutine.

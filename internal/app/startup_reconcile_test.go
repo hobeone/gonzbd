@@ -149,8 +149,9 @@ func TestStart_RetentionDoesNotDefeatCrashReconciliation(t *testing.T) {
 }
 
 // TestStart_LeavesAJobRestoredPausedAtFetchingUnverified pins that no startup
-// pass hydrates a paused job: after Start it carries the restore pass's seed
-// and nothing more.
+// pass that finishes inside Start hydrates a paused job: the job leaves Start
+// with the restore pass's seed and nothing more. A background pass that
+// finished after Start returned would not be caught here.
 func TestStart_LeavesAJobRestoredPausedAtFetchingUnverified(t *testing.T) {
 	t.Parallel()
 	env := newLREnv(t)

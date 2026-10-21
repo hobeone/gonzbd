@@ -288,15 +288,18 @@ is not re-hydrated every tick after a residency fault parked it.
 `TestRestore_PausedJobIsNotHydratedUntilResumed` and
 `TestReconcileResidency_DoesNotRehydrateAPausedSlotHolder` pin the four.
 
-Two loads happen outside this rule. The first is `SetName`, through
+Two loads happen outside this rule (`git grep -n -E '\.Hydrate\(' -- '*.go' ':!*_test.go'`
+returns 3 lines: the tick's own hydration, `LoadProgress`, and
+`fileOwedUnwantedFailures`). The first is `SetName`, through
 `Dispatcher.LoadProgress`, so a rename sees whether the job's download has
 begun; `LoadProgress` calls `Hydrate` for any registered job (so it also waits
 for a hydration in flight, and reloads an evicted job's manifest) and records
 the load for a job that was not resident before, so a later tick evicts it
 once it holds nothing and is not paused. A job restored paused at `Fetching`
 is not loaded at startup: it reports the estimate the restore pass seeded
-until a resume lets the tick hydrate it. The
-second is `Application.fileOwedUnwantedFailures`, before the first tick, which
+until a resume lets the tick hydrate it, or a rename hydrates it through
+the first load (after which, being paused, it stays resident until resumed).
+The second is `Application.fileOwedUnwantedFailures`, before the first tick, which
 calls the residency's `Hydrate` directly for a restored job the archive peek
 owes a filing, so the filing sees its verified files; it records no load,
 because the job departs once filed. A hydration that cannot verify the job's files

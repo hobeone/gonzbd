@@ -230,6 +230,6 @@ what the API's `recovery_bytes` shows for it.
 
 ### D23 — A job restored paused at `Fetching` is verified on resume, not at startup
 
-**Call:** after a restart such a job reports the recorded-count estimate with the "progress from the download record" badge until the user resumes it, and holds no manifest until then.
+**Call:** after a restart such a job reports the recorded-count estimate with the "progress from the download record" badge until the user resumes or renames it (a rename hydrates it through `Dispatcher.SetName`'s `LoadProgress`, after which it stays resident until resumed), and holds no manifest until then.
 **Why:** the verifier's purpose was to make a paused job's progress visible without a resume (design §4.7); stage 2's restore pass does that for every job. Not holding a manifest per restored paused job also saves about 1.6 MB per 20k articles (`docs/job-lifecycle.md` §13).
 **Cost if wrong:** the owner wanted the verified figure to arrive without a resume; design §9 records that a background verification pass remains a pure addition.

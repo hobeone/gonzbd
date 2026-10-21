@@ -1383,8 +1383,10 @@ the lease and launches the worker on the manifest already in memory.
 
 So what `reconcileResidency` keeps resident is bounded by the two pool
 capacities plus the jobs that were resident when paused, settled ones included,
-not by queue depth. A job restored paused at `Fetching` holds no manifest
-until it is resumed, so a restart adds nothing to that bound. The paused jobs
+plus any paused job a rename loaded, not by queue depth. A job restored paused
+at `Fetching` holds no manifest until it is resumed or renamed
+(`Dispatcher.SetName`'s `LoadProgress`, after which it stays resident until
+resumed, like any paused job), so a restart adds nothing to that bound. The paused jobs
 that keep a manifest are deliberately not capped; a manifest is about 1.6 MB
 per 20k articles (§13).
 
@@ -1537,7 +1539,8 @@ half-downloaded job shows roughly how far it got. `Dispatcher.List` and
 progress, which after the restore pass is one whose structure could not be
 read (`restoreProgress`). A job restored paused at `Fetching` keeps
 that estimate, with `progress_verified: false`, until it is resumed and the
-tick hydrates it.
+tick hydrates it, or renamed and `Dispatcher.SetName`'s `LoadProgress`
+hydrates it.
 
 `emitted` is deliberately **not** restored: it is transient per-process state
 about what a downloader has in flight, and nothing that survived a restart is.
