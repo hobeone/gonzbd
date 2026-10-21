@@ -1,5 +1,5 @@
 pkg ./internal/app/
-run ^(TestRestoreProgress_EveryRegisteredJobHasFilesAndProgress|TestRestoreProgress_SeedsNoDoneBit|TestRestoreProgress_SettlesAJobWithoutStructureFailed|TestRestoreProgress_NoStoreIsANoop|TestHydrate_FirstHydrationVerifiesEveryFile|TestHydrate_VerifiedJobRehydratesWithoutVerifying|TestStart_RefusesAJobCarryingProgressBeforeTheRestorePass)$
+run ^(TestRestoreProgress_EveryRegisteredJobHasFilesAndProgress|TestRestoreProgress_SeedsNoDoneBit|TestRestoreProgress_SettlesAJobWithoutStructureFailed|TestRestoreProgress_NoStoreIsANoop|TestRestoreProgress_AnUnreadableRowCostsOnlyItsJob|TestHydrate_FirstHydrationVerifiesEveryFile|TestHydrate_VerifiedJobRehydratesWithoutVerifying|TestStart_RefusesAJobCarryingProgressBeforeTheRestorePass)$
 timeout 5m
 
 # The restore pass (Application.restoreProgress): every registered job gets a
@@ -154,4 +154,24 @@ run TestRestoreProgress_SeedsNoDoneBit
 		for k := 0; k < seed[fi].Recorded; k++ {
 			p.done.Set(p.fileStarts[fi] + k)
 		}
+--- end
+
+[a bad row fails the whole call]
+file internal/durability/progress.go
+run TestRestoreProgress_AnUnreadableRowCostsOnlyItsJob
+--- anchor
+			unreadable[jobID] = err
+			delete(rows, jobID)
+			continue
+--- replace
+			return nil, nil, err
+--- end
+
+[the restore pass ignores the unreadable set]
+file internal/app/restore_progress.go
+run TestRestoreProgress_AnUnreadableRowCostsOnlyItsJob
+--- anchor
+		if cause, bad := unreadable[row.ID]; bad {
+--- replace
+		if cause, bad := unreadable[row.ID]; bad && false {
 --- end

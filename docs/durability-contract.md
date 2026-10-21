@@ -771,7 +771,10 @@ retry read), and `Store.SeedRows` reads every job's at once, with the count of
 (`Application.restoreProgress`, once per `Start`). `git grep -n 'FROM
 job_files' -- internal ':!*_test.go'` returns 3 lines: those two reads and
 `insertRows`' existence check, which reads no column. The restore pass's
-read is one query, not a transaction across the two tables, which is sound
+read names a job whose row does not read as its column types in a second
+return value and drops that job's rows, so the restore pass settles that job
+Failed and no other; only a query or iteration failure fails the call. It is
+one query, not a transaction across the two tables, which is sound
 because `Application.Start` starts the assembler, which feeds the recorder,
 only after `StartWith` returns.
 

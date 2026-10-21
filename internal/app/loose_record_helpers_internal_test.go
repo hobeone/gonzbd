@@ -45,9 +45,9 @@ func lrBuiltJob(t *testing.T, a *lrApp, name string, nA, nB int) *job.Job {
 // over m, which was built from the table those rows describe.
 func (a *lrApp) verifyFromRecord(t *testing.T, j *job.Job, m *job.Manifest) error {
 	t.Helper()
-	seeds, err := a.st.SeedRows(t.Context())
-	if err != nil {
-		t.Fatalf("SeedRows: %v", err)
+	seeds, unreadable, err := a.st.SeedRows(t.Context())
+	if err != nil || len(unreadable) != 0 {
+		t.Fatalf("SeedRows: %v, unreadable %v", err, unreadable)
 	}
 	if err := j.AttachFiles(m.Files(), seedOf(seeds[j.ID()])); err != nil {
 		t.Fatalf("AttachFiles: %v", err)

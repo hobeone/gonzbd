@@ -280,6 +280,45 @@ func TestRestoreProgress_SettlesAJobWithoutStructureFailed(t *testing.T) {
 	})
 }
 
+// TestRestoreProgress_AnUnreadableRowCostsOnlyItsJob pins the blast radius of
+// a job_files row that does not read as its column types: that job is settled
+// Failed with an operational error naming the row, and Start still succeeds
+// with the other job restored.
+func TestRestoreProgress_AnUnreadableRowCostsOnlyItsJob(t *testing.T) {
+	t.Parallel()
+	env := newLREnv(t)
+	a1 := env.newApp(t)
+	damaged := a1.addJob(t, "damaged", 3, 2)
+	healthy := a1.addJob(t, "healthy", 3, 2)
+	a1.dispatcher.Tick(t.Context())
+	a1.dispatcher.Tick(t.Context())
+	for _, j := range []*job.Job{damaged, healthy} {
+		if st := j.State().State; st != job.Fetching {
+			t.Fatalf("fixture: %s is at %v, want Fetching", j.Name(), st)
+		}
+	}
+	if _, err := a1.repo.DB().ExecContext(t.Context(),
+		`UPDATE job_files SET bytes = 'garbled' WHERE job_id = ? AND file_index = 1`, damaged.ID()); err != nil {
+		t.Fatalf("damage a row: %v", err)
+	}
+
+	a2 := env.newApp(t)
+	a2.start(t)
+	d := a2.registered(t, damaged.ID())
+	if o := d.State().Outcome; o != job.OutcomeFailed {
+		t.Errorf("damaged job outcome = %v, want Failed", o)
+	}
+	if d.Files() != nil {
+		t.Error("the damaged job carries a file table")
+	}
+	if msg := a2.registeredHeader(t, damaged.ID()).OperationalError; !strings.Contains(msg, "file index 1") || !strings.Contains(msg, "bytes") {
+		t.Errorf("operational error = %q, want one naming the row's file index and column", msg)
+	}
+	if h := a2.registered(t, healthy.ID()); !h.HasProgress() || h.Files().NumFiles() != 2 {
+		t.Error("the healthy job was not restored beside the damaged one")
+	}
+}
+
 // TestRestoreProgress_NoStoreIsANoop pins the no-history case: with no record
 // store there is no restored job, and the pass attaches nothing.
 func TestRestoreProgress_NoStoreIsANoop(t *testing.T) {

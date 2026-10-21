@@ -150,7 +150,7 @@ func (r *appResidency) Hydrate(ctx context.Context, id string) error {
 
 	ft := j.Files()
 	if ft == nil {
-		return fmt.Errorf("residency: hydrate %s: no file table attached; the restore pass did not run", id)
+		return fmt.Errorf("residency: hydrate %s: no file table attached: the restore pass did not run or could not rebuild this job's structure from job_files", id)
 	}
 	arts, err := r.readArticles(ctx, id)
 	if err != nil {

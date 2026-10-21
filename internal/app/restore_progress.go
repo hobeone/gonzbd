@@ -20,7 +20,8 @@ import (
 // The seed (seedOf) leaves every file unverified, so each job's first
 // hydration in this process verifies it (appResidency.Hydrate).
 //
-// A job whose structure cannot be read — no job_files rows, or rows that do
+// A job whose structure cannot be read — no job_files rows, a row that does
+// not read as its column types (SeedRows names the job), or rows that do
 // not cover its file indices once each — cannot be shown or run. It is given
 // an operational error naming the gap and settled Failed through
 // Dispatcher.SettleFailed, the door the tick settles an unreadable manifest
@@ -38,7 +39,7 @@ func (app *Application) restoreProgress(ctx context.Context) error {
 	if app.durable == nil {
 		return nil
 	}
-	rows, err := app.durable.SeedRows(ctx)
+	rows, unreadable, err := app.durable.SeedRows(ctx)
 	if err != nil {
 		return fmt.Errorf("app: restore progress: %w", err)
 	}
@@ -51,6 +52,10 @@ func (app *Application) restoreProgress(ctx context.Context) error {
 		}
 		if j.Files() != nil {
 			return fmt.Errorf("app: restore progress: job %s already has a file table before the restore pass", row.ID)
+		}
+		if cause, bad := unreadable[row.ID]; bad {
+			app.failUnrestorable(j, cause)
+			continue
 		}
 		seeds := rows[row.ID]
 		ft, err := fileTableFromRows(toFileRows(seeds))

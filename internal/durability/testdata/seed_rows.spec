@@ -1,6 +1,17 @@
 pkg ./internal/durability/
 run TestStore_SeedRowsCountsWrittenArticlesPerFile$
 
+[a bad row fails the whole call]
+run TestStore_SeedRowsIsolatesAJobWithAnUnreadableRow$
+file internal/durability/progress.go
+--- anchor
+			unreadable[jobID] = err
+			delete(rows, jobID)
+			continue
+--- replace
+			return nil, nil, err
+--- end
+
 [a file with no written rows scans NULL, not 0]
 file internal/durability/progress.go
 --- anchor

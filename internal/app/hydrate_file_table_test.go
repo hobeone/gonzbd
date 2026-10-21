@@ -120,7 +120,7 @@ func TestHydrate_RefusesAJobWithoutAFileTable(t *testing.T) {
 	r := newAppResidency(func(string) (*job.Job, bool) { return j, true }, t.TempDir(), nil, nil)
 
 	err := r.Hydrate(context.Background(), "abc123")
-	if err == nil || !strings.Contains(err.Error(), "no file table attached; the restore pass did not run") {
+	if err == nil || !strings.Contains(err.Error(), "no file table attached: the restore pass did not run or could not rebuild") {
 		t.Fatalf("Hydrate = %v, want the D18 error: no file table attached", err)
 	}
 	if j.Files() != nil || j.Resident() {

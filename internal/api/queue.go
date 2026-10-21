@@ -199,7 +199,9 @@ type queueSlot struct {
 	StallReason string `json:"stall_reason"`
 
 	// BytesDurable keeps its JSON key but means bytes WRITTEN, not fsynced:
-	// the NZB-declared size of each resolved article, in yEnc-ENCODED bytes.
+	// the NZB-declared size of each resolved article, in yEnc-ENCODED bytes;
+	// for a file not yet verified it is the recorded-count estimate
+	// (Bytes × Recorded / ArticleCount).
 	// A power loss can lose written bytes the OS had not yet flushed. It pairs
 	// with size/sizeleft/mb, which are the encoded NZB figures beside it.
 	BytesDurable int64 `json:"bytes_durable"`
