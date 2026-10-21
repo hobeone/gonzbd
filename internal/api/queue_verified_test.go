@@ -80,14 +80,15 @@ func TestBuildSlot_ProgressVerified_FreshJob(t *testing.T) {
 }
 
 // A registered job whose job_files could not be restored has no progress; its
-// figure is unchecked, so it reads unverified (the tick fails it at first
+// figure is the header's, with no estimate to check, so it reads verified
+// rather than promising a check that will not run (the tick fails it at first
 // hydration).
 func TestBuildSlot_ProgressVerified_NoProgress(t *testing.T) {
 	t.Parallel()
 	j := job.New("np", "np.nzb", job.Policy{})
 	row := dispatch.Row{ID: "np", Header: dispatch.Header{Name: "np.nzb", Bytes: 300}}
-	if slot := buildSlot(row, j, false, 0, 0, nil, ""); slot.ProgressVerified {
-		t.Error("ProgressVerified = true for a job with no progress record")
+	if slot := buildSlot(row, j, false, 0, 0, nil, ""); !slot.ProgressVerified {
+		t.Error("ProgressVerified = false for a job with no progress record")
 	}
 	if got := buildQueueFiles(j); len(got) != 0 {
 		t.Errorf("buildQueueFiles = %d entries for a job with no progress, want none", len(got))

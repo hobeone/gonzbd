@@ -210,7 +210,8 @@ type queueSlot struct {
 	// against what is on disk (Job.AllVerified). False means Percentage and
 	// the remaining figures are an estimate from the download record. A
 	// registered job with no progress record (its job_files structure could
-	// not be restored; the tick fails it at first hydration) reads false.
+	// not be restored; the tick fails it at first hydration) has no estimate
+	// to verify, so it reads true.
 	// The §10 surface is additive: a new key never changes an existing key's shape.
 	ProgressVerified bool `json:"progress_verified"`
 
@@ -492,7 +493,10 @@ func buildSlot(r dispatch.Row, j *job.Job, paused bool, speed float64, index int
 	// verify, so it reads verified rather than flashing the estimate styling.
 	progressVerified := true
 	if j != nil {
-		progressVerified = j.AllVerified()
+		// A job with no progress record (failUnrestorable) shows the header's
+		// figures: there is no estimate for a check to replace, so it reads
+		// verified rather than promising a check that will not run.
+		progressVerified = !j.HasProgress() || j.AllVerified()
 		if j.HasProgress() {
 			totalBytes, remainingBytes, failedBytes = j.ProgressFigures()
 		}

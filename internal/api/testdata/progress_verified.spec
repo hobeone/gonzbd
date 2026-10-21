@@ -4,9 +4,17 @@ run TestBuildSlot_ProgressVerified|TestBuildQueueFiles_ReportsPerFileVerified
 [the slot claims verified regardless of the job]
 file internal/api/queue.go
 --- anchor
-		progressVerified = j.AllVerified()
+		progressVerified = !j.HasProgress() || j.AllVerified()
 --- replace
 		progressVerified = true
+--- end
+
+[a job with no progress record reads unverified]
+file internal/api/queue.go
+--- anchor
+		progressVerified = !j.HasProgress() || j.AllVerified()
+--- replace
+		progressVerified = j.AllVerified()
 --- end
 
 [a file claims unverified regardless of its flag]

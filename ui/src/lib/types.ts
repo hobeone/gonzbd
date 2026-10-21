@@ -54,8 +54,10 @@ export interface QueueSlot {
 	 *  stays true regardless of whether the job is later resumed, so pair it
 	 *  with live queue state (e.g. status) rather than reading it alone. */
 	duplicate_reason?: string;
-	/** A queue-management note — currently only "failed to remove finalized
-	 *  job from queue" when dispatcher removal fails after finalization. */
+	/** A queue-management note, set by three paths: a failed removal of a
+	 *  finalized job from the queue, a job whose job_files structure could not
+	 *  be restored, and a job held because its files could not be reconciled
+	 *  at startup. */
 	operational_error?: string;
 	/** Bytes written: the encoded size of resolved articles. The key keeps its old name; it does not mean fsynced. */
 	bytes_durable: number;

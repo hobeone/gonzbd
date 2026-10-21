@@ -675,9 +675,9 @@ func (d *Dispatcher) List() []Row {
 		// or before that pass has run; the header's NZB total is the honest
 		// figure for it, where RemainingBytes alone would list it as finished.
 		// The progress tests are `git grep -n 'HasProgress()' -- '*.go' ':!*_test.go' ':!internal/job/*'`
-		// and return 5 lines: this sentence, the test below, rowFor's, and two
-		// in internal/api/queue.go (buildSlot; the second guards its
-		// pending-articles figure, not a byte figure).
+		// and return 6 lines: this sentence, the test below, rowFor's, and three
+		// in internal/api/queue.go (buildSlot's verified flag and its byte
+		// figures, and a second guard on a pending-articles figure).
 		rem := hs[i].Bytes
 		if js[i] != nil && js[i].HasProgress() {
 			rem = js[i].RemainingBytes()
