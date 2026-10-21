@@ -547,3 +547,38 @@ func TestFileOwedUnwantedFailures_CompleteJobWithUnreadableManifestIsFiled(t *te
 		t.Error("the filed job is still registered in the dispatcher")
 	}
 }
+
+// TestRestoreProgress_SeedsFilenameAndFetchPolicy pins two columns of the
+// seed that no other restore test reads: before any hydration, a restored
+// file carries the filename its row recorded and the fetch policy its row
+// held (job_files.fetch_policy 1 is FetchIfNeeded).
+func TestRestoreProgress_SeedsFilenameAndFetchPolicy(t *testing.T) {
+	t.Parallel()
+	env := newLREnv(t)
+	a1 := env.newApp(t)
+	j := a1.addJob(t, "columns", 2, 2)
+	a1.recordFile(t, j.ID(), 0, 0, false, 0)
+	if _, err := a1.repo.DB().ExecContext(t.Context(),
+		`UPDATE job_files SET fetch_policy = ? WHERE job_id = ? AND file_index = 1`,
+		int(job.FetchIfNeeded), j.ID()); err != nil {
+		t.Fatalf("set the fetch policy: %v", err)
+	}
+
+	a2 := env.newApp(t)
+	if err := a2.restoreProgress(t.Context()); err != nil {
+		t.Fatalf("restoreProgress: %v", err)
+	}
+	p := a2.registered(t, j.ID()).Progress()
+	if p == nil || a2.registered(t, j.ID()).Resident() {
+		t.Fatal("fixture: want restored progress on a job that is not resident")
+	}
+	if got := p.FileFilename(0); got != lrFileNames[0] {
+		t.Errorf("FileFilename(0) = %q before any hydration, want the recorded %q", got, lrFileNames[0])
+	}
+	if got := p.FileFetchPolicy(1); got != job.FetchIfNeeded {
+		t.Errorf("FileFetchPolicy(1) = %v before any hydration, want FetchIfNeeded", got)
+	}
+	if got := p.FileFetchPolicy(0); got != job.FetchAlways {
+		t.Errorf("FileFetchPolicy(0) = %v, want FetchAlways", got)
+	}
+}

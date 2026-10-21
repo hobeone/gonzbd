@@ -1,5 +1,5 @@
 pkg ./internal/app/
-run ^(TestRestoreProgress_EveryRegisteredJobHasFilesAndProgress|TestRestoreProgress_SeedsNoDoneBit|TestRestoreProgress_SettlesAJobWithoutStructureFailed|TestRestoreProgress_NoStoreIsANoop|TestRestoreProgress_AnUnreadableRowCostsOnlyItsJob|TestHydrate_FirstHydrationVerifiesEveryFile|TestHydrate_VerifiedJobRehydratesWithoutVerifying|TestStart_RefusesAJobCarryingProgressBeforeTheRestorePass)$
+run ^(TestRestoreProgress_EveryRegisteredJobHasFilesAndProgress|TestRestoreProgress_SeedsNoDoneBit|TestRestoreProgress_SeedsFilenameAndFetchPolicy|TestRestoreProgress_SettlesAJobWithoutStructureFailed|TestRestoreProgress_NoStoreIsANoop|TestRestoreProgress_AnUnreadableRowCostsOnlyItsJob|TestHydrate_FirstHydrationVerifiesEveryFile|TestHydrate_VerifiedJobRehydratesWithoutVerifying|TestStart_RefusesAJobCarryingProgressBeforeTheRestorePass)$
 timeout 5m
 
 # The restore pass (Application.restoreProgress): every registered job gets a
@@ -174,4 +174,21 @@ run TestRestoreProgress_AnUnreadableRowCostsOnlyItsJob
 		if cause, bad := unreadable[row.ID]; bad {
 --- replace
 		if cause, bad := unreadable[row.ID]; bad && false {
+--- end
+
+[the seed drops the recorded filename]
+file internal/app/restore_progress.go
+run TestRestoreProgress_SeedsFilenameAndFetchPolicy
+--- anchor
+			Filename: r.Filename,
+--- replace
+--- end
+
+[the seed ignores the recorded fetch policy]
+file internal/app/restore_progress.go
+run TestRestoreProgress_SeedsFilenameAndFetchPolicy
+--- anchor
+			Fetch:    job.FetchPolicy(r.FetchPolicy),
+--- replace
+			Fetch:    job.FetchAlways,
 --- end
