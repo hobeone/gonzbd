@@ -104,8 +104,9 @@ func (app *Application) verifyPausedJobs(ctx context.Context) {
 // fileOwedUnwantedFailures files every restored job the archive peek had
 // blocked under the fail action but not yet filed (fileOwedUnwantedFailure),
 // so that such a job does not run on after a restart. It runs before the
-// first tick, so a complete job is deferred to its Assessing worker and any
-// other is handed over before it can launch.
+// first tick, so a resident complete job is deferred to its Assessing worker
+// and any other, including one that could not be hydrated, is handed over
+// before it can launch.
 //
 // It needs no ordering against verifyPausedJobs. It completes inside
 // Dispatcher.StartWith, before Start launches the verifier, and the two
@@ -134,10 +135,11 @@ func (app *Application) fileOwedUnwantedFailures(ctx context.Context) error {
 		}
 		// A failed hydration does not by itself stop the filing: the call
 		// below re-reads unwantedFilingOwed, so a job still owed is filed
-		// without its verified files (enqueuePostProc then reads the restore
-		// pass's seeded Complete flags, and a deferred unwanted reason still
-		// fails it at Assessing), while one the failure parked (a residency
-		// fault pauses it, parkVerifyFault) is no longer owed and is not filed.
+		// without its verified files, and at once: a job that is not resident
+		// has no Assessing worker to take a deferred reason, however complete
+		// the restore pass's seeded flags read (fileOwedUnwantedFailure). One
+		// the failure parked (a residency fault pauses it, parkVerifyFault) is
+		// no longer owed and is not filed.
 		if app.residency != nil {
 			if err := app.residency.Hydrate(ctx, row.ID); err != nil {
 				app.log.Warn("startup: loading a job owed an unwanted-extension filing failed; it is filed unless the failure parked it",

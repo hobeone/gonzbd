@@ -1011,8 +1011,10 @@ and running is filed before the first tick instead of downloading on. A filing
 without the peek's message (a redelivery, a restart) carries the prefix alone,
 since the names are not persisted; one racing the peek's own filing can
 therefore be the reason the history entry shows (names lost; the post-processing
-admission still lets only one filing through). A job that file completes is
-deferred to its Assessing worker, which files it. A pause of a Blocked
+admission still lets only one filing through). A resident job that file
+completes is deferred to its Assessing worker, which files it; a job that is
+not resident (its hydration failed) has no such worker and is filed at once
+(`fileOwedUnwantedFailure` defers only when `Job.Resident`). A pause of a Blocked
 `IntentRun` job (a user's, or a stall's) ends the derivation, since the intent
 is no longer `IntentRun`: the job is then held like a pause-action one, and
 `ResumeJob` refuses it while only the user's resume (`ResumeJobByUser`)

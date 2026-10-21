@@ -497,3 +497,53 @@ func TestFileTableFromRows_RefusesAGapAndADuplicate(t *testing.T) {
 		t.Errorf("fileTableFromRows(nil) = %v files, %v; want a table of no files", empty, err)
 	}
 }
+
+// TestFileOwedUnwantedFailures_CompleteJobWithUnreadableManifestIsFiled pins
+// the filing a job owes when its hydration fails. Every file of the job is
+// complete in the record, so the restore pass makes it read complete although
+// it is not resident; its manifest is gone, so neither the startup sweep nor
+// the first tick can hydrate it, and no Assessing worker will ever run for it.
+// The filing must therefore be made at once, with the unwanted-extension
+// message, rather than deferred to an Assessing the job cannot reach.
+func TestFileOwedUnwantedFailures_CompleteJobWithUnreadableManifestIsFiled(t *testing.T) {
+	t.Parallel()
+	env := newLREnv(t)
+	a1 := env.newApp(t)
+	owed := a1.addJob(t, "owed", 2, 1)
+	a1.dispatcher.Tick(t.Context())
+	a1.dispatcher.Tick(t.Context())
+	if st := owed.State().State; st != job.Fetching {
+		t.Fatalf("fixture: the owed job is at %v, want Fetching", st)
+	}
+	if moved, err := a1.dispatcher.BlockUnwanted(owed, false); err != nil || !moved {
+		t.Fatalf("BlockUnwanted = (%v, %v)", moved, err)
+	}
+	a1.recordFile(t, owed.ID(), 0, 0, true, 0, 1)
+	a1.recordFile(t, owed.ID(), 1, 2, true, 0)
+	a1.dispatcher.Tick(t.Context()) // persists the block
+	path, err := manifestPath(env.admin, owed.ID())
+	if err != nil {
+		t.Fatalf("manifestPath: %v", err)
+	}
+	if err := os.Remove(path); err != nil {
+		t.Fatalf("remove the manifest: %v", err)
+	}
+
+	a2 := env.newApp(t)
+	a2.start(t)
+
+	lrWaitFor(t, "the owed filing in history", func() bool {
+		e, err := a2.repo.Get(t.Context(), owed.ID())
+		return err == nil && e.NzoID != ""
+	})
+	e, err := a2.repo.Get(t.Context(), owed.ID())
+	if err != nil {
+		t.Fatalf("history Get: %v", err)
+	}
+	if e.Status != "Failed" || e.FailMessage != unwantedFailPrefix {
+		t.Errorf("history Status, FailMessage = %q, %q, want Failed, %q", e.Status, e.FailMessage, unwantedFailPrefix)
+	}
+	if _, ok := a2.dispatcher.Job(owed.ID()); ok {
+		t.Error("the filed job is still registered in the dispatcher")
+	}
+}

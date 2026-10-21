@@ -296,9 +296,10 @@ Per-article bits are **not** seeded. `pendingArticles`, `Pending`,
   harmless, the job's FailMsg is set). `git grep -n '\.IsComplete()' --
   '*.go' ':!*_test.go' ':!internal/job/*'` returns 3 lines: that one, the
   `reportDownloadComplete` read (`app.go:1800`) and the admission predicate
-  (`postproc_admission.go:207`). A job that awaits
-  Assessing then has the unwanted reason deferred to its Assessing worker,
-  which fails it there; a hydration that parked the job (a residency fault
+  (`postproc_admission.go:207`). A resident job that
+  awaits Assessing has the unwanted reason deferred to its Assessing worker,
+  which fails it there; a job whose hydration failed is not resident and is
+  filed at once (`fileOwedUnwantedFailure` defers only on `Job.Resident`); a hydration that parked the job (a residency fault
   pauses it) leaves it no longer owed, so it is not filed.
 
 ### 4.6 Hydration: verify, then correct
