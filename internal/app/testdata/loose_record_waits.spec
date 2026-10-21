@@ -1,5 +1,5 @@
 pkg ./internal/app/
-run ^(TestLooseRecord_VerificationFaultParksNeverFails|TestLooseRecord_PausedJobReportsVerifiedProgress|TestLooseRecord_UntrustedSurvivesEviction|TestLooseRecord_CompletionFaultConvergesInProcess|TestLooseRecord_HandOverFlushesBeforePostProcessing|TestLooseRecord_FinalizerFlushesBeforeTheJobLeaves)$
+run ^(TestLooseRecord_VerificationFaultParksNeverFails|TestLooseRecord_UntrustedSurvivesEviction|TestLooseRecord_CompletionFaultConvergesInProcess|TestLooseRecord_HandOverFlushesBeforePostProcessing|TestLooseRecord_FinalizerFlushesBeforeTheJobLeaves)$
 
 # Each mutation below takes away the event one loose-record wait is for, so
 # the wait can only end at its deadline (lrWaitDeadline): KILLED shows that
@@ -18,14 +18,6 @@ file internal/app/residency.go
 		return nil
 	}
 	// The message is a fact about the job, not the file: only the peek that
---- end
-
-[no paused job is verified after startup]
-file internal/app/startup_reconcile.go
---- anchor
-		if !ok || row.View.State != job.Fetching || j.Intent() != job.IntentPause {
---- replace
-		if !ok || row.View.State != job.Fetching || j.Intent() != job.IntentPause || true {
 --- end
 
 [a write fault never stalls the job]

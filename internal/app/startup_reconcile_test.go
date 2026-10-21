@@ -3,7 +3,10 @@ package app
 import (
 	"context"
 	"errors"
+	"log/slog"
+	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -142,5 +145,107 @@ func TestStart_RetentionDoesNotDefeatCrashReconciliation(t *testing.T) {
 	if _, ok := application.Dispatcher().Row(j.ID()); ok {
 		t.Error("the completed job is still queued: retention deleted its history entry " +
 			"before reconciliation could look it up, so it will be post-processed again")
+	}
+}
+
+// TestStart_LeavesAJobRestoredPausedAtFetchingUnverified pins that no startup
+// pass hydrates a paused job: after Start it carries the restore pass's seed
+// and nothing more.
+func TestStart_LeavesAJobRestoredPausedAtFetchingUnverified(t *testing.T) {
+	t.Parallel()
+	env := newLREnv(t)
+	j := pauseAtFetching(t, env, env.newApp(t), "paused")
+	a2 := env.newApp(t)
+	a2.start(t)
+	j2 := a2.registered(t, j.ID())
+	if !j2.HasProgress() {
+		t.Fatal("the restored job has no progress after Start")
+	}
+	if j2.AllVerified() {
+		t.Error("the restored paused job was verified during Start")
+	}
+	if j2.Resident() {
+		t.Error("the restored paused job is resident after Start")
+	}
+	row, ok := a2.dispatcher.Row(j.ID())
+	if !ok {
+		t.Fatal("the job is not registered")
+	}
+	if want := row.Header.Bytes - 2*lrArtLen; row.RemainingBytes != want {
+		t.Errorf("remaining = %d of %d, want %d estimated from the 2 recorded articles", row.RemainingBytes, row.Header.Bytes, want)
+	}
+}
+
+// TestStart_FilesAnOwedJobInsideStart pins the sweep's place in
+// reconcileBeforeFirstTick: a restored job the archive peek owes a filing is
+// filed inside Start, before the first tick, over a real restarted queue.
+func TestStart_FilesAnOwedJobInsideStart(t *testing.T) {
+	t.Parallel()
+	env := newLREnv(t)
+	a1 := env.newApp(t)
+	paused := pauseAtFetching(t, env, a1, "paused")
+	owed := a1.addJob(t, "owed", 2, 1)
+	a1.dispatcher.Tick(t.Context())
+	a1.dispatcher.Tick(t.Context())
+	if st := owed.State().State; st != job.Fetching {
+		t.Fatalf("fixture: the owed job is at %v, want Fetching", st)
+	}
+	if moved, err := a1.dispatcher.BlockUnwanted(owed, false); err != nil || !moved {
+		t.Fatalf("BlockUnwanted = (%v, %v)", moved, err)
+	}
+	a1.dispatcher.Tick(t.Context()) // persists the block
+
+	a2 := env.newApp(t)
+	a2.start(t)
+
+	owed2 := a2.registered(t, owed.ID())
+	if !a2.postProcAdmissions.has(owed2) {
+		t.Error("the owed filing was not made inside Start")
+	}
+	paused2 := a2.registered(t, paused.ID())
+	if paused2.Intent() != job.IntentPause {
+		t.Errorf("the paused job's intent is %v after Start, want IntentPause", paused2.Intent())
+	}
+}
+
+// TestFileOwedUnwantedFailures_FailedHydrationIsLoggedAndFiled pins the
+// sweep's handling of a job it cannot load: the hydration's error is logged
+// at Warn, and the job is filed anyway rather than left to run.
+func TestFileOwedUnwantedFailures_FailedHydrationIsLoggedAndFiled(t *testing.T) {
+	t.Parallel()
+	env := newLREnv(t)
+	a1 := env.newApp(t)
+	owed := a1.addJob(t, "owed", 2, 1)
+	a1.dispatcher.Tick(t.Context())
+	a1.dispatcher.Tick(t.Context())
+	if st := owed.State().State; st != job.Fetching {
+		t.Fatalf("fixture: the owed job is at %v, want Fetching", st)
+	}
+	if moved, err := a1.dispatcher.BlockUnwanted(owed, false); err != nil || !moved {
+		t.Fatalf("BlockUnwanted = (%v, %v)", moved, err)
+	}
+	a1.dispatcher.Tick(t.Context()) // persists the block
+	path, err := manifestPath(env.admin, owed.ID())
+	if err != nil {
+		t.Fatalf("manifestPath: %v", err)
+	}
+	if err := os.Remove(path); err != nil {
+		t.Fatalf("remove the manifest: %v", err)
+	}
+
+	logs := &syncBuffer{}
+	a2 := env.newApp(t, func(app *Application) {
+		app.log = slog.New(slog.NewTextHandler(logs, nil))
+	})
+	if err := a2.fileOwedUnwantedFailures(t.Context()); err != nil {
+		t.Fatalf("fileOwedUnwantedFailures: %v", err)
+	}
+
+	owed2 := a2.registered(t, owed.ID())
+	if !a2.postProcAdmissions.has(owed2) {
+		t.Error("a job whose hydration failed was not filed")
+	}
+	if got := logs.String(); !strings.Contains(got, "level=WARN") || !strings.Contains(got, "it is filed unless the failure parked it") {
+		t.Errorf("the failed hydration was not logged at Warn; log:\n%s", got)
 	}
 }

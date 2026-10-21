@@ -1,5 +1,5 @@
 pkg ./internal/app/
-run ^(TestVerifyAndAttach_MissingDirectoryParksTheJob|TestLooseRecord_UntrustedSurvivesEviction|TestLooseRecord_FinalizerFlushesBeforeTheJobLeaves|TestLooseRecord_HandOverFlushesBeforePostProcessing|TestRecorder_DropsRowsOfAReplacedInstance|TestLooseRecord_ResumedCompletionIsNotFedToDirectUnpack|TestLooseRecord_CompleteFileInstallsItsFailedSet|TestLooseRecord_CorruptRowCostsOnlyItself|TestInstallVerification_RestoresThePolicyOnlyWhenAsked|TestVerifyRetry_ReadsEveryFileAndReportsWhatItFinished|TestHandleFileUntrusted_ReturnsArticlesToOutstandingWhenSQLiteFails|TestResidencyFault_ParksOnlyADeviceFault|TestLooseRecord_PausedJobReportsVerifiedProgress)$
+run ^(TestVerifyAndAttach_MissingDirectoryParksTheJob|TestLooseRecord_UntrustedSurvivesEviction|TestLooseRecord_FinalizerFlushesBeforeTheJobLeaves|TestLooseRecord_HandOverFlushesBeforePostProcessing|TestRecorder_DropsRowsOfAReplacedInstance|TestLooseRecord_ResumedCompletionIsNotFedToDirectUnpack|TestLooseRecord_CompleteFileInstallsItsFailedSet|TestLooseRecord_CorruptRowCostsOnlyItself|TestInstallVerification_RestoresThePolicyOnlyWhenAsked|TestVerifyRetry_ReadsEveryFileAndReportsWhatItFinished|TestHandleFileUntrusted_ReturnsArticlesToOutstandingWhenSQLiteFails|TestResidencyFault_ParksOnlyADeviceFault)$
 
 # Restart and retry resume from the loose article record (written_articles +
 # job_files). Each mutation removes one half of that path; each must be caught
@@ -161,15 +161,4 @@ run TestResidencyFault_ParksOnlyADeviceFault
 	if ctx.Err() != nil || errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 --- replace
 	if false {
---- end
-
-# A job restored at Fetching under a pause is hydrated, and so verified,
-# before the first tick, so its progress reads what the record holds.
-[a paused job is not loaded after startup]
-file internal/app/startup_reconcile.go
-run TestLooseRecord_PausedJobReportsVerifiedProgress
---- anchor
-		err := app.dispatcher.LoadProgress(jctx, row.ID)
---- replace
-		err := app.dispatcher.LoadProgress(jctx, "")
 --- end

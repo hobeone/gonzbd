@@ -629,8 +629,8 @@ func (app *Application) handleFileUntrusted(jobID string, fileIdx int) {
 // file, or "": a job-level fact, so every file that hydration finished carries
 // it. Its callers are a hydration's residency.finished and a retry; a
 // hydration runs from a dispatcher tick, from a rename
-// (Dispatcher.SetName's LoadProgress), inside Start from
-// fileOwedUnwantedFailures, and after Start from verifyPausedJobs.
+// (Dispatcher.SetName's LoadProgress), and inside Start from
+// fileOwedUnwantedFailures.
 //
 // When the channel is full the send moves to its own goroutine, which gives
 // up when app.ctx is cancelled. It cannot block the caller:
