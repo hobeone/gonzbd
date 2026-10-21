@@ -1383,12 +1383,10 @@ the lease and launches the worker on the manifest already in memory.
 
 So what `reconcileResidency` keeps resident is bounded by the two pool
 capacities plus the jobs that were resident when paused, settled ones included,
-not by queue depth. Startup adds one more: `verifyPausedJobs` hydrates every
-job restored paused at `Fetching`, after `Start` has returned, so that the
-estimate its seeded progress reports is replaced by verified progress, and the
-tick then keeps it as it keeps any paused job.
-The paused jobs are deliberately not capped; a manifest is about 1.6 MB per
-20k articles (§13).
+not by queue depth. A job restored paused at `Fetching` holds no manifest
+until it is resumed, so a restart adds nothing to that bound. The paused jobs
+that keep a manifest are deliberately not capped; a manifest is about 1.6 MB
+per 20k articles (§13).
 
 **The invariant is stated at tick boundaries, not instantaneously.** `grantFor`
 runs under the Queue's mutex and hydration does disk I/O that must not run
@@ -1476,9 +1474,8 @@ crash/restart are one scheduling path, and that is a property of the design
 rather than a coincidence: both are "this job holds nothing and its work is
 unfinished". They differ only in residency: a job paused while resident keeps
 its manifest, so resume does not re-read it, and a job restored paused at
-`Fetching` is hydrated once after startup (`verifyPausedJobs`) so that its
-progress is verified rather than estimated, and keeps that manifest until it
-is resumed or removed.
+`Fetching` holds no manifest, and the tick hydrates and verifies it when the
+user resumes it.
 
 ### Who writes what
 
@@ -1538,10 +1535,9 @@ from each file's recorded row count (`fileBytesDownloaded`), so a
 half-downloaded job shows roughly how far it got. `Dispatcher.List` and
 `Dispatcher.Row` fall back to the header's byte count only for a job with no
 progress, which after the restore pass is one whose structure could not be
-read (`restoreProgress`). A job restored paused at `Fetching` is verified
-early: `verifyPausedJobs` hydrates it after `Start` returns, so its verified
-progress is reported once that load lands, although no tick will hydrate it
-until it is resumed.
+read (`restoreProgress`). A job restored paused at `Fetching` keeps
+that estimate, with `progress_verified: false`, until it is resumed and the
+tick hydrates it.
 
 `emitted` is deliberately **not** restored: it is transient per-process state
 about what a downloader has in flight, and nothing that survived a restart is.
@@ -1553,9 +1549,8 @@ restart, before its articles are attached. The restore pass has already
 attached its file table and seeded progress, and the seed carries no verdict:
 every file is unverified, and none is marked verified until the install that
 follows the attach (decision D13). The first hydration is made by the tick,
-for a job that holds what its position requires; by `verifyPausedJobs`, for a job restored paused at
-`Fetching` — which runs after `Application.Start` has returned, under a
-per-job deadline (`docs/durability-contract.md`, Accepted limitation 1); by
+for a job that holds what its position requires, which includes a job restored
+paused at `Fetching` once the user resumes it; by
 `fileOwedUnwantedFailures`, before the first tick, for a restored job the
 archive peek owes a filing; or by a rename's `LoadProgress`. If verification
 cannot complete for a reason about the device, nothing is attached, the job is

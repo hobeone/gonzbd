@@ -288,18 +288,15 @@ is not re-hydrated every tick after a residency fault parked it.
 `TestRestore_PausedJobIsNotHydratedUntilResumed` and
 `TestReconcileResidency_DoesNotRehydrateAPausedSlotHolder` pin the four.
 
-Three loads happen outside this rule. Two go through `Dispatcher.LoadProgress`,
-which calls `Hydrate` for any registered job (so it also waits for a
-hydration in flight, and reloads an evicted job's manifest) and records the
-load for a job that was not resident before, so a later tick evicts it once
-it holds nothing and is not paused:
-`Application.verifyPausedJobs`, on a goroutine `Start` launches last, for
-every job restored paused at `Fetching`, so that the estimate the restore pass
-seeded is replaced by verified progress without a resume — each such job stays resident until it is resumed or
-removed, since the tick's eviction arm skips `IntentPause`
-(`docs/durability-contract.md`, Accepted limitation 1); and `SetName`, so a
-rename sees whether the job's download has begun. The
-third is `Application.fileOwedUnwantedFailures`, before the first tick, which
+Two loads happen outside this rule. The first is `SetName`, through
+`Dispatcher.LoadProgress`, so a rename sees whether the job's download has
+begun; `LoadProgress` calls `Hydrate` for any registered job (so it also waits
+for a hydration in flight, and reloads an evicted job's manifest) and records
+the load for a job that was not resident before, so a later tick evicts it
+once it holds nothing and is not paused. A job restored paused at `Fetching`
+is not loaded at startup: it reports the estimate the restore pass seeded
+until a resume lets the tick hydrate it. The
+second is `Application.fileOwedUnwantedFailures`, before the first tick, which
 calls the residency's `Hydrate` directly for a restored job the archive peek
 owes a filing, so the filing sees its verified files; it records no load,
 because the job departs once filed. A hydration that cannot verify the job's files
