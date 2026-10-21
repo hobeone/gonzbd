@@ -89,6 +89,7 @@ a mismatched table unattachable.
 **Why:** deleting them now would make a restored job report 0 recovery bytes
 before hydration, a behaviour change stage 1 must not make.
 **Cost:** a derived value stays persisted for one more stage.
+Closed by stage 2 (Task 4).
 
 ### D10 — Stage 1 is executed subagent-driven, implementers on Sonnet
 
@@ -197,3 +198,17 @@ job; `FileRow`/`FileRows` are unchanged.
 **Why:** a field meaningful only on one read path must not sit on the shared
 type.
 **Cost if wrong:** one small type.
+
+### D20 — The header-bytes fallback stays, narrowed, for the unrestorable class
+
+**Call:** `Dispatcher.List`, `rowFor` and `api.buildSlot` keep
+`if j.HasProgress() { rem = j.RemainingBytes() }` over the header's NZB total.
+The design (§4.4, §5) said to delete it; only `recovery_bytes` and
+`SetRecoveryBytes` go.
+**Why:** a registered job lacks progress only when the restore pass could not
+rebuild its structure (`failUnrestorable`, `internal/app/restore_progress.go`)
+or before that pass has run. Deleting the fallback would list such a job with
+zero remaining bytes, i.e. as finished; the header's total is the honest
+figure. `Job.RecoveryBytes()` on a job with no table returns 0, and that is
+what the API's `recovery_bytes` shows for it.
+**Cost if wrong:** one branch that a stricter reading would have removed.

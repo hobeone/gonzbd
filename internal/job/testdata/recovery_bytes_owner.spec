@@ -1,10 +1,10 @@
 pkg ./internal/job/
-run TestRecoveryBytesWriters_MatchTheEnumerationStatedInProse
+run TestAttachFiles_SetsRecoveryBytesFromTheTable
 
-[recoveryBytes writer set mutated]
-file internal/job/writer_enumeration_test.go
+[AttachFiles does not derive recoveryBytes from the table]
+file internal/job/content.go
 --- anchor
-	want := []string{"AttachFiles", "SetRecoveryBytes"}
+	j.recoveryBytes = ft.RecoveryBytes()
 --- replace
-	want := []string{"AttachFiles"}
+	j.recoveryBytes = 0
 --- end

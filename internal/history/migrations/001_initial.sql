@@ -217,21 +217,6 @@ CREATE TABLE dispatch_jobs (
     -- was verified.
     par2_release_reason TEXT NOT NULL DEFAULT '',
 
-    -- Repair capacity, counted from subjects matching ".volNNN+MM.par2" -- the
-    -- files carrying recovery slices -- and not the set's index file, which
-    -- holds per-file checksums and no capacity. The convention is not a
-    -- guarantee: PAR2 recommends the .vol naming without requiring it, and
-    -- par2 reads packets rather than filenames, so zero here means "nothing
-    -- recognized", never "nothing to repair with".
-    --
-    -- Derived from the job's file table (FileTable.RecoveryBytes) rather than
-    -- measured here, but persisted rather than recomputed on load, because a
-    -- restarted job has no file table until it is first hydrated and because
-    -- zero is not a missing reading -- it is a definite claim of no repair
-    -- capacity, which the UI renders as "No repair data" and both abort gates
-    -- read as grounds to call a job hopeless. That must not be reachable from a degraded read.
-    recovery_bytes    INTEGER NOT NULL DEFAULT 0,
-
     -- The job's unwanted.State: 0 none, 1 blocked by the unwanted-extension
     -- check at ingest, 2 approved by the user. Persisted because approval is
     -- an event, not a function of the NZB: an approved job must not be

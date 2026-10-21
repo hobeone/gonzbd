@@ -468,6 +468,8 @@ func buildSlot(r dispatch.Row, j *job.Job, paused bool, speed float64, index int
 	// captured at listing time. If the job was unregistered between
 	// List() and Job(r.ID) (a transient race window), we retain that snapshot
 	// rather than resetting to Header.Bytes so progress never falsely flashes 0%.
+	// A job with no progress (an unrestorable one; see Dispatcher.List) keeps
+	// the header's total.
 	totalBytes := r.Header.Bytes
 	remainingBytes := r.RemainingBytes
 	var failedBytes int64

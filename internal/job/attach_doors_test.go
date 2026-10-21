@@ -99,3 +99,23 @@ func TestAttachArticles_RecomputesInPlace(t *testing.T) {
 		t.Error("AttachArticles on a resident job: nil error")
 	}
 }
+
+// AttachFiles is the only writer of Job.recoveryBytes, so a job reports its
+// recovery volumes' size exactly when a table carrying them is attached, and
+// reports 0 before then.
+func TestAttachFiles_SetsRecoveryBytesFromTheTable(t *testing.T) {
+	j := New("j", "j", Policy{})
+	if got := j.RecoveryBytes(); got != 0 {
+		t.Fatalf("RecoveryBytes() = %d before an attach, want 0", got)
+	}
+	ft := NewFileTable([]FileSpec{
+		{Subject: "a.rar", Bytes: 200, ArticleCount: 2},
+		{Subject: "a.vol01+01.par2", Bytes: 70, ArticleCount: 1},
+	})
+	if err := j.AttachFiles(ft, nil); err != nil {
+		t.Fatalf("AttachFiles: %v", err)
+	}
+	if got, want := j.RecoveryBytes(), int64(70); got != want {
+		t.Errorf("RecoveryBytes() = %d after AttachFiles, want %d (the table's recovery volumes)", got, want)
+	}
+}

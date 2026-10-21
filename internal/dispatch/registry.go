@@ -670,6 +670,14 @@ func (d *Dispatcher) List() []Row {
 	views := d.q.RenderAll(js)
 	out := make([]Row, 0, len(ids))
 	for i, id := range ids {
+		// A registered job lacks progress only when the restore pass could not
+		// rebuild its structure (failUnrestorable, internal/app/restore_progress.go)
+		// or before that pass has run; the header's NZB total is the honest
+		// figure for it, where RemainingBytes alone would list it as finished.
+		// The progress tests are `git grep -n 'HasProgress()' -- '*.go' ':!*_test.go' ':!internal/job/*'`
+		// and return 5 lines: this sentence, the test below, rowFor's, and two
+		// in internal/api/queue.go (buildSlot; the second guards its
+		// pending-articles figure, not a byte figure).
 		rem := hs[i].Bytes
 		if js[i] != nil && js[i].HasProgress() {
 			rem = js[i].RemainingBytes()
@@ -717,6 +725,7 @@ func (d *Dispatcher) rowFor(id string, expected *job.Job) (Row, bool) {
 	j, h := e.j, e.h
 	d.mu.Unlock()
 
+	// The header total stands in for a job with no progress; see List.
 	rem := h.Bytes
 	if j.HasProgress() {
 		rem = j.RemainingBytes()

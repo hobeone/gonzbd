@@ -809,9 +809,9 @@ func TestRemove_ConcurrentPersistDoesNotResurrectRowOrResidency(t *testing.T) {
 			t.Fatalf("trial %d: setup: job not saved to store", trial)
 		}
 
-		// Mutate job so persistIfChanged has new data. RecoveryBytes is
-		// job-level, so it lands whether or not the job is hydrated.
-		j.SetRecoveryBytes(int64(trial + 1))
+		// Mutate job so persistIfChanged has new data. Policy is job-level, so
+		// it lands whether or not the job is hydrated.
+		j.SetPolicy(job.Policy{Verify: true})
 
 		stop := make(chan struct{})
 		var wg sync.WaitGroup
@@ -888,9 +888,9 @@ func TestRemove_InFlightPersistBlockedByStoreMuDoesNotResurrect(t *testing.T) {
 	}
 	d.persistIfChanged(context.Background(), j)
 
-	// Mutate so it wants to persist. RecoveryBytes is job-level, so it lands
+	// Mutate so it wants to persist. Policy is job-level, so it lands
 	// whether or not the job is hydrated.
-	j.SetRecoveryBytes(100)
+	j.SetPolicy(job.Policy{Verify: true})
 
 	removeDone := make(chan error, 1)
 	go func() {

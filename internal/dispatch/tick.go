@@ -121,7 +121,6 @@ func (d *Dispatcher) persistIfChanged(ctx context.Context, j *job.Job) error {
 		p.DownloadFinished = df.Unix()
 	}
 	p.Par2ReleaseReason = j.Par2ReleaseReason()
-	p.RecoveryBytes = j.RecoveryBytes()
 	if last, ok := d.lastWritten(j.ID()); ok && last == p {
 		return nil
 	}

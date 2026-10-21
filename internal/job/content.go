@@ -546,20 +546,6 @@ func (j *Job) RecoveryBytes() int64 {
 	return j.recoveryBytes
 }
 
-// SetRecoveryBytes records the summed size of the job's par2 recovery volumes.
-//
-// Writers of recoveryBytes — `git grep -n 'recoveryBytes\s*=' internal/job/`:
-//   - AttachFiles: derives truth from the FileTable
-//   - SetRecoveryBytes: restores persisted count from SQLite on startup prior to hydration
-//
-// File attachment (AttachFiles, which AttachContent calls) strictly supersedes
-// any value restored from SQLite via SetRecoveryBytes.
-func (j *Job) SetRecoveryBytes(n int64) {
-	j.contentMu.Lock()
-	defer j.contentMu.Unlock()
-	j.recoveryBytes = n
-}
-
 // RecoveryFiles returns the job's par2 recovery volume count, preserved across eviction.
 func (j *Job) RecoveryFiles() int {
 	j.contentMu.RLock()

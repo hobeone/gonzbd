@@ -307,14 +307,14 @@ func TestPar2ReleaseReasonWriters_MatchTheEnumerationStatedInProse(t *testing.T)
 }
 
 // TestRecoveryBytesWriters_MatchTheEnumerationStatedInProse asserts that the
-// only writers of j.recoveryBytes are AttachFiles and SetRecoveryBytes.
+// only writer of j.recoveryBytes is AttachFiles.
 func TestRecoveryBytesWriters_MatchTheEnumerationStatedInProse(t *testing.T) {
 	writers := scanWriters(t, "recoveryBytes")
-	want := []string{"AttachFiles", "SetRecoveryBytes"}
+	want := []string{"AttachFiles"}
 	if !slices.Equal(writers, want) {
 		t.Errorf("functions assigning recoveryBytes = %v, want %v\n\n"+
 			"the recoveryBytes field is owned by Job and may only be written "+
-			"via AttachFiles and SetRecoveryBytes.",
+			"via AttachFiles.",
 			writers, want)
 	}
 }

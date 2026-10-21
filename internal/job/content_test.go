@@ -793,11 +793,6 @@ func TestJob_ProgressAccessors(t *testing.T) {
 	if got := j.Par2ReleaseReason(); got != "released" {
 		t.Errorf("Par2ReleaseReason() = %q after SetPar2ReleaseReason, want released", got)
 	}
-
-	j.SetRecoveryBytes(1234)
-	if got := j.RecoveryBytes(); got != 1234 {
-		t.Errorf("RecoveryBytes() = %d, want 1234", got)
-	}
 }
 
 // TestJobFileFetchPolicy_ReadsWithoutCloningProgress covers Job.FileFetchPolicy,
