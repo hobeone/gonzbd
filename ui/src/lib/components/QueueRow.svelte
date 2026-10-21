@@ -420,7 +420,13 @@
 			'Progress from the download record; it is checked against the files when the job next runs.'
 	};
 
-	let progressVerified = $derived(slot.progress_verified);
+	/**
+	 * The unverified treatment (outlined bar and hint) promises a check
+	 * against the files at the job's next run. A job whose structure could not
+	 * be restored carries an operational error and no progress to check, so it
+	 * gets the plain treatment rather than that promise.
+	 */
+	let progressVerified = $derived(slot.progress_verified || Boolean(slot.operational_error));
 	let progressHint = $derived(PROGRESS_HINTS[progressVerified ? 'verified' : 'unverified']);
 
 	function healthLabel(): { text: string; color: string; hint?: string } {
