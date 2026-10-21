@@ -9,6 +9,22 @@ file internal/job/manifest.go
 	if want := ft.TotalArticles(); false && len(articles) != want {
 --- end
 
+[the article-count check refuses only a short list]
+file internal/job/manifest.go
+--- anchor
+	if want := ft.TotalArticles(); len(articles) != want {
+--- replace
+	if want := ft.TotalArticles(); len(articles) < want {
+--- end
+
+[the article-count check refuses only a long list]
+file internal/job/manifest.go
+--- anchor
+	if want := ft.TotalArticles(); len(articles) != want {
+--- replace
+	if want := ft.TotalArticles(); len(articles) > want {
+--- end
+
 [AttachArticles stops comparing the manifest's table with the job's]
 file internal/job/content.go
 --- anchor

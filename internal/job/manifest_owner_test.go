@@ -90,6 +90,18 @@ func TestNewManifestFromArticles_RefusesAnArticleCountTheTableDoesNotHave(t *tes
 			t.Errorf("error %q does not name the count %s", err, want)
 		}
 	}
+
+	// Too many is refused as well: the check is !=, not <.
+	m, err = NewManifestFromArticles(ft, []JobArticle{
+		{ID: "a1@h", Bytes: 100, Number: 1}, {ID: "a2@h", Bytes: 100, Number: 2},
+		{ID: "b1@h", Bytes: 100, Number: 1}, {ID: "b2@h", Bytes: 100, Number: 2},
+	})
+	if err == nil {
+		t.Fatalf("NewManifestFromArticles = %v, nil; want an error for 4 articles against a 3-article table", m)
+	}
+	if want := "describes 3 articles, got 4"; !strings.Contains(err.Error(), want) {
+		t.Errorf("error %q does not contain %q", err, want)
+	}
 }
 
 // A Message-ID read back from disk is re-checked, and an article list carrying
