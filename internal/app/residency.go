@@ -106,9 +106,9 @@ func newAppResidency(lookup func(string) (*job.Job, bool), dir string, store rec
 // waiter starts its own, under its own ctx. The waiter does not report the
 // other's failure as its own: Dispatcher.reconcileResidency settles a job
 // Failed on a hydration error that is neither a context error nor a residency
-// fault, so a tick's hydration that waited on the startup verification of a
-// job the user resumed (Application.verifyPausedJobs) must not turn that
-// verification's deadline into such an error.
+// fault, so a tick's hydration that waited on a rename's load of the job
+// (Dispatcher.SetName's LoadProgress, under setNameLoadTimeout) must not turn
+// that load's deadline into such an error.
 func (r *appResidency) Hydrate(ctx context.Context, id string) error {
 	j, ok := r.lookup(id)
 	if !ok {

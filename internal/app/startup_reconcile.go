@@ -3,9 +3,6 @@ package app
 import (
 	"context"
 	"fmt"
-	"time"
-
-	"github.com/hobeone/gonzbd/internal/job"
 )
 
 // reconcileBeforeFirstTick is Application.Start's beforeFirstTick step for
@@ -22,10 +19,6 @@ import (
 // post-processed again, and its finalize would try to file it a second time.
 // Nothing ticks while this runs, and Start starts the downloader and the
 // post-processor only after StartWith returns.
-//
-// The jobs restored paused at Fetching are not loaded here: verifyPausedJobs
-// verifies them after Start has returned, so that their read-back does not
-// delay the API's start.
 func (app *Application) reconcileBeforeFirstTick(ctx context.Context) error {
 	for _, row := range app.dispatcher.List() {
 		if err := ctx.Err(); err != nil {
@@ -39,86 +32,12 @@ func (app *Application) reconcileBeforeFirstTick(ctx context.Context) error {
 	return app.fileOwedUnwantedFailures(ctx)
 }
 
-// defaultPausedVerifyTimeout bounds one paused job's load in verifyPausedJobs.
-// The read-back of a job's complete=0 files is what it bounds, and it is sized
-// for a large job on a remote mount: a job that exceeds it reports only the
-// estimate from its recorded count until it is resumed, which is the cost of a
-// deadline too short, so it errs long.
-const defaultPausedVerifyTimeout = 10 * time.Minute
-
-// verifyPausedJobs hydrates, and so verifies, every job restored at Fetching
-// with IntentPause, one job at a time and each under pausedVerifyTimeout. No
-// tick hydrates a paused job until it is resumed, so without this mode=queue
-// would report only the restore pass's estimate (restoreProgress) for such a
-// job until the user resumed it. Until a job's load lands the queue reports
-// that estimate, as it does for any restored job with an unverified file;
-// once it lands the queue reports the verified progress and a queue_updated
-// event names the job. A load that does not land — its deadline passed, or
-// verification faulted and parked the job (appResidency.Hydrate) — leaves the
-// job unverified, reporting the estimate, until its resume lets the tick
-// hydrate it.
-//
-// It runs on app.wg from Start, launched after watchCompletions, so the
-// Resumed completions a load queues are consumed as they are queued, and it
-// stops when ctx (app.ctx) ends: Shutdown cancels it in joinAndStop and waits
-// for it there with the other goroutines on app.wg. Each job's load runs under
-// a context derived from ctx, so a cancellation ends the load in flight and
-// leaves the job unverified and not resident (appResidency.Hydrate). A job resumed or removed before
-// its turn is skipped (its intent is no longer IntentPause, or it is no longer
-// listed), and one hydrated by a tick before its turn is not verified again: verification
-// runs only for a job not yet verified in this process, and LoadProgress's
-// Hydrate returns at once for a resident job. A job resumed during its load is hydrated
-// once: the tick's Hydrate waits for the load in flight, and starts its own
-// only if that one left the job non-resident. A job removed during its load
-// is removed once the load ends: RemoveJob's eviction (appResidency.Evict)
-// cancels the load and blocks its caller until it returns — at the next row,
-// or, for a read-back read blocked in the syscall, when that read returns — so
-// whatever verdicts the load committed reach SQLite before the removal's
-// reclaim deletes the job's rows, and the Resumed completions it queued find
-// no job.
-func (app *Application) verifyPausedJobs(ctx context.Context) {
-	for _, row := range app.dispatcher.List() {
-		j, ok := app.dispatcher.Job(row.ID)
-		if !ok || row.View.State != job.Fetching || j.Intent() != job.IntentPause {
-			continue
-		}
-		jctx, cancel := context.WithTimeout(ctx, app.pausedVerifyTimeout)
-		err := app.dispatcher.LoadProgress(jctx, row.ID)
-		cancel()
-		if app.pausedVerifiedHook != nil {
-			app.pausedVerifiedHook(row.ID, err)
-		}
-		if ctx.Err() != nil {
-			app.log.Info("paused-job verification stopped; the app is stopping", "job", row.ID)
-			return
-		}
-		if err != nil {
-			app.log.Warn("could not load a paused job's progress after startup; it is loaded when the job is resumed",
-				"job", row.ID, "timeout", app.pausedVerifyTimeout, "err", err)
-			continue
-		}
-		app.emit(Event{Type: "queue_updated", NzoID: row.ID})
-	}
-}
-
 // fileOwedUnwantedFailures files every restored job the archive peek had
 // blocked under the fail action but not yet filed (fileOwedUnwantedFailure),
 // so that such a job does not run on after a restart. It runs before the
 // first tick, so a resident complete job is deferred to its Assessing worker
 // and any other, including one that could not be hydrated, is handed over
 // before it can launch.
-//
-// It needs no ordering against verifyPausedJobs. It completes inside
-// Dispatcher.StartWith, before Start launches the verifier, and the two
-// select disjoint jobs: this sweep loads a job only when unwantedFilingOwed
-// holds, which requires IntentRun, while verifyPausedJobs loads only a job
-// with IntentPause. Nor does a job cross from one set to the other after
-// restore, which replays each row's persisted intent (dispatch.reconstruct):
-// `git grep -n '\.SetIntent[(]' -- '*.go' ':!*_test.go'` returns 10 lines, of
-// which reconstruct's 2 replay that intent, 7 set IntentPause or
-// IntentCancel, and the 1 in Dispatcher.resume sets IntentRun — approving a
-// Blocked job on a user's resume and refusing it on any other, so a paused
-// job never becomes owed.
 func (app *Application) fileOwedUnwantedFailures(ctx context.Context) error {
 	for _, row := range app.dispatcher.List() {
 		if err := ctx.Err(); err != nil {

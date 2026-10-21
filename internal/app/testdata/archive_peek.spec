@@ -14,11 +14,11 @@
 #
 # TestReconcile_FilesAFailBlockedJobAndHoldsAPauseBlockedOne calls the sweep
 # itself, so the sweep's place in reconcileBeforeFirstTick is pinned by
-# TestVerifyPausedJobs_OwedFilingIsNotDeferredBehindIt, which restarts over a
+# TestStart_FilesAnOwedJobInsideStart, which restarts over a
 # real queue.
 
 pkg ./internal/app/
-run TestPeek_|TestArchivePeek_Pipeline_FailAction|TestBlockForUnwanted_|TestReevaluateStall_ABlocked|TestArchiveMemberNames|TestReconcile_FilesAFail|TestVerifyPausedJobs_OwedFilingIsNotDeferredBehindIt
+run TestPeek_|TestArchivePeek_Pipeline_FailAction|TestBlockForUnwanted_|TestReevaluateStall_ABlocked|TestArchiveMemberNames|TestReconcile_FilesAFail|TestStart_FilesAnOwedJobInsideStart
 timeout 10m
 
 [a file with a failed article is read anyway]

@@ -1149,9 +1149,8 @@ func (d *Dispatcher) SetPriority(id string, priority constants.Priority) error {
 
 // setNameLoadTimeout bounds SetName's hydration of the job. The
 // hydration verifies the job's written articles against the disk, so it is
-// sized, like the app's startup verification of paused jobs, for a large job on
-// a remote mount. A rename that exceeds it fails, attaches nothing, and can be
-// retried.
+// sized for a large job on a remote mount. A rename that exceeds it fails,
+// attaches nothing, and can be retried.
 const setNameLoadTimeout = 10 * time.Minute
 
 // SetName updates the job's display and filesystem name across both the Header
@@ -1206,10 +1205,8 @@ func (d *Dispatcher) SetName(id, name string) error {
 // SetName calls it so Job.DownloadBegun reads the job's restored filenames and
 // not only the restored stamp: a retried job's stamps are cleared, and a job
 // whose only resolved articles failed was never stamped, yet both may have
-// bytes under the name. The application's
-// startup verifier (Application.verifyPausedJobs) calls it, after Start has
-// returned, for every job restored paused at Fetching, which no tick hydrates
-// until it is resumed.
+// bytes under the name. SetName is its only production caller:
+// `git grep -n '[.]LoadProgress[(]' -- '*.go' ':!*_test.go'` returns 1 line.
 //
 // It calls Hydrate even for a job that has progress, because Hydrate waits
 // for a hydration in flight: one that has attached the job's content but not

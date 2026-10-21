@@ -534,55 +534,63 @@ func TestLooseRecord_CompletionFaultConvergesInProcess(t *testing.T) {
 	}
 }
 
-// TestLooseRecord_PausedJobReportsVerifiedProgress pins the startup loop: a
-// Fetching job restored paused is verified after Start (verifyPausedJobs), so
-// the queue shows its progress before the user resumes it.
-func TestLooseRecord_PausedJobReportsVerifiedProgress(t *testing.T) {
+// TestLooseRecord_PausedJobReportsEstimateUntilResumed pins the hand-off: a
+// Fetching job restored paused reports the recorded-count estimate, and the
+// user's resume is what verifies it.
+func TestLooseRecord_PausedJobReportsEstimateUntilResumed(t *testing.T) {
 	t.Parallel()
 	env := newLREnv(t)
-	a1 := env.newApp(t)
-	j := a1.addJob(t, "paused", 4, 2)
-	env.writeFileA(t, j, 4, 0, 1)
-	a1.recordFileA(t, j.ID(), false, 0, 1)
-	a1.dispatcher.Tick(t.Context())
-	a1.dispatcher.Tick(t.Context())
-	if st := j.State().State; st != job.Fetching {
-		t.Fatalf("fixture: the job is at %v, want Fetching", st)
-	}
-	if err := a1.dispatcher.PauseJob(j.ID()); err != nil {
-		t.Fatalf("PauseJob: %v", err)
-	}
-	a1.dispatcher.Tick(t.Context())
-
-	// verifyPausedJobs reports each paused job's load through the hook, so the
-	// test waits on the load itself rather than polling for its effect.
-	verified := make(chan error, 1)
-	a2 := env.newApp(t, func(a *Application) {
-		a.pausedVerifiedHook = func(id string, err error) {
-			if id == j.ID() {
-				verified <- err
-			}
-		}
-	})
+	j := pauseAtFetching(t, env, env.newApp(t), "paused")
+	a2 := env.newApp(t)
 	a2.start(t)
 	j2 := a2.registered(t, j.ID())
-	if j2.Intent() != job.IntentPause {
-		t.Fatalf("fixture: the restored job is not paused")
+	if j2.AllVerified() || j2.Resident() {
+		t.Fatal("the restored paused job was hydrated before its resume")
 	}
-	if err := lrAwait(t, "the paused job's startup verification", verified); err != nil {
-		t.Fatalf("the paused job's startup verification failed: %v", err)
+	row, ok := a2.dispatcher.Row(j.ID())
+	if !ok {
+		t.Fatal("the job is not registered")
 	}
-	if !j2.HasProgress() {
-		t.Fatal("the paused job has no progress after its startup verification")
+	if want := row.Header.Bytes - 2*lrArtLen; row.RemainingBytes != want {
+		t.Errorf("remaining = %d of %d before the resume, want %d estimated from the 2 recorded articles", row.RemainingBytes, row.Header.Bytes, want)
 	}
-	p := j2.Progress()
-	if !p.ArticleDone(0) || !p.ArticleDone(1) {
-		t.Error("the paused job's verified articles are not Done")
+	if err := a2.dispatcher.ResumeJobByUser(j.ID()); err != nil {
+		t.Fatalf("ResumeJobByUser: %v", err)
+	}
+	lrWaitFor(t, "the resumed job to hold its lease on the verified content", func() bool {
+		r, ok := a2.dispatcher.Row(j.ID())
+		return ok && r.View.Holds && j2.Resident() && articleDone(j2, 1)
+	})
+	if !articleDone(j2, 0) {
+		t.Error("a verified article is not Done after the resume")
+	}
+	if !j2.AllVerified() {
+		t.Error("the resumed job is not verified after its hydration")
 	}
 	expected, remaining, _ := j2.ProgressFigures()
 	if remaining >= expected {
-		t.Errorf("remaining %d of %d: the queue would show 0%% for a verified job", remaining, expected)
+		t.Errorf("remaining %d of %d after the resume", remaining, expected)
 	}
+}
+
+// pauseAtFetching adds a job to a with two of file A's four articles written
+// and recorded, takes it to Fetching and pauses it there, so that a restart
+// over the same env restores it paused at Fetching with rows to verify.
+func pauseAtFetching(t *testing.T, env *lrEnv, a *lrApp, name string) *job.Job {
+	t.Helper()
+	j := a.addJob(t, name, 4, 2)
+	env.writeFileA(t, j, 4, 0, 1)
+	a.recordFileA(t, j.ID(), false, 0, 1)
+	a.dispatcher.Tick(t.Context())
+	a.dispatcher.Tick(t.Context())
+	if st := j.State().State; st != job.Fetching {
+		t.Fatalf("fixture: %s is at %v, want Fetching", name, st)
+	}
+	if err := a.dispatcher.PauseJob(j.ID()); err != nil {
+		t.Fatalf("PauseJob: %v", err)
+	}
+	a.dispatcher.Tick(t.Context())
+	return j
 }
 
 // TestLooseRecord_CrashAfterLeavingFetchingStillReads pins §4's "no outside

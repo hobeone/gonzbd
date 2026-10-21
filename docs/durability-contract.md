@@ -384,12 +384,6 @@ verifies itself:
 
 - the dispatcher's tick (`reconcileResidency`), for a job that holds what its
   position requires;
-- `Application.verifyPausedJobs` → `LoadProgress`, on a goroutine `Start`
-  launches last, after the API can listen: each job restored at `Fetching`
-  with `IntentPause` is hydrated, and so verified, one at a time under a
-  per-job deadline (`pausedVerifyTimeout`, 10 minutes), so that `mode=queue`
-  reports its verified progress rather than the restore pass's estimate
-  without the user resuming it;
 - `Dispatcher.SetName` → `LoadProgress`. A rename is refused once
   `Job.DownloadBegun()` is true and moves nothing on disk; verification runs
   first, so the restored filenames make the job "begun" (`verifyJobFiles`
@@ -398,6 +392,8 @@ verifies itself:
   `LoadProgress` calls `Hydrate` even for a job with progress, so it waits
   for a hydration that has attached content but not yet installed its
   filenames;
+- `Application.fileOwedUnwantedFailures` → `appResidency.Hydrate`, before the
+  first tick, for a restored job the archive peek owes a filing;
 - `Application.verifyRetry`, for a retried job: it is rebuilt by
   `BuildIngestJob`, which attaches its files and articles, so `Hydrate` would return
   early and never verify it (see *Retry* below).
@@ -1502,38 +1498,6 @@ recorded here so the next reader does not mistake them for design.
    matters, the follow-up is a `verified` gate in the dispatch plan with the
    read on the Fetching worker.
 
-   **At startup the paused jobs are verified after the API listens, and a
-   job reports only an estimate until its own verification lands.**
-   `verifyPausedJobs` (`internal/app/startup_reconcile.go`) hydrates, and so
-   verifies, every job restored at `Fetching` with `IntentPause`, one at a
-   time, on a goroutine `Application.Start` launches last; `cmd/gonzbd/main.go`
-   starts its HTTP server after `Start` returns, so the read-back runs while
-   the API serves. Until a job's load lands, `mode=queue` reports the restore
-   pass's estimate from each file's recorded row count (§3), as it does for any
-   restored job with an unverified file, so the progress is visible without
-   this verifier and the verifier only replaces the estimate with the
-   verified figure. The loads run in listing (dispatch) order, so a job low in
-   the queue waits behind the bytes of those above it. Each load runs under a per-job
-   deadline (`pausedVerifyTimeout`, 10 minutes): a job whose read-back exceeds
-   it is left unverified, parks nothing and keeps its rows, and reports that
-   estimate until its resume lets the tick hydrate it — the cost of a deadline too
-   short for a large job on a slow mount. A hung hard-mounted share still
-   blocks the read in the syscall, which no deadline interrupts (limitation
-   6); it then holds `Shutdown`'s `wg.Wait` step to its budget, since the
-   verifier is on `app.wg`. A paused job that was loaded stays resident until
-   it is resumed or removed, because the tick's eviction arm skips
-   `IntentPause` (`reconcileResidency`, `internal/dispatch/tick.go`). A
-   resume during a job's load waits for it (`appResidency.Hydrate` runs one
-   hydration of a job at a time, and a waiter whose hydration did not attach
-   hydrates the job itself). A removal during it — the HTTP handler behind
-   `mode=queue&name=delete` — cancels whichever hydration of the job is in
-   flight and waits for it to return (`appResidency.Evict`): a manifest read
-   returns at the cancellation, the read-back stops at its next row, and a
-   read-back read blocked in the syscall holds the removal until that read
-   returns. Whatever verdicts the load committed then reach SQLite before the
-   removal's reclaim deletes the rows. A rename (`Dispatcher.SetName`) loads
-   the job under its own deadline (`setNameLoadTimeout`, 10 minutes).
-
 2. **An unreadable sector, or a missing download directory, keeps the job
    parked until the user resumes that job** (§3), with the fault as its
    `stall_reason`. A queue-wide resume, the low-disk auto-resume and a
@@ -1570,9 +1534,15 @@ recorded here so the next reader does not mistake them for design.
 
 6. **A remote NFS/SMB mount can stall untimed calls.** A `pwrite` or `fsync`
    that does not return blocks the assembler's single worker, and so every
-   job's writes; a verification read blocks the tick, or after startup the
-   paused jobs' verifier and the `Shutdown` step that joins it (limitation
-   1); a manifest read or removal on the filesystem hosting `admin_dir`
+   job's writes; a verification read blocks the tick; a rename's caller
+   (`Dispatcher.SetName`'s `LoadProgress`, under `setNameLoadTimeout`, which
+   bounds the wait but cannot interrupt the syscall); `Start`, through
+   `Application.fileOwedUnwantedFailures`; and a removal
+   (`mode=queue&name=delete`) waiting in `appResidency.Evict` for the
+   hydration it cancelled: the hydration's read-back stops at its next row,
+   but a read-back read blocked in the syscall holds the removal until that
+   read returns, and whatever verdicts the hydration committed reach SQLite
+   before the removal's reclaim deletes the rows; a manifest read or removal on the filesystem hosting `admin_dir`
    blocks its caller, except a hydration's manifest read, which its caller
    abandons when its context ends (`appResidency.readArticles`) and leaves
    to return on its own goroutine.
