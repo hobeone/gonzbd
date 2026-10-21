@@ -92,7 +92,8 @@ func archiveMemberNames(path string, par2Opts par2.ParseOptions) (names []string
 //
 // It does nothing, and reports nothing to the job, when the job is not
 // resident or its file cannot be located, and also when:
-//   - the job is already Blocked or Approved (Dispatcher.UnwantedState), or the
+//   - the job already has an unwanted state, Blocked, Approved or FailOwed
+//     (any state but StateNone from Dispatcher.UnwantedState), or the
 //     rules cannot be read or are ActionOff;
 //   - any article of the file failed. The volume then has holes and its headers
 //     cannot be trusted either way; par2 and the backstop deal with it, so one

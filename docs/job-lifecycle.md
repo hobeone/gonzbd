@@ -1044,9 +1044,10 @@ member is extracted while the job waits.
 Apart from restoring it from `dispatch_jobs` (the `Scan` in
 `internal/dispatch/store/store.go`), the writers of `Header.Unwanted` are
 `app.screenUnwanted`, before the job is registered, and, afterwards,
-`BlockUnwanted` (None to Blocked) and `ResumeJobByUser` (Blocked to Approved)
-(`git grep -nE '\.Unwanted\s*=[^=]' -- '*.go' ':!*_test.go'` returns 5 lines:
-three in `internal/app/unwanted.go`, two in `internal/dispatch/registry.go`).
+`BlockUnwanted` (None to Blocked or FailOwed) and `ResumeJobByUser` (Blocked to
+Approved) (`git grep -nE '\.Unwanted\s*=[^=]' -- '*.go' ':!*_test.go'` returns 7
+lines: four in `internal/app/unwanted.go`, three in
+`internal/dispatch/registry.go`).
 
 ### Cancel is an interrupt before the boundary, a gate after
 

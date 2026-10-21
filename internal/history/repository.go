@@ -74,7 +74,8 @@ type Entry struct {
 	// TimeAdded holds the unix timestamp of when the job was added to the queue.
 	TimeAdded time.Time
 
-	// Unwanted is the job's unwanted.State when it was filed. A Failed entry
+	// Unwanted is the ForHistory() of the job's unwanted.State when it was
+	// filed, so a StateFailOwed job is recorded as StateBlocked. A Failed entry
 	// at unwanted.StateBlocked is one the unwanted-extension check refused;
 	// retry reads this, not FailMessage, to tell.
 	Unwanted unwanted.State
