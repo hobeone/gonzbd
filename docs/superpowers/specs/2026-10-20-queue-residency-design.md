@@ -277,9 +277,13 @@ Per-article bits are **not** seeded. `pendingArticles`, `Pending`,
   worker and fault paths (`postproc_admission.go:207`), and `app.go:2418`
   — because worker launch follows the tick's hydration. The comment at
   `app.go:1780` ("IsComplete reads true only for a job with progress") is
-  falsified by this design and is on the sweep list. `Pending`,
-  `PendingArticles` and `HasProgress` have one reader outside `internal/job`
-  each, all in `api/queue.go` or `dispatch/registry.go` for display.
+  falsified by this design and is on the sweep list. Outside `internal/job`,
+  re-derived on `main` at the time of writing: `FileProgress.Pending` has no
+  reader; `PendingArticles` has one (`internal/api/queue.go:516`, display);
+  `HasProgress` has five, four for display (`internal/api/queue.go:474,515`,
+  `internal/dispatch/registry.go:671,718`) and one gate, the hydration branch
+  at `internal/app/residency.go:153`, which stage 2 replaces with the
+  `Verified` test (4.6).
 
 ### 4.6 Hydration: verify, then correct
 
@@ -386,7 +390,7 @@ table.
 | Unverified estimate is in `Bytes` units and bounded | unit test on `fileBytesDownloaded` with `Recorded` = 0, k, n |
 | After a hydration every file is `Verified` | app test over a job with a file whose rows verification deletes |
 | `InstallFileVerification` is the sole writer of `Verified = true` | enumeration test on the assignment |
-| No gate consumes an unverified figure | enumeration in the PR body, re-derived from source at the time: readers of `fileBytesDownloaded` (display only); of `ArticleDone`/`FileComplete` outside `internal/job` (`api/queue.go` display; `postproc/filelist.go` post-attach); of `IsComplete` (all on worker or fault paths of a hydrated job, 4.5); of `Pending`/`PendingArticles`/`HasProgress` (display) |
+| No gate consumes an unverified figure | enumeration in the PR body, re-derived from source at the time: readers of `fileBytesDownloaded` (display only); of `ArticleDone`/`FileComplete` outside `internal/job` (`internal/api/queue.go` display; `internal/postproc/filelist.go` post-attach; `internal/app/app.go` `retryFileStates`, after `verifyRetry` has installed verification); of `IsComplete` (all on worker or fault paths of a hydrated job, 4.5); of `Pending`/`PendingArticles`/`HasProgress` (display, and the hydration branch 4.5 names) |
 | A restored job's first hydration always runs the verification pass, complete=1 and row-less files included | app test: restore a job whose files are all complete=1, hydrate, assert the failed set and settled CRC are installed; mutate spec flipping the seed's `Verified` to true and requiring red |
 | Schema | `schema.golden` updated; `TestAllFlat`/config contract unaffected |
 
@@ -464,7 +468,7 @@ Each step lands green on its own, as a PR.
 | Header | — | everything |
 | File table | ~10 KB | listing, drawer, unwanted check, archive peek, post-processing, **verification** (`verifyJobFiles` reads only `FileBytes/NumFiles/FileRange/FileSubject`) |
 | Per-article sizes | 160 KB | byte accounting while fetching |
-| Message-IDs and numbers | ~1.4 MB | **fetch only** (`ForEachUnfinishedArticle` → `downloader/dispatch.go:132`) |
+| Message-IDs and numbers | ~1.4 MB | **fetch only** (`ForEachUnfinishedArticle` → `internal/downloader/dispatch.go:132`) |
 | `JobProgress` | ~7.5 KB | all reporting; abort gates |
 | `written_articles` rows | SQLite | verification; the restore seed |
 
