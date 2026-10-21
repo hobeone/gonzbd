@@ -301,8 +301,11 @@ until a resume lets the tick hydrate it, or a rename hydrates it through
 the first load (after which, being paused, it stays resident until resumed).
 The second is `Application.fileOwedUnwantedFailures`, before the first tick, which
 calls the residency's `Hydrate` directly for a restored job the archive peek
-owes a filing, so the filing sees its verified files; it records no load,
-because the job departs once filed. A hydration that cannot verify the job's files
+owes a filing, so the filing sees its verified files; it records no load.
+A job filed at once departs; a complete job, whose filing is deferred to its
+Assessing worker, holds a lease at the first tick, whose reconcile then
+hydrates it (`Hydrate` returns at once for a resident job) and records it
+resident like any other. A hydration that cannot verify the job's files
 returns an error wrapping `ErrResidencyFault`, which no caller settles: the
 job has been parked (`docs/durability-contract.md` §3).
 
