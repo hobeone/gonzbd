@@ -57,10 +57,14 @@ describe('SpeedGraph', () => {
 			props: { data: [0, 100], width: 100, height: 100 }
 		});
 		const polyline = container.querySelector('polyline');
-		const points = polyline?.getAttribute('points') || '';
-		// First point: x=0, value=0 → y should be at bottom (100-0=100, but clamped to height-2)
-		// Second point: x=100, value=100 → y should be near top
-		expect(points).toContain('0,');
-		expect(points).toContain('100,');
+		expect(polyline?.getAttribute('points')).toBe('0,100 100,2');
+	});
+
+	it('scales multi-point series including intermediate values', () => {
+		const { container } = render(SpeedGraph, {
+			props: { data: [0, 50, 100], width: 100, height: 100 }
+		});
+		const polyline = container.querySelector('polyline');
+		expect(polyline?.getAttribute('points')).toBe('0,100 50,51 100,2');
 	});
 });

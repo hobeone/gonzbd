@@ -6,26 +6,22 @@ vi.mock('#lib/api.js', () => ({
 	postAction: vi.fn()
 }));
 
-// Captures the handlers passed to subscribeWS so tests can simulate WS events.
-const capturedWSHandlers = new Set<(event: any) => void>();
-const capturedWSHandler = (event: any) => {
-	capturedWSHandlers.forEach((h) => h(event));
-};
-vi.mock('./websocket.svelte', () => ({
-	subscribeWS: vi.fn((handler: (event: any) => void) => {
-		capturedWSHandlers.add(handler);
-		return vi.fn(() => {
-			capturedWSHandlers.delete(handler);
-		});
-	})
-}));
+vi.mock('./websocket.svelte', async () => {
+	const { createWSMock } = await import('./testing/wsMock.js');
+	return createWSMock();
+});
 
 // Mock ConnectionStore — queue store reports success/failure to it.
-vi.mock('./connection.svelte', () => ({
-	reportFailure: vi.fn(),
-	reportSuccess: vi.fn(),
-	onReconnected: vi.fn(() => vi.fn())
-}));
+vi.mock('./connection.svelte', async () => {
+	const { createConnectionMock } = await import('./testing/wsMock.js');
+	return createConnectionMock();
+});
+
+import {
+	capturedWSHandlers,
+	capturedWSHandler,
+	resetWSMock
+} from './testing/wsMock.js';
 
 import {
 	getQueue,
@@ -75,7 +71,7 @@ describe('Queue Store', () => {
 	beforeEach(async () => {
 		vi.useFakeTimers();
 		vi.clearAllMocks();
-		capturedWSHandlers.clear();
+		resetWSMock();
 		stopPolling();
 		// Reset singleton state.
 		vi.mocked(fetchQueue).mockResolvedValue({

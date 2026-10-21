@@ -274,13 +274,20 @@ func TestQueueSearch(t *testing.T) {
 	screenshotOnFailure(t, page)
 	env.navigate(t, page, "/")
 
-	// Wait for all items to render.
+	// Wait for jobs to render.
 	name4 := page.GetByText("Test.Download.4.x264-GROUP")
 	if err := name4.First().WaitFor(playwright.LocatorWaitForOptions{
 		State:   playwright.WaitForSelectorStateVisible,
 		Timeout: playwright.Float(5000),
 	}); err != nil {
-		t.Fatalf("jobs not visible: %v", err)
+		t.Fatalf("job 4 not visible: %v", err)
+	}
+	name0 := page.GetByText("Test.Download.0.x264-GROUP")
+	if err := name0.First().WaitFor(playwright.LocatorWaitForOptions{
+		State:   playwright.WaitForSelectorStateVisible,
+		Timeout: playwright.Float(5000),
+	}); err != nil {
+		t.Fatalf("job 0 not visible: %v", err)
 	}
 
 	// Find search input. The queue table has a search input.
@@ -308,6 +315,9 @@ func TestQueueSearch(t *testing.T) {
 	}); err != nil {
 		t.Errorf("job 3 should be visible after search: %v", err)
 	}
+
+	// Job 0, which does not match, should be hidden.
+	expectHidden(t, name0, "job 0 should be hidden after search")
 }
 
 // ---------------------------------------------------------------------------
@@ -426,6 +436,9 @@ func TestHistoryFailedFilter(t *testing.T) {
 	}); err != nil {
 		t.Errorf("failed item should be visible after filter: %v", err)
 	}
+
+	// Completed item 0 should be hidden after failed-only filter.
+	expectHidden(t, compItem, "completed item should be hidden after filter")
 }
 
 func TestHistorySearch(t *testing.T) {
@@ -470,6 +483,9 @@ func TestHistorySearch(t *testing.T) {
 	}); err != nil {
 		t.Errorf("history item 3 should be visible after search: %v", err)
 	}
+
+	// History item 0, which does not match, should be hidden after search.
+	expectHidden(t, item0, "history item 0 should be hidden after search")
 }
 
 // ---------------------------------------------------------------------------
@@ -575,9 +591,6 @@ func TestStatusBarDisplaysData(t *testing.T) {
 	screenshotOnFailure(t, page)
 	env.navigate(t, page, "/")
 
-	// The status bar should show the item count.
-	page.WaitForTimeout(1000)
-
 	// Look for status bar content showing queue info.
 	statusArea := page.Locator("[data-testid='status-bar']")
 	if err := statusArea.First().WaitFor(playwright.LocatorWaitForOptions{
@@ -587,15 +600,14 @@ func TestStatusBarDisplaysData(t *testing.T) {
 		t.Fatalf("status bar not visible: %v", err)
 	}
 
-	// Verify actual content.
-	text, err := statusArea.First().TextContent()
-	if err != nil {
-		t.Fatalf("could not read status bar text: %v", err)
-	}
-	if text == "" {
-		t.Error("status bar text is empty")
-	} else {
-		t.Logf("status bar content: %q", text)
+	// Verify status bar content renders the seeded queue count.
+	itemsCount := statusArea.GetByText("2 items")
+	if err := itemsCount.First().WaitFor(playwright.LocatorWaitForOptions{
+		State:   playwright.WaitForSelectorStateVisible,
+		Timeout: playwright.Float(5000),
+	}); err != nil {
+		text, _ := statusArea.First().TextContent()
+		t.Errorf("status bar does not show '2 items' (current text: %q): %v", text, err)
 	}
 }
 

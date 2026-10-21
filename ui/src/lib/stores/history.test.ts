@@ -6,26 +6,27 @@ vi.mock('#lib/api.js', () => ({
 	postAction: vi.fn()
 }));
 
-// Captures the handler passed to subscribeWS so tests can simulate WS events.
-let capturedWSHandler: ((event: any) => void) | null = null;
-vi.mock('./websocket.svelte', () => ({
-	subscribeWS: vi.fn((handler: (event: any) => void) => {
-		capturedWSHandler = handler;
-		return vi.fn();
-	})
-}));
+vi.mock('./websocket.svelte', async () => {
+	const { createWSMock } = await import('./testing/wsMock.js');
+	return createWSMock();
+});
 
 vi.mock('./queue.svelte', () => ({
 	refreshQueue: vi.fn()
 }));
 
 // Mock ConnectionStore — history store reports success/failure to it.
-vi.mock('./connection.svelte', () => ({
-	reportFailure: vi.fn(),
-	reportSuccess: vi.fn(),
-	onReconnected: vi.fn(() => vi.fn())
-}));
+vi.mock('./connection.svelte', async () => {
+	const { createConnectionMock } = await import('./testing/wsMock.js');
+	return createConnectionMock();
+});
 
+import {
+	capturedWSHandlers,
+	capturedWSHandler,
+	triggerReconnected,
+	resetWSMock
+} from './testing/wsMock.js';
 import {
 	getHistory,
 	getHistorySlots,
@@ -74,6 +75,7 @@ describe('History Store', () => {
 	beforeEach(async () => {
 		vi.useFakeTimers();
 		vi.clearAllMocks();
+		resetWSMock();
 		stopHistoryPolling();
 		// Reset singleton state — setters call poll(), so provide a mock response.
 		vi.mocked(fetchHistory).mockResolvedValue({ status: true, history: { slots: [], noofslots: 0 } } as any);
@@ -288,13 +290,20 @@ describe('History Store', () => {
 
 	// ── Lifecycle ──
 
-	it('stopHistoryPolling prevents further WS-triggered polls', async () => {
+	it('stopHistoryPolling prevents further polls (WS and reconnect)', async () => {
 		mockHistoryOk();
 		startHistoryPolling();
 		await vi.advanceTimersByTimeAsync(0);
+		expect(fetchHistory).toHaveBeenCalledTimes(1);
 		vi.clearAllMocks();
 
 		stopHistoryPolling();
+
+		capturedWSHandler({ event: 'job_finalized', nzo_id: 'nzo_1' });
+		triggerReconnected();
+		await vi.advanceTimersByTimeAsync(0);
+
+		expect(fetchHistory).not.toHaveBeenCalled();
 	});
 
 	it('calling startHistoryPolling twice does not double-subscribe', async () => {
@@ -303,8 +312,9 @@ describe('History Store', () => {
 		startHistoryPolling(); // Should be no-op.
 		await vi.advanceTimersByTimeAsync(0);
 
-		// Only 1 poll from the first start.
+		// Only 1 poll and 1 subscriber from the first start.
 		expect(fetchHistory).toHaveBeenCalledTimes(1);
+		expect(capturedWSHandlers.size).toBe(1);
 	});
 
 	// ── job_finalized event ──
@@ -316,8 +326,8 @@ describe('History Store', () => {
 		vi.clearAllMocks();
 		mockHistoryOk();
 
-		expect(capturedWSHandler).not.toBeNull();
-		capturedWSHandler!({ event: 'job_finalized', nzo_id: 'nzo_1' });
+		expect(capturedWSHandlers.size).toBe(1);
+		capturedWSHandler({ event: 'job_finalized', nzo_id: 'nzo_1' });
 		await vi.advanceTimersByTimeAsync(0);
 
 		expect(fetchHistory).toHaveBeenCalledTimes(1);
