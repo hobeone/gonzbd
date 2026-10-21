@@ -258,9 +258,9 @@ func (j *Job) PendingArticles() int {
 }
 
 // DownloadStarted returns the time the first article began downloading, or
-// zero if unstarted. Before the job has a JobProgress it reads the value
-// restored from the store, so a restored job reports the same stamp whether or
-// not it has been hydrated yet.
+// zero if unstarted. While the job has no JobProgress it reads the value
+// restored from the store, so a restored job reports the same stamp before and
+// after AttachFiles seeds the record from it.
 func (j *Job) DownloadStarted() time.Time {
 	j.contentMu.RLock()
 	defer j.contentMu.RUnlock()
@@ -282,7 +282,7 @@ func (j *Job) DownloadStarted() time.Time {
 // FileProgress.Filename are those three —
 // `git grep -n '\]\.Filename = ' -- 'internal/job/*.go' ':!*_test.go'` returns 3 lines.
 //
-// Before the job has a JobProgress it reads the restored start stamp, which a
+// While the job has no JobProgress it reads the restored start stamp, which a
 // job with a filename may lack; Dispatcher.SetName hydrates before Job.SetName
 // asks.
 //
@@ -305,7 +305,8 @@ func (j *Job) DownloadBegun() bool {
 }
 
 // DownloadFinished returns the time downloading completed, or zero if
-// unfinished. Reads the restored value before hydration, as DownloadStarted does.
+// unfinished. Reads the restored value while the job has no JobProgress, as
+// DownloadStarted does.
 func (j *Job) DownloadFinished() time.Time {
 	j.contentMu.RLock()
 	defer j.contentMu.RUnlock()
@@ -316,8 +317,8 @@ func (j *Job) DownloadFinished() time.Time {
 }
 
 // Par2ReleaseReason returns the reason par2 articles were released, or empty
-// if not released. Reads the restored value before hydration, as
-// DownloadStarted does.
+// if not released. Reads the restored value while the job has no JobProgress,
+// as DownloadStarted does.
 func (j *Job) Par2ReleaseReason() string {
 	j.contentMu.RLock()
 	defer j.contentMu.RUnlock()
@@ -652,8 +653,8 @@ func (j *Job) DiscardDeferredPar2() bool {
 //
 // The else branch is not defensive padding: Par2ReleaseReason reads the
 // restored field while progress is nil, so dropping the write there — as this
-// did before #504 — would make a write-then-read on a job that has not been
-// hydrated return the restored value instead of the one just written. Writing
+// did before #504 — would make a write-then-read on a job that has no
+// JobProgress return the restored value instead of the one just written. Writing
 // to whichever field is currently authoritative keeps the two in agreement.
 func (j *Job) SetPar2ReleaseReason(reason string) {
 	j.contentMu.Lock()
@@ -793,8 +794,9 @@ func (j *Job) ClearEmittedForReload(skipEmitted bool) (cleared, retained []int32
 // the body of RetryHistoryJob and of the finalizer's automatic retry, which
 // rebuilds the job through BuildIngestJob's job.New + AttachContent rather than
 // reusing the restored one, so restored* is already zero. A caller that
-// retried a restored, never-hydrated job in place would return early here on
-// the progress == nil guard and keep the old values.
+// retried a restored job in place before its first hydration would return
+// early here on the manifest == nil guard and keep the old progress-tier
+// values.
 func (j *Job) ResetForRetry() {
 	j.contentMu.Lock()
 	defer j.contentMu.Unlock()
@@ -937,7 +939,7 @@ func (j *Job) ClearDownloadFinished() error {
 // nil, so the live-record branch is unreachable in production today.
 //
 // That branch is still not defensive padding: without it a call made after
-// hydration would land in fields the accessors stop reading once progress is
+// AttachFiles would land in fields the accessors stop reading once progress is
 // non-nil and return successfully having discarded the value — the identical
 // silent drop this function exists to remove, one level up. It adds no writer
 // of those fields; restoreDownloadStamps and restorePar2ReleaseReason already
@@ -945,7 +947,7 @@ func (j *Job) ClearDownloadFinished() error {
 //
 // Both branches put the timestamps through jobStampOrZero, so a stamp is
 // accepted or rejected the same way whichever record receives it. Without that
-// the pre-hydration accessor could report a stamp that hydration then dropped.
+// the accessor could report a stamp that AttachFiles then dropped.
 //
 // AttachFiles seeds the fresh JobProgress from the Job-level copy and zeroes it.
 func (j *Job) RestoreProgressState(reason string, started, finished time.Time) {

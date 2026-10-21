@@ -1,5 +1,7 @@
 # Queue Residency Stage 2 — Progress from Restore — Implementation Plan
 
+> Executed 2026-10-20. Where the code differs from this plan, the decision log (D17–D20) records the change.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** every registered job has a `FileTable` and a `JobProgress` before the first tick, so the queue shows files, an estimated percentage and a "progress from the record" badge for every job after a restart, and hydration verifies a restored job once and then marks it verified.
@@ -48,8 +50,8 @@
 - Modify: `internal/job/progress.go` — `FileProgress` gains `Verified bool` and `Recorded int` (doc text from design §4.3 verbatim); `type FileSeed struct { Recorded int; Complete bool; Filename string; Fetch FetchPolicy }`; `newJobProgress(ft *FileTable, seed []FileSeed) *JobProgress` applies the seed (nil → `Verified=true`); `func (p *JobProgress) fileBytesDownloaded(fi int) int64` returns `Bytes×Recorded/ArticleCount` (ArticleCount = `fileStarts[fi+1]-fileStarts[fi]`; 0 articles → 0) when `!Verified`, else `BytesDownloaded`; `sizeFigures` and `FileBytesDownloaded` read through it; `func (p *JobProgress) AllVerified() bool`; `func (p *JobProgress) FileVerified(fi int) bool`.
 - Modify: `internal/job/content.go` — `AttachFiles(ft *FileTable, seed []FileSeed) error` (refuses `seed != nil && len(seed) != ft.NumFiles()`); `AttachContent(m)` passes `nil`; `Job.AllVerified()` wrapper.
 - Modify: `internal/job/verification.go` — `InstallFileVerification` sets `files[fi].Verified = true; Recorded = 0` as its last step.
-- Modify: `internal/job/writer_enumeration_test.go` — new `TestVerifiedTrueWriters_MatchTheEnumerationStatedInProse` scanning assignments of `.Verified = true` (expect `[InstallFileVerification]`).
-- Tests: `internal/job/progress_test.go` or new `internal/job/seed_test.go`; spec `internal/job/testdata/restore_seed.spec`.
+- Modify: `internal/job/writer_enumeration_test.go` — new `TestVerifiedTrueWriters_MatchTheEnumerationStatedInProse` scanning assignments of `.Verified = true` (expect `[InstallFileVerification]`). <!-- doccite:ok TestVerifiedTrueWriters_MatchTheEnumerationStatedInProse — landed as TestVerifiedWriters_MatchTheEnumerationStatedInProse -->
+- Tests: `internal/job/progress_test.go` or new `internal/job/seed_test.go`; spec `internal/job/testdata/restore_seed.spec`. <!-- doccite:ok internal/job/progress_test.go — landed as internal/job/seed_test.go -->
 - Every caller of `AttachFiles(` gains `, nil` (`git grep -n 'AttachFiles(' -- '*.go'`; paste the count in the commit body).
 
 **Interfaces:**

@@ -251,7 +251,7 @@ func TestFileOwedUnwantedFailures_FailedHydrationIsLoggedAndFiled(t *testing.T) 
 	if !a2.postProcAdmissions.has(owed2) {
 		t.Error("a job whose hydration failed was not filed")
 	}
-	if got := logs.String(); !strings.Contains(got, "level=WARN") || !strings.Contains(got, "filing it anyway") {
+	if got := logs.String(); !strings.Contains(got, "level=WARN") || !strings.Contains(got, "it is filed unless the failure parked it") {
 		t.Errorf("the failed hydration was not logged at Warn; log:\n%s", got)
 	}
 }

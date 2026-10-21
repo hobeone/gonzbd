@@ -209,7 +209,7 @@ type queueSlot struct {
 	// the remaining figures are an estimate from the download record. A
 	// registered job with no progress record (its job_files structure could
 	// not be restored; the tick fails it at first hydration) reads false.
-	// An added key: SABnzbd clients ignore unknown slot fields.
+	// The §10 surface is additive: a new key never changes an existing key's shape.
 	ProgressVerified bool `json:"progress_verified"`
 
 	// Files is the per-file breakdown for the row's expansion drawer.

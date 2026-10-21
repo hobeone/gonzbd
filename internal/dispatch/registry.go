@@ -1147,7 +1147,7 @@ func (d *Dispatcher) SetPriority(id string, priority constants.Priority) error {
 	return nil
 }
 
-// setNameLoadTimeout bounds SetName's hydration of a job with no progress. The
+// setNameLoadTimeout bounds SetName's hydration of the job. The
 // hydration verifies the job's written articles against the disk, so it is
 // sized, like the app's startup verification of paused jobs, for a large job on
 // a remote mount. A rename that exceeds it fails, attaches nothing, and can be

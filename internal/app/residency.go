@@ -88,7 +88,10 @@ func newAppResidency(lookup func(string) (*job.Job, bool), dir string, store rec
 // pass seeded, at its first hydration — has its written articles verified
 // first (verifyJobFiles) and the verdicts committed before its articles are
 // attached; if either fails, nothing is attached and no file is marked
-// verified, so the next hydration verifies again. The branch keys on
+// verified, so the next hydration verifies again. After the attach, a file
+// whose Job.InstallFileVerification errors is logged and stays unverified
+// (installVerification) with the articles attached; AllVerified is then false,
+// and the next hydration after an eviction verifies again. The branch keys on
 // Job.AllVerified, never on the table: a job whose every file was verified
 // here (or that was ingested here, which has nothing to verify) has an
 // authoritative progress record, and gets its articles back alone

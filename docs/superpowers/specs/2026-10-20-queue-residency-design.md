@@ -215,7 +215,10 @@ tick (`reconcileBeforeFirstTick`). The restore pass goes there:
    shown or run: it is settled `Failed` with an operational error naming
    the gap, as an unreadable manifest is today at its first tick. Same
    class — a job whose persisted structure is gone — moved from tick time
-   to restore time. A scan failure on a *results* column (`complete`,
+   to restore time, except that a job with no open attempt (one that never
+   ran) is refused by the settling door: it stays registered without a table
+   or progress, and the tick's first hydration fails it for want of a table
+   (decision D20; `failUnrestorable` in `internal/app/restore_progress.go`). A scan failure on a *results* column (`complete`,
    `filename`, `fetch_policy`) alone is not reachable: `FileRows` scans the
    row as a unit.
 4. When the application has no history database (`app.durable == nil`),
@@ -230,8 +233,8 @@ stores.
 `durability.FileRow` is widened with the four structure columns and remains
 the one reader type for `job_files`; `installVerification` keeps taking it.
 
-`Dispatcher.List`/`Row` lose the header-bytes fallback: every registered
-job has progress by the time anything lists it.
+`Dispatcher.List`/`Row` keep the header-bytes fallback for that one class —
+a registered job with no progress (decision D20).
 
 ### 4.5 What an unverified figure is
 
@@ -269,9 +272,10 @@ Per-article bits are **not** seeded. `pendingArticles`, `Pending`,
   durable fact written after the file's fsync (§2). The *flag* is therefore
   trustworthy on the seed, but the file's bits, failed set and settled CRC
   are not yet installed (4.6), so a restored complete job must still be
-  hydrated before anything acts on it. That holds **positionally**, and the
-  PR must enumerate it rather than assume it: every reader of `IsComplete`
-  outside `internal/job` runs on a job that has been hydrated —
+  hydrated before anything acts on it. That holds **positionally**, with one startup
+  carve-out (below), and the PR must enumerate it rather than assume it: every
+  reader of `IsComplete` outside `internal/job` runs on a job that has been
+  hydrated —
   `reportDownloadComplete` on the Fetching worker (`app.go:1782`), the
   admission predicate reached through `admit`/`admitUnlessAssessing` from
   worker and fault paths (`postproc_admission.go:207`), and `app.go:2418`
@@ -284,6 +288,13 @@ Per-article bits are **not** seeded. `pendingArticles`, `Pending`,
   `internal/dispatch/registry.go:671,718`) and one gate, the hydration branch
   at `internal/app/residency.go:153`, which stage 2 replaces with the
   `Verified` test (4.6).
+  **Carve-out:** `fileOwedUnwantedFailures` (`internal/app/startup_reconcile.go`)
+  hydrates a restored job before the first tick and then files it unless that
+  hydration parked it, so `enqueuePostProc` → `awaitsAssessing` can read the
+  seeded `Complete` flags of a job whose hydration failed. A job that awaits
+  Assessing then has the unwanted reason deferred to its Assessing worker,
+  which fails it there; a hydration that parked the job (a residency fault
+  pauses it) leaves it no longer owed, so it is not filed.
 
 ### 4.6 Hydration: verify, then correct
 
@@ -372,7 +383,8 @@ table.
 - `JobProgress.describesSameJobAs` (replaced by `newManifest`'s refusal).
 - `dispatch_jobs.recovery_bytes` and its load/persist in
   `internal/dispatch/store`; `dispatch.Persisted.RecoveryBytes`.
-- The header-bytes fallback in `Dispatcher.List`/`rowFor`.
+- ~~The header-bytes fallback in `Dispatcher.List`/`rowFor`.~~ Kept, narrowed to a
+  job with no progress (the class `failUnrestorable` leaves; decision D20).
 - `Manifest`'s file-level fields and accessors, `manifestFile`,
   `manifestJSONFile`, `JobFile` (the per-file NZB shape; `FileMeta` +
   `JobArticle` remain).
@@ -383,7 +395,7 @@ table.
 
 | Invariant | Pin |
 |---|---|
-| Every registered job has `files` and `progress` after `StartWith` returns | app test: restart over a queue of {paused-never-run, paused-Fetching, queued-partial, paused-Assessing, paused-Extracting, running}, assert `NumFiles() > 0` and `HasProgress()` for each with lease cap 1 (the probe from 2026-10-20, kept as a test) |
+| Every registered job whose structure could be read has `files` and `progress` after `StartWith` returns (D20 names the class that cannot be read) | app test: restart over a queue of {paused-never-run, paused-Fetching, queued-partial, paused-Assessing, paused-Extracting, running}, assert `NumFiles() > 0` and `HasProgress()` for each with lease cap 1 (the probe from 2026-10-20, kept as a test) |
 | `AttachFiles` is the sole writer of `files` and `progress`; `AttachArticles` of `manifest` | the enumeration tests (retargeted + one new) |
 | `newManifest` refuses a count mismatch | unit test + mutate spec neutering the check |
 | No Done bit is set by the restore seed | unit test: after seed, `done.Count() == 0`; mutate spec that seeds bits and requires red |
@@ -410,8 +422,8 @@ Each step lands green on its own, as a PR.
    jobs header-only (the fallback stays one more step).
 2. **Progress from restore.** The restore pass in `reconcileBeforeFirstTick`;
    `Verified`/`Recorded`; `fileBytesDownloaded`; hydration keyed on
-   `Verified`; API fields; UI; `recovery_bytes` and the header-bytes fallback
-   deleted. **This is where the user-visible change lands.**
+   `Verified`; API fields; UI; `recovery_bytes` deleted (the header-bytes
+   fallback stays for the unrestorable class, decision D20). **This is where the user-visible change lands.**
 3. **Delete the startup verifier.** `verifyPausedJobs` and everything in §5
    not yet removed.
 4. **Contract sweep.** `durability-contract.md` §3 (reaffirmed, with the

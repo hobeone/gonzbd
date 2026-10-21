@@ -227,7 +227,10 @@ type Job struct {
 	// The rule is uniform: while progress is nil these fields are
 	// authoritative and the Job-level accessors read them; once AttachFiles
 	// installs a JobProgress it seeds it from these and zeroes them, so the
-	// two are never both live.
+	// two are never both live. The restore pass attaches the record to every
+	// job whose structure it can read before the first tick
+	// (Application.restoreProgress), so the window in which these are the only
+	// copy closes there; a job it cannot restore keeps them.
 	//
 	// Three functions write them, not two: RestoreProgressState and
 	// SetPar2ReleaseReason write values, and AttachFiles writes the zeroes

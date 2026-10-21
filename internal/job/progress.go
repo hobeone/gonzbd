@@ -793,8 +793,8 @@ func isJobStamp(t time.Time) bool { return t.Unix() > 0 }
 // It exists so the filter has one application rather than two. Restored stamps
 // reach a job by two routes — restoreDownloadStamps into a live JobProgress,
 // and Job.RestoreProgressState into the Job-level copy a job carries before
-// hydration — and a stamp accepted by one route and rejected by the other
-// would read differently from the same accessor before and after hydration.
+// AttachFiles — and a stamp accepted by one route and rejected by the other
+// would read differently from the same accessor before and after AttachFiles.
 func jobStampOrZero(t time.Time) time.Time {
 	if isJobStamp(t) {
 		return t
@@ -896,7 +896,7 @@ func (p *JobProgress) clearDownloadStamps() {
 // returns 2 files — this file (the declaration, and comments naming it) and
 // content.go,
 // where AttachFiles seeds a fresh JobProgress from the stamps
-// RestoreProgressState recorded on the Job before hydration (#504), and
+// RestoreProgressState recorded on the Job before AttachFiles (#504), and
 // RestoreProgressState installs them into a live one. It reads a stamp the
 // process did not mint, which is what this method is the door for.
 func (p *JobProgress) restoreDownloadStamps(started, finished time.Time) {

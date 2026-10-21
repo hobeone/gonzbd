@@ -51,7 +51,7 @@ const defaultPausedVerifyTimeout = 10 * time.Minute
 // tick hydrates a paused job until it is resumed, so without this mode=queue
 // would report only the restore pass's estimate (restoreProgress) for such a
 // job until the user resumed it. Until a job's load lands the queue reports
-// that estimate, as it does for any restored job before its first hydration;
+// that estimate, as it does for any restored job with an unverified file;
 // once it lands the queue reports the verified progress and a queue_updated
 // event names the job. A load that does not land — its deadline passed, or
 // verification faulted and parked the job (appResidency.Hydrate) — leaves the
@@ -132,11 +132,15 @@ func (app *Application) fileOwedUnwantedFailures(ctx context.Context) error {
 		if _, owed := app.unwantedFilingOwed(j); !owed {
 			continue
 		}
-		// A failed hydration does not stop the filing: the job is filed
-		// without its verified files rather than left to run.
+		// A failed hydration does not by itself stop the filing: the call
+		// below re-reads unwantedFilingOwed, so a job still owed is filed
+		// without its verified files (enqueuePostProc then reads the restore
+		// pass's seeded Complete flags, and a deferred unwanted reason still
+		// fails it at Assessing), while one the failure parked (a residency
+		// fault pauses it, parkVerifyFault) is no longer owed and is not filed.
 		if app.residency != nil {
 			if err := app.residency.Hydrate(ctx, row.ID); err != nil {
-				app.log.Warn("startup: loading a job owed an unwanted-extension filing failed; filing it anyway",
+				app.log.Warn("startup: loading a job owed an unwanted-extension filing failed; it is filed unless the failure parked it",
 					"job", row.ID, "err", err)
 			}
 		}

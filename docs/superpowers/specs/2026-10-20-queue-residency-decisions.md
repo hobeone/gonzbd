@@ -130,6 +130,7 @@ broken. Pinned by `TestVerifyAndAttach_MissingDirectoryParksTheJob` and
 **Consequence for stage 2:** once the startup pass attaches a table to every
 queued job, "has a table" no longer means "ran in this process"; the
 articles-only branch must key on the Verified flag, not on `Files() != nil`.
+Realised in stage 2: `Hydrate` branches on `AllVerified()` (D18).
 **Cost if wrong:** none for stage 1; behaviour matches the former
 `RestoreContent` / `AttachContent` split.
 

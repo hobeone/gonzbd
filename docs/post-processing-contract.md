@@ -677,8 +677,9 @@ Both par2 engines are handed one candidate list, which `RepairStage.repairSets` 
    `HasRun`, which the tick sets for any ungated job before it fetches
    anything, nor the start stamp, which a permanent failure does not set
    and `ResetForRetry` clears while the file and its bytes stay under the
-   name. A same-name rename is refused too, and a restored job with no
-   progress yet is hydrated first. A retry takes the name
+   name. A same-name rename is refused too, and a restored job is
+   hydrated first (`Dispatcher.SetName` calls `LoadProgress`), so the check
+   reads its verified filenames and not only the seeded ones. A retry takes the name
    rebuilt from its history entry rather than a freshly chosen one, because
    that directory is where its bytes are, and is refused if another
    registered job holds it.
