@@ -241,7 +241,11 @@ func TestStart_SweepsWhatNoDepartureReclaimed(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := application.Dispatcher().Add(context.Background(), queued, hdr); err != nil {
+	// Registered as a restore leaves it, with no content: Start refuses a job
+	// ingested before it (Application.restoreProgress). The ingested instance
+	// supplies the manifest written below.
+	restored := job.New(queued.ID(), queued.Name(), job.Policy{})
+	if err := application.Dispatcher().Add(context.Background(), restored, hdr); err != nil {
 		t.Fatal(err)
 	}
 	const stranded = "stranded0000000"

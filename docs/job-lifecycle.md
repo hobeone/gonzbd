@@ -1490,18 +1490,22 @@ Outstanding. `docs/durability-contract.md` §3 is the contract.
 Rows index articles **globally**, so placing them needs the file boundaries.
 Those come from the `FileTable`'s offsets, the prefix sum it builds over its
 own file list (`internal/job/filetable.go`). The per-file width they are summed from is
-`job_files.article_count`, written once at admission: `Hydrate` builds the table
-from the job's `job_files` rows (`fileTableFromRows`) before it verifies
-anything, so the boundaries are always already in hand.
+`job_files.article_count`, written once at admission: the restore pass
+(`Application.restoreProgress`) builds the table from the job's `job_files`
+rows (`fileTableFromRows`) before the first tick, so the boundaries are always
+already in hand when `Hydrate` verifies.
 
-This is why there is no cheaper non-resident replay. A job that has not been
-hydrated has no `JobProgress` at all, so it reports its header's full byte count
-as remaining (`Dispatcher.List` and `Dispatcher.Row` each fall back to it
-independently) — a half-downloaded job shows as untouched after a restart until
-it is hydrated. A job restored paused at `Fetching` is the exception:
-`verifyPausedJobs` hydrates it after `Start` returns, so its progress is
-reported, once that load lands, although no tick will hydrate it until it is
-resumed.
+This is why there is no cheaper non-resident replay. A restored job carries the
+restore pass's `JobProgress` from before the first tick, with no article bit
+set: until its first hydration verifies it, its remaining bytes are estimated
+from each file's recorded row count (`fileBytesDownloaded`), so a
+half-downloaded job shows roughly how far it got. `Dispatcher.List` and
+`Dispatcher.Row` fall back to the header's byte count only for a job with no
+progress, which after the restore pass is one whose structure could not be
+read (`restoreProgress`). A job restored paused at `Fetching` is verified
+early: `verifyPausedJobs` hydrates it after `Start` returns, so its verified
+progress is reported once that load lands, although no tick will hydrate it
+until it is resumed.
 
 `emitted` is deliberately **not** restored: it is transient per-process state
 about what a downloader has in flight, and nothing that survived a restart is.

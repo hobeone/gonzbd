@@ -333,24 +333,31 @@ row's CRC, or because its file was `complete=1`** (and not reset by a retry).
 
 #### When
 
-Verification runs **before** the job's content is attached, and its outcome
-decides whether attaching happens at all. `appResidency.Hydrate`, on the branch
-where the job has no file table yet (`verifyAndAttach`):
+Before the first tick, the restore pass (`Application.restoreProgress`) gives
+every restored job its file table, built from its `job_files` rows
+(`fileTableFromRows`), and a progress record seeded with each file's recorded
+row count, `complete` flag, filename and fetch policy, with every file
+unverified. **It sets no article bit**; the recorded count only feeds a display
+estimate.
 
-1. reads the job's `job_files` and `written_articles` rows, builds the file
-   table from the `job_files` rows (`fileTableFromRows`) and the manifest from
-   that table and the article list in the manifest file;
+Verification runs **before** the job's articles are attached, and its outcome
+decides whether attaching happens at all. `appResidency.Hydrate`, on the branch
+where a file is not yet verified in this process (`verifyAndAttach`):
+
+1. builds the manifest from the attached table and the article list in the
+   manifest file, and reads the job's `job_files` and `written_articles` rows;
 2. calls `verifyJobFiles`, which reads bytes and returns a verdict without
    touching the job or a row;
 3. commits the verdict's deletes and `complete` changes through `recorder.apply`;
-4. only then calls `Job.AttachFiles` and `Job.AttachArticles` and installs what
-   was verified (`installVerification`).
+4. only then calls `Job.AttachArticles` and installs what was verified for
+   every file (`installVerification`), which marks each file verified.
 
-If any step fails or is cancelled, nothing is attached and the next hydration
-starts again from step 1. So **a job `Hydrate` attached was verified first**,
-and `Hydrate`'s early `AttachArticles` for a job with a file table is sound: the
-other ways a job gains progress verify too, or have nothing to verify — a
-freshly ingested job has no rows, and a retry verifies its rebuilt job itself
+If any step fails or is cancelled, no article is attached and no file is marked
+verified, so the next hydration starts again from step 1. So **a job `Hydrate`
+attached was verified first**, and `Hydrate`'s early `AttachArticles` for a job
+whose every file is verified is sound: the other ways a job gains progress
+verify too, or have nothing to verify — a freshly ingested job has no rows and
+is verified from the start, and a retry verifies its rebuilt job itself
 (`verifyRetry`).
 
 Every path that attaches content to a job with rows goes through this, or
@@ -362,7 +369,8 @@ verifies itself:
   launches last, after the API can listen: each job restored at `Fetching`
   with `IntentPause` is hydrated, and so verified, one at a time under a
   per-job deadline (`pausedVerifyTimeout`, 10 minutes), so that `mode=queue`
-  reports its progress rather than 0 % without the user resuming it;
+  reports its verified progress rather than the restore pass's estimate
+  without the user resuming it;
 - `Dispatcher.SetName` → `LoadProgress`. A rename is refused once
   `Job.DownloadBegun()` is true and moves nothing on disk; verification runs
   first, so the restored filenames make the job "begun" (`verifyJobFiles`
@@ -1463,18 +1471,18 @@ recorded here so the next reader does not mistake them for design.
    read on the Fetching worker.
 
    **At startup the paused jobs are verified after the API listens, and a
-   job reports no progress until its own verification lands.**
+   job reports only an estimate until its own verification lands.**
    `verifyPausedJobs` (`internal/app/startup_reconcile.go`) hydrates, and so
    verifies, every job restored at `Fetching` with `IntentPause`, one at a
    time, on a goroutine `Application.Start` launches last; `cmd/gonzbd/main.go`
    starts its HTTP server after `Start` returns, so the read-back runs while
-   the API serves. Until a job's load lands, `mode=queue` reports its header's
-   byte count as remaining (0 %), as it does for any restored job before its
-   first hydration; the loads run in listing (dispatch) order, so a job low in the queue
+   the API serves. Until a job's load lands, `mode=queue` reports the restore
+   pass's estimate from each file's recorded row count, as it does for any
+   restored job before its first hydration; the loads run in listing (dispatch) order, so a job low in the queue
    waits behind the bytes of those above it. Each load runs under a per-job
    deadline (`pausedVerifyTimeout`, 10 minutes): a job whose read-back exceeds
-   it is left unloaded, parks nothing and keeps its rows, and reports 0 %
-   until its resume lets the tick hydrate it — the cost of a deadline too
+   it is left unverified, parks nothing and keeps its rows, and reports that
+   estimate until its resume lets the tick hydrate it — the cost of a deadline too
    short for a large job on a slow mount. A hung hard-mounted share still
    blocks the read in the syscall, which no deadline interrupts (limitation
    6); it then holds `Shutdown`'s `wg.Wait` step to its budget, since the

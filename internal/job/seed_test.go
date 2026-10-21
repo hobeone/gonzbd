@@ -123,6 +123,43 @@ func TestFileBytesDownloaded_EstimateIsBoundedAndInBytesUnits(t *testing.T) {
 	if got := p.FileBytesDownloaded(1); got != 7 {
 		t.Errorf("after Verified: %d, want 7", got)
 	}
+
+	// A count outside [0, ArticleCount] is clamped: duplicate rows never
+	// show more than the file's Bytes, and a negative count never less than 0.
+	out := New("k", "k", Policy{})
+	if err := out.AttachFiles(NewFileTable(seedSpecs()), []FileSeed{{Recorded: -1}, {Recorded: 4}, {Recorded: 2}}); err != nil {
+		t.Fatalf("AttachFiles: %v", err)
+	}
+	if got := out.progress.FileBytesDownloaded(0); got != 0 {
+		t.Errorf("Recorded -1: %d, want 0", got)
+	}
+	if got := out.progress.FileBytesDownloaded(1); got != 301 {
+		t.Errorf("Recorded n+1 of 3: %d, want the file's 301 bytes", got)
+	}
+	if got := out.progress.FileBytesDownloaded(2); got != 50 {
+		t.Errorf("Recorded 2 of 1: %d, want the file's 50 bytes", got)
+	}
+}
+
+// The per-file readers answer false and 0 for a missing record and for an
+// index that names no file, rather than panicking.
+func TestFileReaders_AnswerNothingForANilRecordOrAnUnknownFile(t *testing.T) {
+	var nilProgress *JobProgress
+	if nilProgress.FileVerified(0) || nilProgress.FileBytesDownloaded(0) != 0 {
+		t.Error("a nil record reported a verified file or downloaded bytes")
+	}
+	j := New("j", "j", Policy{})
+	if err := j.AttachFiles(NewFileTable(seedSpecs()), nil); err != nil {
+		t.Fatalf("AttachFiles: %v", err)
+	}
+	for _, fi := range []int{-1, 3} {
+		if j.progress.FileVerified(fi) || j.progress.FileBytesDownloaded(fi) != 0 {
+			t.Errorf("index %d names no file but reported a verified file or downloaded bytes", fi)
+		}
+	}
+	if !j.progress.FileVerified(2) {
+		t.Error("fixture: the last file of a nil-seed record is not verified")
+	}
 }
 
 func TestInstallFileVerification_MarksVerifiedAndZeroesRecorded(t *testing.T) {

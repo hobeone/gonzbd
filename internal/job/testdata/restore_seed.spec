@@ -1,5 +1,25 @@
 pkg ./internal/job/
-run ^(TestAttachFiles_SeedSetsNoDoneBit|TestAttachFiles_NilSeedIsVerified|TestFileBytesDownloaded_EstimateIsBoundedAndInBytesUnits|TestInstallFileVerification_MarksVerifiedAndZeroesRecorded|TestRemainingBytes_UsesTheEstimateWhileUnverified|TestAttachFiles_RefusesASeedOfTheWrongLength|TestAttachFiles_SeededNonFetchedFileOwesNoPending|TestVerifiedWriters_MatchTheEnumerationStatedInProse)$
+run ^(TestAttachFiles_SeedSetsNoDoneBit|TestAttachFiles_NilSeedIsVerified|TestFileBytesDownloaded_EstimateIsBoundedAndInBytesUnits|TestInstallFileVerification_MarksVerifiedAndZeroesRecorded|TestRemainingBytes_UsesTheEstimateWhileUnverified|TestAttachFiles_RefusesASeedOfTheWrongLength|TestAttachFiles_SeededNonFetchedFileOwesNoPending|TestVerifiedWriters_MatchTheEnumerationStatedInProse|TestFileReaders_AnswerNothingForANilRecordOrAnUnknownFile)$
+
+[FileVerified reads past the end of the file list]
+file internal/job/progress.go
+--- anchor
+func (p *JobProgress) FileVerified(fi int) bool {
+	if p == nil || fi < 0 || fi >= len(p.files) {
+--- replace
+func (p *JobProgress) FileVerified(fi int) bool {
+	if p == nil || fi < 0 {
+--- end
+
+[FileBytesDownloaded reads a nil record]
+file internal/job/progress.go
+--- anchor
+func (p *JobProgress) FileBytesDownloaded(fi int) int64 {
+	if p == nil || fi < 0 || fi >= len(p.files) {
+--- replace
+func (p *JobProgress) FileBytesDownloaded(fi int) int64 {
+	if fi < 0 || fi >= len(p.files) {
+--- end
 
 [the seed loop also sets a Done bit for the first Recorded articles]
 file internal/job/progress.go
@@ -19,6 +39,22 @@ file internal/job/progress.go
 		return f.BytesDownloaded
 	}
 --- replace
+--- end
+
+[the estimate does not clamp a count above the file's articles]
+file internal/job/progress.go
+--- anchor
+	recorded := min(max(int64(f.Recorded), 0), n)
+--- replace
+	recorded := max(int64(f.Recorded), 0)
+--- end
+
+[the estimate does not clamp a negative count]
+file internal/job/progress.go
+--- anchor
+	recorded := min(max(int64(f.Recorded), 0), n)
+--- replace
+	recorded := min(int64(f.Recorded), n)
 --- end
 
 [InstallFileVerification does not mark the file Verified]

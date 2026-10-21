@@ -66,16 +66,17 @@ func TestShutdown_SaturatedCompletionChannel_NoDroppedCompletions(t *testing.T) 
 	if err != nil {
 		t.Fatalf("BuildIngestJob: %v", err)
 	}
-	if err := application.AddJob(t.Context(), j, hdr, nil, false); err != nil {
-		t.Fatalf("AddJob: %v", err)
-	}
-	emitter.enabled.Store(true)
-
+	// Started before the job is added: Start refuses a job ingested before it
+	// (Application.restoreProgress).
 	ctx, cancel := context.WithCancel(t.Context())
 	defer cancel()
 	if err := application.Start(ctx); err != nil {
 		t.Fatalf("Start: %v", err)
 	}
+	if err := application.AddJob(t.Context(), j, hdr, nil, false); err != nil {
+		t.Fatalf("AddJob: %v", err)
+	}
+	emitter.enabled.Store(true)
 
 	// Send 150 completions. Event 0 blocks watchCompletions inside emitter.Broadcast.
 	// Events 1-128 fill internalFileComplete (capacity 128).

@@ -982,3 +982,40 @@ func TestEvictCancelledNeverRun_SkipsWhenLiveOrLaunched(t *testing.T) {
 		t.Error("job still registered after evictCancelledNeverRun")
 	}
 }
+
+// TestSettleFailed_SettlesAnOpenAttemptAndRefusesANeverRunJob pins the door
+// the application's restore pass settles a job without structure through: a
+// job with an open attempt settles Failed and gives back its lease, and one
+// that never ran is refused with job.ErrNoOpenAttempt and left as it was.
+func TestSettleFailed_SettlesAnOpenAttemptAndRefusesANeverRunJob(t *testing.T) {
+	d := newTestDispatcher(t, withCaps(2, 2))
+	ran := job.New("ran", "ran", job.Policy{})
+	if err := d.Add(context.Background(), ran, Header{}); err != nil {
+		t.Fatalf("Add: %v", err)
+	}
+	d.tick(context.Background())
+	d.tick(context.Background())
+	if !ran.HoldsLease() {
+		t.Fatal("fixture: the job holds no lease after two ticks")
+	}
+	if err := d.SettleFailed(ran); err != nil {
+		t.Fatalf("SettleFailed: %v", err)
+	}
+	if o := ran.State().Outcome; o != job.OutcomeFailed {
+		t.Errorf("outcome = %v, want Failed", o)
+	}
+	if ran.HoldsLease() {
+		t.Error("a job settled Failed still holds its lease")
+	}
+
+	neverRun := job.New("never", "never", job.Policy{})
+	if err := d.Add(context.Background(), neverRun, Header{}); err != nil {
+		t.Fatalf("Add: %v", err)
+	}
+	if err := d.SettleFailed(neverRun); !errors.Is(err, job.ErrNoOpenAttempt) {
+		t.Errorf("SettleFailed(never run) = %v, want job.ErrNoOpenAttempt", err)
+	}
+	if o := neverRun.State().Outcome; o != job.OutcomePending {
+		t.Errorf("never-run outcome = %v, want pending", o)
+	}
+}

@@ -11,9 +11,14 @@
 # and both owed-filing ones to
 # TestReconcile_FilesAFailBlockedJobAndHoldsAPauseBlockedOne. It still runs in
 # go test.
+#
+# TestReconcile_FilesAFailBlockedJobAndHoldsAPauseBlockedOne calls the sweep
+# itself, so the sweep's place in reconcileBeforeFirstTick is pinned by
+# TestVerifyPausedJobs_OwedFilingIsNotDeferredBehindIt, which restarts over a
+# real queue.
 
 pkg ./internal/app/
-run TestPeek_|TestArchivePeek_Pipeline_FailAction|TestBlockForUnwanted_|TestReevaluateStall_ABlocked|TestArchiveMemberNames|TestReconcile_FilesAFail
+run TestPeek_|TestArchivePeek_Pipeline_FailAction|TestBlockForUnwanted_|TestReevaluateStall_ABlocked|TestArchiveMemberNames|TestReconcile_FilesAFail|TestVerifyPausedJobs_OwedFilingIsNotDeferredBehindIt
 timeout 10m
 
 [a file with a failed article is read anyway]

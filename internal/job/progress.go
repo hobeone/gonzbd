@@ -401,7 +401,8 @@ func newJobProgress(ft *FileTable, seed []FileSeed) *JobProgress {
 // maintained BytesDownloaded once the file is Verified, and before that an
 // estimate, Bytes×Recorded/ArticleCount. Both are in the NZB-claimed unit of
 // Bytes; the record's decoded length is never used. A file with no articles
-// estimates 0.
+// estimates 0, and Recorded is clamped to [0, ArticleCount], so the estimate
+// stays within [0, Bytes] whatever count the record held.
 func (p *JobProgress) fileBytesDownloaded(fi int) int64 {
 	f := &p.files[fi]
 	if f.Verified {
@@ -411,7 +412,8 @@ func (p *JobProgress) fileBytesDownloaded(fi int) int64 {
 	if n == 0 {
 		return 0
 	}
-	return f.Bytes * int64(f.Recorded) / n
+	recorded := min(max(int64(f.Recorded), 0), n)
+	return f.Bytes * recorded / n
 }
 
 // AllVerified reports whether every file is Verified; vacuously true for a

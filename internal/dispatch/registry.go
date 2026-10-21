@@ -94,11 +94,14 @@ type Header struct {
 
 	// OperationalError is a free-text note set through SetOperationalError —
 	// `git grep -n 'SetOperationalError(' -- 'internal/app/*.go' ':!*_test.go'`
-	// returns 2 lines, one in each of its callers: persistAndCommit
+	// returns 3 lines, one in each of its callers: persistAndCommit
 	// (internal/app/job_finalizer.go), when removing a finalized job from the
 	// dispatcher fails and it remains registered for retry or restart
-	// handling, and holdUnreconciledJob (internal/app/durability.go), when a
-	// job's history lookup fails at startup and the job is paused. Unlike IngestAnomaly/DuplicateReason it is not an ingest-time
+	// handling, holdUnreconciledJob (internal/app/durability.go), when a
+	// job's history lookup fails at startup and the job is paused, and
+	// failUnrestorable (internal/app/restore_progress.go), when a restored
+	// job's file structure cannot be read and the job is settled Failed.
+	// Unlike IngestAnomaly/DuplicateReason it is not an ingest-time
 	// fact about the NZB — it can be set on any job — so it is kept in its
 	// own field rather than joined into one of them.
 	OperationalError string

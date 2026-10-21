@@ -143,7 +143,7 @@ func TestApplication_FakeDownloaderFlow(t *testing.T) {
 	}
 	restoreQueue(t, application)
 
-	// Create and add a job to the queue
+	// Create a job for the queue
 	parsed := &nzb.NZB{
 		Files: []nzb.File{{
 			Subject: "test.bin",
@@ -159,11 +159,8 @@ func TestApplication_FakeDownloaderFlow(t *testing.T) {
 	if err != nil {
 		t.Fatalf("BuildIngestJob: %v", err)
 	}
-	if err := application.AddJob(t.Context(), j, hdr, nil, false); err != nil {
-		t.Fatalf("AddJob: %v", err)
-	}
-
-	// Start the application
+	// Start the application before adding the job: Start refuses a job ingested
+	// before it (Application.restoreProgress).
 	ctx, cancel := context.WithCancel(t.Context())
 	defer cancel()
 	if err := application.Start(ctx); err != nil {
@@ -177,6 +174,9 @@ func TestApplication_FakeDownloaderFlow(t *testing.T) {
 			t.Errorf("Shutdown: %v", err)
 		}
 	})
+	if err := application.AddJob(t.Context(), j, hdr, nil, false); err != nil {
+		t.Fatalf("AddJob: %v", err)
+	}
 
 	// Push article completion result
 	fd.completions <- &downloader.ArticleResult{

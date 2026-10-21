@@ -889,6 +889,9 @@ func TestLooseRecord_ResumedCompletionSurvivesEviction(t *testing.T) {
 		a.residency.finished = func(_ string, fi int, _ string) { owed = append(owed, fi) }
 	})
 	id := j.ID()
+	if err := a2.restoreProgress(t.Context()); err != nil {
+		t.Fatalf("restoreProgress: %v", err)
+	}
 	if err := a2.dispatcher.LoadProgress(t.Context(), id); err != nil {
 		t.Fatalf("LoadProgress: %v", err)
 	}

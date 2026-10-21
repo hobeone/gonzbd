@@ -9,9 +9,6 @@ run ^(TestLooseRecord_VerificationFaultParksNeverFails|TestLooseRecord_PausedJob
 [a verification that succeeds never attaches the job]
 file internal/app/residency.go
 --- anchor
-	if err := j.AttachFiles(m.Files(), nil); err != nil {
-		return err
-	}
 	if err := j.AttachArticles(m); err != nil {
 		return err
 	}

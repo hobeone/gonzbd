@@ -336,6 +336,24 @@ func (d *Dispatcher) reconcileResidency(ctx context.Context, j *job.Job) error {
 	return nil
 }
 
+// SettleFailed settles j Failed and returns its pools, through the door
+// reconcileResidency uses for a job whose manifest cannot be read: the
+// `d.q.Settle(j, job.OutcomeFailed)` call in that function. It is for a
+// caller that learns the same class of fact — a job's persisted structure is
+// gone — outside a tick: the application's restore pass, before the first
+// tick (Application.restoreProgress). The settle reaches the store at the
+// job's next persistIfChanged.
+//
+// Job.Finish, which Settle calls, refuses a job with no open attempt — one
+// that never ran (StateUnset) or one already settled — with
+// job.ErrNoOpenAttempt, and such a job is left as it was.
+func (d *Dispatcher) SettleFailed(j *job.Job) error {
+	if err := d.q.Settle(j, job.OutcomeFailed); err != nil {
+		return fmt.Errorf("dispatch: settle %s failed: %w", j.ID(), err)
+	}
+	return nil
+}
+
 // isResident, markResident and markNotResident are the dispatcher's own
 // bookkeeping for what Residency believes is loaded. Each takes d.mu around a
 // single map operation and releases it immediately — never across the

@@ -1,10 +1,10 @@
 pkg ./internal/app/
-run TestAppResidency_HydrateThenEvict
+run TestAppResidency_HydrateThenEvict|TestHydrate_VerifiedJobRehydratesWithoutVerifying
 
-[hydration always attaches fresh progress, zeroing a re-hydrated job's counters]
+[hydration always takes the verifying branch, re-reading a verified job's record]
 file internal/app/residency.go
 --- anchor
-	if hasFiles {
+	if j.AllVerified() {
 		return j.AttachArticles(m)
 	}
 --- replace
@@ -12,4 +12,3 @@ file internal/app/residency.go
 		return j.AttachArticles(m)
 	}
 --- end
-

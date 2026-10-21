@@ -10,8 +10,9 @@ import (
 
 // reconcileBeforeFirstTick is Application.Start's beforeFirstTick step for
 // Dispatcher.StartWith. It drops every restored job that is already filed in
-// history, then files the jobs the archive peek owes a filing
-// (fileOwedUnwantedFailures).
+// history, then attaches each remaining job's file table and seeded progress
+// (restoreProgress), then files the jobs the archive peek owes a filing
+// (fileOwedUnwantedFailures), whose hydration needs the table.
 //
 // The drop is placed before the first tick because a tick routes a restored
 // job onward. A job at Repairing, Extracting or Finalizing is launched into
@@ -32,38 +33,41 @@ func (app *Application) reconcileBeforeFirstTick(ctx context.Context) error {
 		}
 		app.dropJobAlreadyInHistory(ctx, row.ID)
 	}
+	if err := app.restoreProgress(ctx); err != nil {
+		return err
+	}
 	return app.fileOwedUnwantedFailures(ctx)
 }
 
 // defaultPausedVerifyTimeout bounds one paused job's load in verifyPausedJobs.
 // The read-back of a job's complete=0 files is what it bounds, and it is sized
-// for a large job on a remote mount: a job that exceeds it reports no
-// progress until it is resumed, which is the cost of a deadline too short, so
-// it errs long.
+// for a large job on a remote mount: a job that exceeds it reports only the
+// estimate from its recorded count until it is resumed, which is the cost of a
+// deadline too short, so it errs long.
 const defaultPausedVerifyTimeout = 10 * time.Minute
 
 // verifyPausedJobs hydrates, and so verifies, every job restored at Fetching
 // with IntentPause, one job at a time and each under pausedVerifyTimeout. No
 // tick hydrates a paused job until it is resumed, so without this mode=queue
-// would report 0% for a job whose written articles are on disk until the user
-// resumed it. Until a job's load lands the queue reports its header's byte
-// count as remaining, as it does for any restored job before its first
-// hydration; once it lands the queue reports the verified progress and a
-// queue_updated event names the job. A load that does not land — its deadline
-// passed, or verification faulted and parked the job (appResidency.Hydrate) —
-// leaves the job reporting no progress until its resume lets the tick hydrate
-// it.
+// would report only the restore pass's estimate (restoreProgress) for such a
+// job until the user resumed it. Until a job's load lands the queue reports
+// that estimate, as it does for any restored job before its first hydration;
+// once it lands the queue reports the verified progress and a queue_updated
+// event names the job. A load that does not land — its deadline passed, or
+// verification faulted and parked the job (appResidency.Hydrate) — leaves the
+// job unverified, reporting the estimate, until its resume lets the tick
+// hydrate it.
 //
 // It runs on app.wg from Start, launched after watchCompletions, so the
 // Resumed completions a load queues are consumed as they are queued, and it
 // stops when ctx (app.ctx) ends: Shutdown cancels it in joinAndStop and waits
 // for it there with the other goroutines on app.wg. Each job's load runs under
 // a context derived from ctx, so a cancellation ends the load in flight and
-// nothing is attached (appResidency.Hydrate). A job resumed or removed before
+// leaves the job unverified and not resident (appResidency.Hydrate). A job resumed or removed before
 // its turn is skipped (its intent is no longer IntentPause, or it is no longer
 // listed), and one hydrated by a tick before its turn is not verified again: verification
-// runs only for a job with no progress, and LoadProgress's Hydrate returns at
-// once for a resident job. A job resumed during its load is hydrated
+// runs only for a job not yet verified in this process, and LoadProgress's
+// Hydrate returns at once for a resident job. A job resumed during its load is hydrated
 // once: the tick's Hydrate waits for the load in flight, and starts its own
 // only if that one left the job non-resident. A job removed during its load
 // is removed once the load ends: RemoveJob's eviction (appResidency.Evict)

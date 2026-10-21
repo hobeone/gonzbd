@@ -126,8 +126,10 @@ func (s *Store) FileRows(ctx context.Context, jobID string) ([]FileRow, error) {
 }
 
 // SeedRow is one job_files row plus the number of written_articles rows the
-// record holds for that file. Read once per process by the restore pass;
-// FileRows is the per-job read and carries no count.
+// record holds for that file. Read by the restore pass,
+// Application.restoreProgress, which runs once per Start
+// (`git grep -n 'durable[.]SeedRows' -- '*.go' ':!*_test.go'` returns 1 line,
+// its call); FileRows is the per-job read and carries no count.
 type SeedRow struct {
 	FileRow
 	Recorded int

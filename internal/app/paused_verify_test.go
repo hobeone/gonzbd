@@ -325,8 +325,8 @@ func TestVerifyPausedJobs_DeadlineLeavesTheJobUnloaded(t *testing.T) {
 		t.Errorf("load = %v, want context.DeadlineExceeded", err)
 	}
 	j2 := a2.registered(t, j.ID())
-	if j2.HasProgress() {
-		t.Error("a load that exceeded its deadline attached progress")
+	if j2.Resident() || j2.AllVerified() {
+		t.Error("a load that exceeded its deadline left the job resident or verified")
 	}
 	if got := rowsFor(t, a2.repo.DB(), j.ID()); len(got) != 2 {
 		t.Errorf("%d rows after the deadline, want the 2 recorded: an abandoned load deletes nothing", len(got))
@@ -377,10 +377,10 @@ func TestVerifyPausedJobs_StopsAtShutdown(t *testing.T) {
 	case <-time.After(10 * time.Second):
 		t.Fatal("Shutdown did not return")
 	}
-	if a2.registered(t, first.ID()).HasProgress() {
-		t.Error("the load in flight attached progress after Shutdown cancelled it")
+	if f := a2.registered(t, first.ID()); f.Resident() || f.AllVerified() {
+		t.Error("the load in flight attached the job's articles after Shutdown cancelled it")
 	}
-	if a2.registered(t, second.ID()).HasProgress() {
+	if s := a2.registered(t, second.ID()); s.Resident() || s.AllVerified() {
 		t.Error("a paused job was loaded after Shutdown cancelled the verification")
 	}
 	if got := rec.loaded(); !slices.Equal(got, []string{first.ID()}) {
@@ -440,8 +440,8 @@ func blockingPread(t *testing.T, entered chan<- struct{}, release <-chan struct{
 // TestVerifyPausedJobs_ResumeDuringTheLoad pins what a resume during the
 // read-back meets: the tick's hydration waits for the load in flight, the job
 // ends resident with the verified progress and running, and nothing settles
-// it. Until the load lands, the queue row reports the header's bytes
-// remaining.
+// it. Until the load lands, the queue row reports the estimate the restore
+// pass seeded from file A's two recorded articles.
 //
 // Not parallel: preadAt is a package-level seam.
 func TestVerifyPausedJobs_ResumeDuringTheLoad(t *testing.T) {
@@ -462,8 +462,9 @@ func TestVerifyPausedJobs_ResumeDuringTheLoad(t *testing.T) {
 	if !ok {
 		t.Fatal("the job is not registered")
 	}
-	if row.RemainingBytes != row.Header.Bytes {
-		t.Errorf("remaining = %d of %d while the load is in flight, want the header's bytes", row.RemainingBytes, row.Header.Bytes)
+	if want := row.Header.Bytes - 2*lrArtLen; row.RemainingBytes != want {
+		t.Errorf("remaining = %d of %d while the load is in flight, want %d estimated from the 2 recorded articles",
+			row.RemainingBytes, row.Header.Bytes, want)
 	}
 	if err := a2.dispatcher.ResumeJobByUser(j.ID()); err != nil {
 		t.Fatalf("ResumeJobByUser: %v", err)

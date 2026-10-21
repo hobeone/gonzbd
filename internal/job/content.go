@@ -43,11 +43,11 @@ func (j *Job) AttachFiles(ft *FileTable, seed []FileSeed) error {
 	// newJobProgress below builds a FRESH JobProgress, so a re-attach would
 	// discard every done/failed bit and both stamps with no error — and since
 	// the first attach zeroed the Job-level copy, there would be nothing left
-	// to seed the replacement from either. Callers gate on this today
-	// (residency.Hydrate takes the AttachArticles-only arm when j.Files() != nil,
-	// the `if hasFiles {` branch in internal/app/residency.go, and the ingest
-	// path builds a fresh Job), which is what makes this an assertion of an
-	// invariant rather than a behaviour change.
+	// to seed the replacement from either. Callers attach once: the restore
+	// pass (Application.restoreProgress) refuses a job that already has a
+	// table, the ingest path builds a fresh Job, and residency.Hydrate never
+	// calls AttachFiles. That is what makes this an assertion of an invariant
+	// rather than a behaviour change.
 	if j.progress != nil || j.fileTable != nil {
 		return fmt.Errorf("job %s: AttachFiles: files already attached; use AttachArticles to install a manifest alongside existing progress", j.id)
 	}
@@ -113,8 +113,9 @@ func (j *Job) AttachArticles(m *Manifest) error {
 // It takes contentMu twice, so a reader between the two calls sees a job with
 // a table and progress but no manifest, which looks evicted; harmless for
 // ingest, which attaches before the job is visible. Hydrate does not call it:
-// it calls AttachFiles and AttachArticles itself, under the hydrating claim it
-// takes at `r.hydrating.TryClaim(id)` in internal/app/residency.go.
+// the job already holds its table, and Hydrate calls AttachArticles alone,
+// under the hydrating claim it takes at `r.hydrating.TryClaim(id)` in
+// internal/app/residency.go.
 func (j *Job) AttachContent(m *Manifest) error {
 	if m == nil {
 		return fmt.Errorf("job %s: AttachContent: nil manifest", j.id)
@@ -340,9 +341,11 @@ func (j *Job) SetFileFetchPolicy(fi int, policy FetchPolicy) error {
 // `git grep -nE '\.Fetch\s*=[^=]' -- '*.go' ':!*_test.go'` finds 1 line, the
 // assignment below. SetFileFetchPolicy, Job.InstallFileVerification's
 // restore, undeferRecovery, DiscardDeferredPar2 and newJobProgress (a restore
-// seed's policy) all call it. A fresh progress starts at the FetchAlways zero. The `job_files.fetch_policy` CHECK
-// (0-2) is the only range guard a restored value has. The caller holds
-// contentMu and has range-checked fi.
+// seed's policy) all call it. A progress built with a nil seed starts every
+// file at the FetchAlways zero; a restore seed's policy is applied through
+// this function. The `job_files.fetch_policy` CHECK (0-2) is the only range
+// guard a restored value has. The caller holds contentMu and has
+// range-checked fi.
 //
 // It owns what the policy decides about the pending counters: a file counts
 // pending work only while FetchAlways (countsPending), so it re-derives the
