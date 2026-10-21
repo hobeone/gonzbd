@@ -124,3 +124,48 @@ func (s *Store) FileRows(ctx context.Context, jobID string) ([]FileRow, error) {
 	}
 	return out, errors.Join(errs...)
 }
+
+// SeedRow is one job_files row plus the number of written_articles rows the
+// record holds for that file. Read once per process by the restore pass;
+// FileRows is the per-job read and carries no count.
+type SeedRow struct {
+	FileRow
+	Recorded int
+}
+
+// SeedRows returns every job's rows, keyed by job ID, ordered by file index
+// within a job. A job with no job_files rows is absent from the map.
+//
+// Unlike FileRows, any scan error fails the whole call: the restore pass needs
+// one consistent snapshot, and a torn read is a storage fault, not a per-job
+// gap. written_articles is PRIMARY KEY (job_id, file_idx, art_idx), so the
+// GROUP BY is a key-prefix scan.
+func (s *Store) SeedRows(ctx context.Context) (map[string][]SeedRow, error) {
+	rows, err := s.db.QueryContext(ctx, `
+SELECT f.job_id, f.file_index, f.subject, f.bytes, f.article_count, f.filename, f.complete, f.fetch_policy, COALESCE(w.n, 0)
+FROM job_files f
+LEFT JOIN (SELECT job_id, file_idx, COUNT(*) AS n FROM written_articles GROUP BY job_id, file_idx) w
+  ON w.job_id = f.job_id AND w.file_idx = f.file_index
+ORDER BY f.job_id, f.file_index`)
+	if err != nil {
+		return nil, fmt.Errorf("durability: load seed rows: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	out := make(map[string][]SeedRow)
+	for rows.Next() {
+		var jobID string
+		var r SeedRow
+		var complete, fetch int
+		if err := rows.Scan(&jobID, &r.FileIndex, &r.Subject, &r.Bytes, &r.ArticleCount, &r.Filename, &complete, &fetch, &r.Recorded); err != nil {
+			return nil, fmt.Errorf("durability: scan seed row: %w", err)
+		}
+		r.Complete = complete != 0
+		r.FetchPolicy = uint8(fetch) //nolint:gosec // G115: fetch_policy is CHECKed to 0-2 by the schema
+		out[jobID] = append(out[jobID], r)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("durability: iterate seed rows: %w", err)
+	}
+	return out, nil
+}

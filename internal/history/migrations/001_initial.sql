@@ -77,7 +77,7 @@ CREATE INDEX idx_history_archive_completed ON history(archive, completed DESC);
 -- UNIQUE(job_id, file_index) is also the access path, which is why there is no
 -- separate index on job_id.
 -- `git grep -nE '(INTO|UPDATE|FROM) job_file[s]' -- '*.go' ':!*_test.go'`
--- returns 6 lines: the INSERT and the SELECT in internal/durability/progress.go,
+-- returns 7 lines: the INSERT and the two SELECTs in internal/durability/progress.go,
 -- three in internal/durability/written.go (ApplyRecord's EXISTS guard on
 -- written_articles and its two UPDATEs), and a SELECT in test/crash/harness.go,
 -- which that filter keeps because it is build-tagged rather than named
