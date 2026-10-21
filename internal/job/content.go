@@ -348,14 +348,15 @@ func (j *Job) SetFileFetchPolicy(fi int, policy FetchPolicy) error {
 // restore, undeferRecovery, DiscardDeferredPar2 and newJobProgress (a restore
 // seed's policy) all call it. A progress built with a nil seed starts every
 // file at the FetchAlways zero; a restore seed's policy is applied through
-// this function. The `job_files.fetch_policy` CHECK (0-2) is the only range
-// guard a restored value has. The caller holds contentMu and has
-// range-checked fi.
+// this function. A restored value is bounded by the `job_files.fetch_policy`
+// CHECK (0-2) on write and range-checked again by durability.seedRowOf on the
+// restore read; this function does not check it. The caller holds contentMu
+// and has range-checked fi.
 //
 // It owns what the policy decides about the pending counters: a file counts
 // pending work only while FetchAlways (countsPending), so it re-derives the
 // file's Pending from its bits (pendingOf) in the same critical section. That
-// needs no manifest, so it holds at any residency, and the four callers named
+// needs no manifest, so it holds at any residency, and the five callers named
 // above leave the counters to it (#903).
 //
 // It marks the file for Job.TakeFetchPolicyChanges whenever the stored value
