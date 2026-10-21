@@ -226,8 +226,8 @@ And three ways out:
   what the verdict removed. Its callers are verification and the retry:
   `git grep -n -E 'recorder\.apply\(' -- '*.go' ':!*_test.go'` returns 4
   lines. Neither names an instance that owes a delete (below): a hydration
-  verifies a job with no progress in this process, so one that wrote no row
-  here, and a retry's instance is new.
+  verifies a restored job, which has written no row here, and a retry's
+  instance is new.
 - **`untrust`** removes one file's record (§4). It purges what is still
   buffered for the file under `mu` **first**, records the file's
   `DeleteAll` + `ClearComplete` verdict as **owed** by the job instance, and
@@ -345,7 +345,8 @@ row count, `complete` flag, filename and fetch policy, with every file
 unverified. **It sets no article bit.** A job whose rows are missing, gapped or unreadable
 is given an operational error and, if it has an open attempt, settled Failed
 through `Dispatcher.SettleFailed`; a job that has never run is left without a
-table, and the tick's first hydration of it fails for want of one
+table, and the tick's first hydration of it, once it holds a lease (so after a
+resume, if it was restored paused), fails for want of one
 (`failUnrestorable`; `Hydrate` refuses a job without a table) and settles it
 Failed.
 
@@ -401,9 +402,11 @@ rows goes through this, or verifies itself:
   first, so the restored filenames make the job "begun" (`verifyJobFiles`
   deletes a complete=0 file's rows recorded without a filename rather than
   keep them) and a rename can never leave rows pointing at a stale path.
-  `LoadProgress` calls `Hydrate` even for a job with progress, so it waits
-  for a hydration that has attached content but not yet installed its
-  filenames. `SetName` bounds its load by `setNameLoadTimeout` (10 minutes); a
+  `LoadProgress` calls `Hydrate` even for a job with progress: since the
+  restore pass every restored job has progress before its first hydration,
+  and `Hydrate` also waits for a hydration in flight, so `SetName` never reads
+  `DownloadBegun()` between an attach and its verification.
+  `SetName` bounds its load by `setNameLoadTimeout` (10 minutes); a
   rename that exceeds it fails, attaches nothing, and can be retried
   (`registry.go`);
 - `Application.fileOwedUnwantedFailures` → `appResidency.Hydrate`, before the
@@ -839,7 +842,8 @@ article would burn its retry budget over something a user often fixes in ten
 seconds.
 
 **A hydration's verification fault always stalls, even when it classifies
-permanent.** The job has no progress in this process yet, so
+permanent.** The job has written nothing in this process yet and its restored
+progress is unverified, so
 failing it would send it to history and discard the bytes an earlier run left
 on disk, over an `EACCES` on a mount that has not finished coming up.
 

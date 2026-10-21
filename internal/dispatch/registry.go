@@ -1208,12 +1208,13 @@ func (d *Dispatcher) SetName(id, name string) error {
 // bytes under the name. SetName is its only production caller:
 // `git grep -n '[.]LoadProgress[(]' -- '*.go' ':!*_test.go'` returns 1 line.
 //
-// It calls Hydrate even for a job that has progress, because Hydrate waits
-// for a hydration in flight: one that has attached the job's content but not
-// yet installed its verified filenames reports progress with no filename
-// set, and SetName must not read DownloadBegun from it. The application's
-// Hydrate (appResidency) returns at once for a resident job with none in
-// flight.
+// It calls Hydrate even for a job that has progress, for two reasons. Since
+// the restore pass every restored job has progress, seeded from its record,
+// before its first hydration, so a progress test would skip the verification
+// a rename needs. And Hydrate waits for a hydration in flight, so SetName
+// never reads DownloadBegun between an attach and its verification. The
+// application's Hydrate (appResidency) returns at once for a resident job
+// with none in flight.
 //
 // It does disk I/O, so it takes no lock across Hydrate (D-B9). A job that is
 // not registered is left alone. The load is recorded only for a job that was
