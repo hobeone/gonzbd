@@ -213,3 +213,23 @@ zero remaining bytes, i.e. as finished; the header's total is the honest
 figure. `Job.RecoveryBytes()` on a job with no table returns 0, and that is
 what the API's `recovery_bytes` shows for it.
 **Cost if wrong:** one branch that a stricter reading would have removed.
+
+## 2026-10-20 — stage 3
+
+### D21 — Stage 3's scope is the verifier alone
+
+**Call:** stage 3 deletes `verifyPausedJobs`, `defaultPausedVerifyTimeout`, `pausedVerifyTimeout`, `pausedVerifiedHook`, `paused_verify_test.go`, `testdata/paused_verify.spec`, `testdata/paused_verify_stop.spec` (which §5 does not list) and the paused-verify mutation in `testdata/loose_record_waits.spec`. Nothing else in design §5 remains: `SetRecoveryBytes`, `RestoreContent`, `describesSameJobAs`, `dispatch_jobs.recovery_bytes`, `manifestFile` and `manifestJSONFile` are already gone; `AttachContent` stays by D12; `JobFile` and `NewManifest([]JobFile)` stay by D8 as the ingest shape.
+**Why:** design §7 item 3 says "everything in §5 not yet removed"; re-derived from source on 2026-10-20, that set is the first bullet.
+**Cost if wrong:** a §5 item nobody re-checked survives into stage 4's sweep, where the contract re-read would find it.
+
+### D22 — The prose sweep is stage 3's, not stage 4's
+
+**Call:** every sentence in code comments and `docs/` that describes the verifier — including the second paragraph of `docs/durability-contract.md`'s Accepted limitation 1 — is deleted or rewritten in stage 3's PR. Stage 4 becomes the holistic re-read of the four contracts for paraphrase and structure.
+**Why:** design §7 item 4 listed "limitation 1 (deleted)" as stage-4 work, but the commit cycle's Step 4 requires the sentences a change falsifies to land with the change.
+**Cost if wrong:** stage 4 has less to do; nothing is lost.
+
+### D23 — A job restored paused at `Fetching` is verified on resume, not at startup
+
+**Call:** after a restart such a job reports the recorded-count estimate with the "progress from the download record" badge until the user resumes it, and holds no manifest until then.
+**Why:** the verifier's purpose was to make a paused job's progress visible without a resume (design §4.7); stage 2's restore pass does that for every job. Not holding a manifest per restored paused job also saves about 1.6 MB per 20k articles (`docs/job-lifecycle.md` §13).
+**Cost if wrong:** the owner wanted the verified figure to arrive without a resume; design §9 records that a background verification pass remains a pure addition.
