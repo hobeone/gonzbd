@@ -417,7 +417,8 @@ The file table and the seeded progress are attached
 earlier and separately, by the restore pass (above), which does not go through
 this. Of the four paths, the tick is the residency rule; `SetName`'s
 `LoadProgress` and `fileOwedUnwantedFailures`' direct `Hydrate` load a job the
-rule would not (a paused job, which the tick never hydrates), and `verifyRetry`
+rule would not (`SetName`'s: a paused job, which the tick never hydrates;
+`fileOwedUnwantedFailures`': a job before the first tick), and `verifyRetry`
 verifies a job built with its articles.
 
 A paused job is not hydrated by the tick even while it holds a compute slot
