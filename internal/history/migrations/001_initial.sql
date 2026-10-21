@@ -62,17 +62,22 @@ CREATE INDEX idx_history_archive_completed ON history(archive, completed DESC);
 
 -- +goose StatementBegin
 -- One row per file of a job. It holds the file's NZB-derived structure
--- (subject, bytes, article_count), written once at admission by Store.Admit,
--- AND its download results (complete, filename, fetch_policy), written by the
--- recorder.
+-- (subject, bytes, article_count) and its initial fetch_policy, written once at
+-- admission by Store.Admit, AND its download results (complete, filename, and
+-- later changes to fetch_policy), written by the recorder.
 --
 -- filename is discovered from the yEnc header, complete decided by the
--- assembler, fetch_policy chosen by the on-demand par2 policy. The manifest
+-- assembler, fetch_policy chosen at ingest by the on-demand par2 policy and
+-- changed by its verdict. The manifest
 -- file carries the article table only; the per-file structure lives here so a
 -- restored job can be shown without opening its manifest.
 --
--- The fetch_policy CHECK is the only guard that value has -- neither
--- SetFileFetchPolicy nor Job.InstallFileVerification range-checks it.
+-- The fetch_policy CHECK bounds what a write can store. The restore read
+-- (seedRowOf, internal/durability/progress.go) range-checks it again to 0..2 and
+-- treats a row outside that as unreadable, because SQLite is dynamically typed
+-- and a damaged row can hold anything; FileRows (the per-job read) relies on the
+-- CHECK alone. Neither SetFileFetchPolicy nor Job.InstallFileVerification
+-- range-checks it.
 --
 -- UNIQUE(job_id, file_index) is also the access path, which is why there is no
 -- separate index on job_id.
@@ -83,9 +88,11 @@ CREATE INDEX idx_history_archive_completed ON history(archive, completed DESC);
 -- which that filter keeps because it is build-tagged rather than named
 -- _test.go. The reclaim rule's DELETE is a further statement the grep cannot
 -- see, because it builds it from a table name (internal/durability/reclaim.go).
--- Every one keys on `job_id` or on `job_id AND file_index`, and both are
--- prefixes of that index -- so a second B-tree on job_id alone would be
--- maintained on every write to answer a lookup the first one already answers.
+-- Six of them key on `job_id` or on `job_id AND file_index`, and both are
+-- prefixes of that index; the seventh, SeedRows, reads every job's rows once at
+-- startup and takes its order (job_id, file_index) from the same index. So a
+-- second B-tree on job_id alone would be maintained on every write to answer a
+-- lookup the first one already answers.
 CREATE TABLE job_files (
     id               INTEGER PRIMARY KEY AUTOINCREMENT,
     job_id           TEXT NOT NULL,
