@@ -76,19 +76,15 @@ func TestCancelJob_ClosesOpenFileHandles(t *testing.T) {
 func TestCancelJob_RejectsLateArticles(t *testing.T) {
 	dir := t.TempDir()
 	files := make(map[string]FileInfo)
-	// TotalParts must equal the number of articles this test writes (1 before
-	// the cancel + 4 after), or the assertion is arithmetic rather than a pin:
-	// OnFileComplete fires at partsWritten >= TotalParts, so any larger value
-	// makes completions == 0 true whether or not the late articles are
-	// dropped. It was 10, which is vacuous.
+	// The cancel arm keeps no per-file tombstone, so what drops these late
+	// articles — for a file that was open — is the job-level cancelledJobs one.
+	// TestCancelJob_KeepFilesStillTombstonesTheWholeJob pins the same tombstone
+	// for a file that was never opened.
 	//
-	// What this pins even at 5 is the PER-FILE completed[k] tombstone, which
-	// covers a file the cancel arm actually closed. Neutering the job-level
-	// cancelledJobs tombstone leaves it green, because these late articles are
-	// for a file that was open. The job-level tombstone is what covers a file
-	// that was never opened, and it is pinned by
-	// TestCancelJob_KeepFilesStillTombstonesTheWholeJob instead.
-	registerFile(t, dir, files, "job1", 0, 5)
+	// The pin is the os.Stat below. The completion count cannot catch a
+	// missing tombstone: the late articles would reopen the file under a fresh
+	// writer that sees 4 parts, not 5, so completions stays 0 either way.
+	path := registerFile(t, dir, files, "job1", 0, 5)
 
 	var completions atomic.Int32
 	opts := makeOpts(dir, files)
@@ -113,6 +109,10 @@ func TestCancelJob_RejectsLateArticles(t *testing.T) {
 
 	if n := completions.Load(); n != 0 {
 		t.Errorf("OnFileComplete fired %d times for cancelled job, want 0", n)
+	}
+	if _, err := os.Stat(path); !os.IsNotExist(err) {
+		t.Errorf("os.Stat(%s) = %v, want not-exist — a late article reopened the "+
+			"file CancelJob deleted, with a handle nothing will close", path, err)
 	}
 }
 
@@ -265,11 +265,10 @@ func TestCancelJob_KeepFilesStillTombstonesTheWholeJob(t *testing.T) {
 	})
 	_ = a.CancelJob(t.Context(), "job1", KeepFiles)
 
-	// A late article for the file that was NEVER opened. This is the case only
-	// the job-level tombstone covers: the cancel arm's per-file completed[k]
-	// tombstone is keyed on files it actually closed, so it says nothing about
-	// this one, and openTargetFile performs no queue-membership check before
-	// creating and preallocating a file.
+	// A late article for the file that was NEVER opened. No per-file tombstone
+	// was ever set for it, so only the job-level one stands in its way, and
+	// openTargetFile performs no queue-membership check before creating and
+	// preallocating a file.
 	_ = writeArticle(t.Context(), a, WriteRequest{
 		JobID: "job1", FileIdx: 1, ArtIdx: 0, Offset: 0, Data: []byte("late"),
 	})

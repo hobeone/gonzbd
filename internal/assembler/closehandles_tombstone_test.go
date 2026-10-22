@@ -9,19 +9,18 @@ import (
 	"github.com/hobeone/gonzbd/internal/storagefault"
 )
 
-// TestCloseJobHandles_TombstonesEvenWhenTheSyncFailed pins the close arm's
-// tombstones in the FAILING direction, which is the direction the per-file one
-// was briefly broken in.
+// TestCloseJobHandles_TombstonesEvenWhenTheSyncFailed pins the close arm's job
+// tombstone in the FAILING direction.
 //
-// The arm deletes the file from open unconditionally. Were the file then in
-// neither open nor completed, and the job not tombstoned either, an article
-// already in flight would fall through to openTargetFile — MkdirAll,
-// OpenFile(O_CREATE), preallocate — re-creating a file the job has handed to
-// post-processing, with an fd nothing closes: the control message is sent once
-// per admission. On NFS the handle held across post-processing's unlink is the
-// .nfsXXXX silly-rename the arm exists to prevent.
+// The arm deletes the file from open unconditionally and keeps no per-file
+// tombstone for it, so the job-level one is all that stands between an
+// article already in flight and openTargetFile — MkdirAll, OpenFile(O_CREATE),
+// preallocate — re-creating a file the job has handed to post-processing, with
+// an fd nothing closes: the control message is sent once per admission. On NFS
+// the handle held across post-processing's unlink is the .nfsXXXX
+// silly-rename the arm exists to prevent.
 //
-// Gating either tombstone on success protects no re-dispatch: the caller,
+// Gating the tombstone on success protects no re-dispatch: the caller,
 // enqueuePostProc, admits the job first, and the downloader does not dispatch
 // an admitted job.
 func TestCloseJobHandles_TombstonesEvenWhenTheSyncFailed(t *testing.T) {
@@ -42,15 +41,11 @@ func TestCloseJobHandles_TombstonesEvenWhenTheSyncFailed(t *testing.T) {
 		WriteRequest{JobID: "", FileIdx: fileIdxCloseHandles, MessageID: "job", ackCh: ack},
 		open, completed, cancelledJobs)
 
-	if _, tombstoned := completed[key]; !tombstoned {
-		t.Error("a file whose close-time sync failed was not tombstoned, so it sits " +
-			"in neither open nor completed. An article still in flight now reaches " +
+	if _, tombstoned := cancelledJobs["job"]; !tombstoned {
+		t.Error("a job whose close-time sync failed was not tombstoned. Its file is " +
+			"in neither open nor completed, so an article still in flight reaches " +
 			"openTargetFile and re-creates a file the job has handed to " +
 			"post-processing, leaking the fd that CloseJobHandles exists to release")
-	}
-	if _, tombstoned := cancelledJobs["job"]; !tombstoned {
-		t.Error("a job whose close-time sync failed was not tombstoned, so a late " +
-			"article for a file it never opened creates one under the post-processor")
 	}
 	if _, still := open[key]; still {
 		t.Error("the file was left in the open map after its handles were closed")
@@ -95,8 +90,8 @@ func TestCloseJobHandles_ArmSendsTheCloseTimeFaultOnTheAck(t *testing.T) {
 
 // TestCloseJobHandles_TombstonesTheWholeJob: an article that arrives after the
 // close, for a file the job never opened, must not create that file. Only the
-// job-level tombstone covers it — the per-file one is keyed on files the arm
-// closed — and openTargetFile creates and preallocates with no queue check.
+// job-level tombstone covers it — no per-file one was ever set for that file —
+// and openTargetFile creates and preallocates with no queue check.
 // The article was dispatched before the hand-off, so nothing on the downloader
 // side can stop it.
 func TestCloseJobHandles_TombstonesTheWholeJob(t *testing.T) {

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"maps"
 	"math"
 	"os"
 	"path/filepath"
@@ -816,11 +817,12 @@ func (a *Assembler) CloseJobHandles(ctx context.Context, jobID string) error {
 // # What it is for
 //
 // finalizeFile tombstones a file the moment it reaches TotalParts, and the
-// close-handles arm tombstones every file of a job entering post-processing.
-// Nothing removes an entry: the set is keyed on (jobID, fileIdx) and lives as
-// long as the worker goroutine. That is right while a job is running — the
-// tombstone is what stops a late duplicate racing the file's completion — and
-// wrong the moment the same job ID comes back.
+// cancel and close-handles arms tombstone the whole job, dropping its per-file
+// entries as they do. Nothing removes the job-level tombstone but this: it
+// lives as long as the worker goroutine. That is right while the instance is
+// still in flight — the tombstones are what stop a late article racing a
+// file's completion or the hand-off — and wrong the moment the same job ID
+// comes back.
 //
 // Without this, an in-process retry re-dispatches articles whose writes all
 // land in handleLateDuplicate: the buffer is returned to the pool, nothing is
@@ -1071,13 +1073,14 @@ func (a *Assembler) dispatchRequest(
 		// hole too, but only after this returns, and not for requests already
 		// queued behind this message.
 		//
-		// TestCancelJob_KeepFilesStillTombstonesTheWholeJob is the pin, and it
-		// has to reach for a file that was never opened to be one: for a file
-		// this arm actually closed, the per-file completed[k] tombstone below
-		// already drops late articles, so a test writing to that file stays
-		// green with this line removed.
+		// After this arm it is the job's only tombstone: dropFileTombstones
+		// clears the per-file ones, and the one write to completed, in
+		// finalizeFile, is reached only past dispatchRequest's cancelledJobs
+		// check.
+		// TestCancelJob_KeepFilesStillTombstonesTheWholeJob is the pin.
 		cancelID := req.MessageID
 		cancelledJobs[cancelID] = struct{}{}
+		dropFileTombstones(completed, cancelID)
 		for k, f := range open {
 			if k.jobID != cancelID {
 				continue
@@ -1088,7 +1091,6 @@ func (a *Assembler) dispatchRequest(
 			// which keys this worker still tracks is this loop's, and a kept
 			// file has left the open map exactly as a deleted one has.
 			delete(open, k)
-			completed[k] = struct{}{}
 		}
 		// Unconditional: this branch is guarded on req.ackCh != nil.
 		close(req.ackCh)
@@ -1102,9 +1104,11 @@ func (a *Assembler) dispatchRequest(
 		// otherwise create under the post-processor with an fd nothing closes.
 		// Dispatch stops at the hand-off (downloader Options.HandedOff), but an
 		// article already in flight still arrives. ForgetJob clears it for a
-		// retry. TestCloseJobHandles_TombstonesTheWholeJob is the pin.
+		// retry. TestCloseJobHandles_TombstonesTheWholeJob is the pin. As in
+		// the cancel arm, the job's per-file tombstones are dropped with it.
 		targetID := req.MessageID
 		cancelledJobs[targetID] = struct{}{}
+		dropFileTombstones(completed, targetID)
 		var closeErr error
 		for k, f := range open {
 			if k.jobID != targetID {
@@ -1122,11 +1126,6 @@ func (a *Assembler) dispatchRequest(
 				a.noteFileUntrusted(k.jobID, k.fileIdx)
 			}
 			delete(open, k)
-			// Tombstoned per file too, unconditionally including on a failed
-			// close, as the cancel arm does. Nothing re-dispatches the job to
-			// reopen it: the caller, enqueuePostProc, admits the job to
-			// post-processing first, and an admitted job is not dispatched.
-			completed[k] = struct{}{}
 		}
 		if req.ackCh != nil {
 			if closeErr != nil {
@@ -1144,11 +1143,7 @@ func (a *Assembler) dispatchRequest(
 		// FINISHED; it asserts nothing about one currently being written, and
 		// closing a live handle here would leave its writer's unreported articles stranded.
 		forgetID := req.MessageID
-		for k := range completed {
-			if k.jobID == forgetID {
-				delete(completed, k)
-			}
-		}
+		dropFileTombstones(completed, forgetID)
 		delete(cancelledJobs, forgetID)
 		if req.ackCh != nil {
 			close(req.ackCh)
@@ -1177,6 +1172,17 @@ func (a *Assembler) dispatchRequest(
 	}
 	a.processRequest(req, open, completed)
 	return 1
+}
+
+// dropFileTombstones deletes jobID's entries from completed.
+//
+// The cancel and close-handles arms call it once they have set the job-level
+// tombstone, which dispatchRequest checks before processRequest reads
+// completed: from then on the job's per-file entries are never consulted, and
+// keeping them would hold one per finished file until a retry's ForgetJob, the
+// only other caller.
+func dropFileTombstones(completed map[fileKey]struct{}, jobID string) {
+	maps.DeleteFunc(completed, func(k fileKey, _ struct{}) bool { return k.jobID == jobID })
 }
 
 // syncAndClose fsyncs a file and closes it, and reports whether either
@@ -1373,10 +1379,10 @@ func (a *Assembler) processRequest(req WriteRequest, open map[fileKey]*openFile,
 }
 
 // handleLateDuplicate handles articles arriving for a file that is already
-// tombstoned. The file's writer is gone by then: each tombstone is written
-// right after its file leaves open (`git grep -n -E 'completed\[[a-z]+\] = '
-// -- 'internal/assembler/*.go' ':!*_test.go'` returns 3 lines, each preceded
-// by a `delete(open, ...)`), and openTargetFile, the one insert into open, is
+// tombstoned. The file's writer is gone by then: the one tombstone write, in
+// finalizeFile, follows its `delete(open, key)` (`git grep -n -E
+// 'completed\[[a-z]+\] = ' -- 'internal/assembler/*.go' ':!*_test.go'` returns
+// 1 line), and openTargetFile, the one insert into open, is
 // reached only past processRequest's tombstone check.
 //
 // The article is not written: the file was finished, trimmed and reported
