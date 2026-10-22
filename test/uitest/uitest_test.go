@@ -972,7 +972,17 @@ func TestAddNZBViaUI(t *testing.T) {
 		t.Fatalf("click Upload: %v", err)
 	}
 
-	jobRow := page.GetByText("sample_add.nzb")
+	if err := modalHeader.WaitFor(playwright.LocatorWaitForOptions{
+		State:   playwright.WaitForSelectorStateHidden,
+		Timeout: playwright.Float(5000),
+	}); err != nil {
+		t.Fatalf("Add NZB dialog did not close after upload: %v", err)
+	}
+
+	queueTable := page.Locator("section").Filter(playwright.LocatorFilterOptions{
+		Has: page.GetByRole("heading", playwright.PageGetByRoleOptions{Name: "Queue", Exact: new(true)}),
+	}).Locator("table").First()
+	jobRow := queueTable.GetByText("sample_add", playwright.LocatorGetByTextOptions{Exact: new(true)})
 	if err := jobRow.WaitFor(playwright.LocatorWaitForOptions{
 		State:   playwright.WaitForSelectorStateVisible,
 		Timeout: playwright.Float(5000),
@@ -1035,7 +1045,17 @@ func TestAddNZBWithPriorityAndPaused(t *testing.T) {
 		t.Fatalf("click Upload: %v", err)
 	}
 
-	jobRow := page.GetByText("add_paused.nzb")
+	if err := modalHeader.WaitFor(playwright.LocatorWaitForOptions{
+		State:   playwright.WaitForSelectorStateHidden,
+		Timeout: playwright.Float(5000),
+	}); err != nil {
+		t.Fatalf("Add NZB dialog did not close after upload: %v", err)
+	}
+
+	queueTable := page.Locator("section").Filter(playwright.LocatorFilterOptions{
+		Has: page.GetByRole("heading", playwright.PageGetByRoleOptions{Name: "Queue", Exact: new(true)}),
+	}).Locator("table").First()
+	jobRow := queueTable.GetByText("add_paused", playwright.LocatorGetByTextOptions{Exact: new(true)})
 	if err := jobRow.WaitFor(playwright.LocatorWaitForOptions{
 		State:   playwright.WaitForSelectorStateVisible,
 		Timeout: playwright.Float(5000),
@@ -1043,8 +1063,10 @@ func TestAddNZBWithPriorityAndPaused(t *testing.T) {
 		t.Fatalf("uploaded NZB job not visible in queue: %v", err)
 	}
 
-	pausedBadge := page.Locator("td").Filter(playwright.LocatorFilterOptions{HasText: "Paused"})
-	if err := pausedBadge.First().WaitFor(playwright.LocatorWaitForOptions{
+	pausedBadge := queueTable.Locator("tr", playwright.LocatorLocatorOptions{
+		HasText: "add_paused",
+	}).GetByText("Paused", playwright.LocatorGetByTextOptions{Exact: new(true)})
+	if err := pausedBadge.WaitFor(playwright.LocatorWaitForOptions{
 		State:   playwright.WaitForSelectorStateVisible,
 		Timeout: playwright.Float(5000),
 	}); err != nil {
@@ -1086,14 +1108,23 @@ func TestDuplicateNZBWarningAndInteractivity(t *testing.T) {
 		t.Fatalf("click Upload: %v", err)
 	}
 
-	if err := page.GetByText("dup_test.nzb").First().WaitFor(playwright.LocatorWaitForOptions{
+	queueTable := page.Locator("section").Filter(playwright.LocatorFilterOptions{
+		Has: page.GetByRole("heading", playwright.PageGetByRoleOptions{Name: "Queue", Exact: new(true)}),
+	}).Locator("table").First()
+	if err := queueTable.GetByText("dup_test", playwright.LocatorGetByTextOptions{Exact: new(true)}).WaitFor(playwright.LocatorWaitForOptions{
 		State:   playwright.WaitForSelectorStateVisible,
 		Timeout: playwright.Float(5000),
 	}); err != nil {
-		t.Fatalf("dup_test.nzb not visible: %v", err)
+		t.Fatalf("dup_test not visible in queue: %v", err)
 	}
 
 	modalHeader := page.GetByText("Upload an NZB file or paste a URL.")
+	if err := modalHeader.WaitFor(playwright.LocatorWaitForOptions{
+		State:   playwright.WaitForSelectorStateHidden,
+		Timeout: playwright.Float(5000),
+	}); err != nil {
+		t.Fatalf("modal did not close after first upload: %v", err)
+	}
 
 	if err := addBtn.Click(); err != nil {
 		t.Fatalf("click Add NZB second time: %v", err)
