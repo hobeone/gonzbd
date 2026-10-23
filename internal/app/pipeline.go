@@ -149,8 +149,22 @@ type pipeline struct {
 	// pipeline is built as a struct literal at a dozen sites.
 	inFlight sync.WaitGroup
 
+	// handedOff, when non-nil, reports whether j has been admitted to
+	// post-processing (postProcAdmissions.has). resolveFileInfo refuses an
+	// admitted instance's files. nil means never handed off.
+	handedOff func(j *job.Job) bool
+
 	mu       sync.RWMutex
-	fileInfo map[fileKey]assembler.FileInfo
+	fileInfo map[fileKey]fileEntry
+}
+
+// fileEntry is one registered file: its resolved FileInfo and the job
+// instance that registered it. resolveFileInfo compares that instance with the
+// dispatcher's, so a stale write from an earlier attempt under the same ID is
+// refused.
+type fileEntry struct {
+	info assembler.FileInfo
+	j    *job.Job
 }
 
 // completionSwap bundles a new completions channel with a done channel.
@@ -391,6 +405,14 @@ func (p *pipeline) handleFailureResult(ctx context.Context, res *downloader.Arti
 		// another result, and a failure it never receives is a part its
 		// TotalParts count can never reach.
 		if err := p.registerFile(res.Job, res.FileIdx); err != nil {
+			if errors.Is(err, assembler.ErrJobClosed) {
+				// As in handleSuccessResult: the instance left the
+				// dispatcher during the register, so this is the
+				// instance-check drop.
+				p.log.Debug("dropping a permanent failure for a job instance that left the dispatcher while its file was being registered",
+					"job", res.JobID(), "msgid", res.MessageID)
+				return
+			}
 			p.log.Warn("register file for a permanent failure failed, returning to dispatch pool",
 				"job", res.JobID(), "fileidx", res.FileIdx, "msgid", res.MessageID, "err", err)
 			p.clearEmitted(res)
@@ -482,6 +504,14 @@ func (p *pipeline) handleSuccessResult(ctx context.Context, res *downloader.Arti
 		"offset", res.Offset, "bytes", len(res.Data))
 
 	if err := p.registerFile(res.Job, res.FileIdx); err != nil {
+		if errors.Is(err, assembler.ErrJobClosed) {
+			// The instance check at the top of handleResult, re-run under
+			// the register lock: the job left the dispatcher meanwhile.
+			// Dropped as that check drops, not returned to the pool.
+			p.log.Debug("dropping a result for a job instance that left the dispatcher while its file was being registered",
+				"job", res.JobID(), "msgid", res.MessageID)
+			return
+		}
 		p.log.Warn("register file failed",
 			"job", res.JobID(), "fileidx", res.FileIdx, "err", err)
 		p.clearEmitted(res)
@@ -649,6 +679,15 @@ func (p *pipeline) registerFileAttempt(j *job.Job, m *job.Manifest, fileIdx int)
 		p.mu.Unlock()
 		return nil
 	}
+	// Under the same lock as the write: a job that left the dispatcher
+	// while this attempt ran its unlocked work must not be cached, or a late
+	// article re-grows the map for a job nothing will forget again. The
+	// handlers treat this as the instance-check drop. The write for an
+	// instance still registered but handed off is refused by resolveForWrite.
+	if cur, live := p.dispatcher.Job(jobID); !live || cur != j {
+		p.mu.Unlock()
+		return fmt.Errorf("register %s[%d]: instance left the dispatcher: %w", jobID, fileIdx, assembler.ErrJobClosed)
+	}
 	if filename == "" {
 		// RecordFileFilename writes the progress record alone, so it records
 		// the filename on a job evicted or removed since CountUnfinishedArticles
@@ -665,7 +704,7 @@ func (p *pipeline) registerFileAttempt(j *job.Job, m *job.Manifest, fileIdx int)
 			p.markDirty(j, fileIdx)
 		}
 	}
-	p.fileInfo[key] = info
+	p.fileInfo[key] = fileEntry{info: info, j: j}
 	p.mu.Unlock()
 	// --- No lock held below this line ---
 	p.log.Debug("registered file",
@@ -681,11 +720,46 @@ func (p *pipeline) registerFileAttempt(j *job.Job, m *job.Manifest, fileIdx int)
 func (p *pipeline) resolveFileInfo(jobID string, fileIdx int) (assembler.FileInfo, error) {
 	p.mu.RLock()
 	defer p.mu.RUnlock()
-	info, ok := p.fileInfo[fileKey{jobID: jobID, fileIdx: fileIdx}]
+	entry, ok := p.fileInfo[fileKey{jobID: jobID, fileIdx: fileIdx}]
 	if !ok {
 		return assembler.FileInfo{}, fmt.Errorf("no file info for %s[%d]", jobID, fileIdx)
 	}
-	return info, nil
+	return entry.info, nil
+}
+
+// resolveForWrite is the FileInfo resolver handed to the assembler
+// (Options.FileInfo). It is resolveFileInfo plus the question the assembler
+// cannot answer itself: does this job still accept writes? It answers
+// assembler.ErrJobClosed, and the worker drops the article, when the
+// instance that registered the file is no longer the dispatcher's (removed,
+// or replaced by a retry) or has been admitted to post-processing.
+//
+// This is the gate on a late article: dispatch stops at the hand-over, but a
+// fetch already in flight still reaches WriteArticle, and openTargetFile
+// would otherwise create a file for a job in history. It is race-free
+// because of two orderings in this package: enqueuePostProc admits the job
+// before it sends CloseJobHandles, and RemoveJob removes the job from the
+// dispatcher before it sends CancelJob. Each arm empties the job's open
+// handles on the worker, so every later write for the job comes back here,
+// and sees the state those calls flipped before the arm ran.
+//
+// resolveFileInfo stays the plain lookup for the completion paths
+// (directunpack_orchestrator, archive_peek), which resolve a finished file
+// of an admitted job.
+func (p *pipeline) resolveForWrite(jobID string, fileIdx int) (assembler.FileInfo, error) {
+	p.mu.RLock()
+	entry, ok := p.fileInfo[fileKey{jobID: jobID, fileIdx: fileIdx}]
+	p.mu.RUnlock()
+	if !ok {
+		return assembler.FileInfo{}, fmt.Errorf("no file info for %s[%d]", jobID, fileIdx)
+	}
+	if cur, live := p.dispatcher.Job(jobID); !live || cur != entry.j {
+		return assembler.FileInfo{}, fmt.Errorf("resolve %s[%d]: instance left the dispatcher: %w", jobID, fileIdx, assembler.ErrJobClosed)
+	}
+	if p.handedOff != nil && p.handedOff(entry.j) {
+		return assembler.FileInfo{}, fmt.Errorf("resolve %s[%d]: job handed to post-processing: %w", jobID, fileIdx, assembler.ErrJobClosed)
+	}
+	return entry.info, nil
 }
 
 // ownedRanges is the byte ranges of rows, for FileInfo.Owned.

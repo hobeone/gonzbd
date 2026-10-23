@@ -506,7 +506,7 @@ func New(cfg *config.Config, repo *history.Repository, opts ...func(*Application
 		},
 		markDirty: app.markFileDirty,
 		updateCh:  make(chan completionSwap, 1),
-		fileInfo:  make(map[fileKey]assembler.FileInfo),
+		fileInfo:  make(map[fileKey]fileEntry),
 	}
 	app.pipeline = p
 	app.residency.locate = p.jobFileLocation
@@ -572,7 +572,7 @@ func New(cfg *config.Config, repo *history.Repository, opts ...func(*Application
 	// pipeline. OnFileUntrusted reports a file whose fsync failed, which
 	// handleFileUntrusted returns to Outstanding in memory and in SQLite.
 	asm := assembler.New(assembler.Options{
-		FileInfo:            p.resolveFileInfo,
+		FileInfo:            p.resolveForWrite,
 		MinFreeBytes:        minFreeBytes,
 		OnLowDisk:           app.handleLowDisk,
 		OnWriteFault:        app.handleWriteFault,
