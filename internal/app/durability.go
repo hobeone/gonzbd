@@ -113,8 +113,10 @@ func (app *Application) handleArticlesUnwritten(jobID string, fileIdx int, artId
 // is being processed, so a retry registered under the same ID before the
 // goroutine runs is left alone (#914). The lookup identifies the attempt as
 // well as the worker's own queue does: a write of an earlier attempt still
-// blocked in Assembler.WriteArticle when a retry's ForgetJob reached the
-// worker would fault against the retry.
+// blocked in Assembler.WriteArticle when the retry registered is refused at
+// the open (pipeline.resolveForWrite compares instances,
+// TestResolveFileInfo_RefusesAnEarlierInstance), but one that had already
+// opened its file would fault against the retry.
 func (app *Application) handleWriteFault(jobID string, _ int, f *storagefault.Fault) {
 	j, ok := app.dispatcher.Job(jobID)
 	if !ok {

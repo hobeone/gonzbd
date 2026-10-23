@@ -111,7 +111,7 @@ func fetchingRarApp(t *testing.T) (*Application, *job.Job) {
 			t.Fatal(err)
 		}
 		application.pipeline.mu.Lock()
-		application.pipeline.fileInfo[fileKey{jobID: id, fileIdx: i}] = assembler.FileInfo{Dir: filepath.Dir(path), Name: filepath.Base(path)}
+		application.pipeline.fileInfo[fileKey{jobID: id, fileIdx: i}] = fileEntry{info: assembler.FileInfo{Dir: filepath.Dir(path), Name: filepath.Base(path)}, j: j}
 		application.pipeline.mu.Unlock()
 	}
 	return application, j
@@ -197,7 +197,7 @@ func TestHandOff_CompletionAfterTheCollect_StartsNoUnpacker(t *testing.T) {
 	// completion in flight across the hand-off resolved its path before
 	// that, so it reaches the orchestrator holding one: put it back.
 	application.pipeline.mu.Lock()
-	application.pipeline.fileInfo[fileKey{jobID: id, fileIdx: 3}] = info
+	application.pipeline.fileInfo[fileKey{jobID: id, fileIdx: 3}] = fileEntry{info: info, j: j}
 	application.pipeline.mu.Unlock()
 	completeFile(t, application, id, 3)
 

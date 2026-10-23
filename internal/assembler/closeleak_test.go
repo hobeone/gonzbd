@@ -49,7 +49,7 @@ func cancelWithoutRouting(t *testing.T, name string, disposition FileDisposition
 			ackCh:       make(chan error, 1),
 			disposition: disposition,
 		},
-		open, map[fileKey]struct{}{}, map[string]struct{}{})
+		open, map[fileKey]struct{}{})
 	return f.info.Path(), open, key
 }
 
@@ -110,7 +110,7 @@ func TestDispatchRequest_CancelKeepingFilesLogsAFailedClose(t *testing.T) {
 			ackCh:       make(chan error, 1),
 			disposition: KeepFiles,
 		},
-		open, map[fileKey]struct{}{}, map[string]struct{}{})
+		open, map[fileKey]struct{}{})
 
 	if !strings.Contains(logs.String(), "failed to close a cancelled job's file that is being kept") {
 		t.Errorf("a failed close of a kept file was not reported; log was:\n%s", logs.String())

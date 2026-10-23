@@ -144,11 +144,14 @@ single worker goroutine (`run`).
   queued before the hand-off — `fetchArticle`'s own per-request check
   (`docs/nntp-downloader-contract.md` invariant 6/7) is what drops that one
   before any network I/O. An article already in flight (past that check,
-  mid-fetch) at the hand-off is dropped by the assembler's whole-job
-  tombstone, which `CloseJobHandles` sets and `ForgetJob` clears for a
-  retry. `TestFail_AJobInPostProcessingIsNotDispatched`,
-  `TestCloseJobHandles_TombstonesTheWholeJob`, and (for the per-request check
-  itself) `TestFetchArticle_HandedOffJobIsNotFetched` are the pins. A downloader
+  mid-fetch) at the hand-off is refused at the assembler's open: the
+  pipeline's resolver answers `assembler.ErrJobClosed` for an admitted
+  instance, and the admission precedes `CloseJobHandles`, so every write the
+  worker processes after the close arm sees it, including one that arrives
+  after `enqueuePostProc` forgot the job's cached file info.
+  `TestFail_AJobInPostProcessingIsNotDispatched`,
+  `TestWriteArticle_AfterTheJobClosedCreatesNoFile`, and (for the per-request
+  check itself) `TestFetchArticle_HandedOffJobIsNotFetched` are the pins. A downloader
   reload leaves an admitted job's progress alone, and that of a job whose
   admission has ended: `ReloadDownloader` runs
   `Job.ClearEmittedForReload` under `postProcAdmissions.unlessHandedOff`, so

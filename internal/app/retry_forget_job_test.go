@@ -20,10 +20,11 @@ import (
 	"github.com/hobeone/gonzbd/internal/types"
 )
 
-// TestRetryHistoryJob_AbortsWhenTheAssemblerCannotForgetTheJob: the job-level
-// tombstone set when a job entered post-processing drops every article of a
-// retry under its ID without resolving it, so a retry whose ForgetJob failed
-// would sit at Fetching forever. It must fail instead, leaving nothing queued.
+// TestRetryHistoryJob_AbortsWhenTheAssemblerCannotForgetTheJob: a per-file
+// tombstone left by an attempt whose close-handles message never reached the
+// worker sends every refetched article for that file to handleLateDuplicate,
+// unwritten, so a retry whose ForgetJob failed could sit at Fetching forever.
+// It must fail instead, leaving nothing queued.
 func TestRetryHistoryJob_AbortsWhenTheAssemblerCannotForgetTheJob(t *testing.T) {
 	t.Parallel()
 	application, repo, adminDir := newRetryTestApp(t)
@@ -46,7 +47,7 @@ func TestRetryHistoryJob_AbortsWhenTheAssemblerCannotForgetTheJob(t *testing.T) 
 	err := application.RetryHistoryJob(t.Context(), id)
 	if !errors.Is(err, assembler.ErrStopped) {
 		t.Fatalf("RetryHistoryJob = %v, want the assembler's ErrStopped: a retry that "+
-			"keeps the job's tombstone never makes progress", err)
+			"keeps the job's per-file tombstones may never make progress", err)
 	}
 	if _, queued := application.Dispatcher().Job(id); queued {
 		t.Error("the aborted retry is in the queue")
@@ -61,9 +62,9 @@ func TestRetryHistoryJob_AbortsWhenTheAssemblerCannotForgetTheJob(t *testing.T) 
 }
 
 // TestRetryHistoryJob_InProcessRetryDownloads: a job that failed in this
-// process and is retried in this process downloads. Entering post-processing
-// left the assembler's job-level tombstone behind, and the retry's writes land
-// only because ForgetJob clears it.
+// process and is retried in this process downloads. The retry is a new
+// instance, so the assembler's resolver accepts its writes; nothing the first
+// attempt left in the worker may stand in their way.
 //
 // The first run fails through Application.Fail before anything is fetched, so
 // the retry has a whole file to write and nothing retained to confuse it.
