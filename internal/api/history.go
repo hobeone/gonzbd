@@ -59,9 +59,10 @@ type historySlot struct {
 	PostprocTime int64           `json:"postproc_time"`
 	Completed    int64           `json:"completed"`
 	StageLog     []stageLogEntry `json:"stage_log"`
-	// ScriptLog is always empty: the stored log can be 512 KiB per entry, and
-	// SABnzbd's mode=history does not return it either. ScriptLine is the
-	// script run's one-line summary.
+	// ScriptLog is always empty: the stored log can be 512 KiB per entry, so
+	// no history read loads it (history.entryColumns), and SABnzbd's
+	// mode=history does not return it either. ScriptLine is the script run's
+	// one-line summary.
 	ScriptLog  string `json:"script_log"`
 	ScriptLine string `json:"script_line"`
 	Meta       string `json:"meta"`

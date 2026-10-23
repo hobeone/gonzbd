@@ -10,7 +10,9 @@ import (
 )
 
 // TestAddGetRoundTrip_EveryFieldDistinct pins AddTx's positional argument list
-// against allColumns, for every column rather than a chosen sample.
+// against the columns it writes, for every column rather than a chosen sample.
+// Get reads every field but ScriptLog back; script_log, which no read selects,
+// is checked against the table directly.
 //
 // The failure it exists for compiles, vets and races clean. AddTx writes a
 // hand-maintained column list, a run of `?` placeholders and a positional
@@ -39,7 +41,7 @@ import (
 //
 // Reflection rather than a table of field names is deliberate. The table is
 // the thing that goes stale — TestScanEntry_MapsColumnsByPosition's hardcoded
-// indices and TestAllColumns_CountMatchesScanEntry's literal 31 both had to be
+// indices and TestEntryColumns_CountMatchesScanEntry's literal both had to be
 // hand-corrected when three columns were dropped, and a field added to Entry
 // tomorrow would simply not be asserted here. Walking the struct means a new
 // field is covered the moment it exists, and the test fails loudly rather than
@@ -66,6 +68,13 @@ func TestAddGetRoundTrip_EveryFieldDistinct(t *testing.T) {
 			// Assigned by SQLite, not written by AddTx.
 			continue
 		}
+		if name == "ScriptLog" {
+			if stored := storedScriptLog(t, repo, want.NzoID); string(stored) != string(want.ScriptLog) {
+				t.Errorf("ScriptLog: stored %q, want %q — AddTx did not write ScriptLog to script_log",
+					stored, want.ScriptLog)
+			}
+			continue
+		}
 		g, w := gotV.Field(i).Interface(), wantV.Field(i).Interface()
 		if gt, ok := g.(time.Time); ok {
 			// Stored as unix seconds; compare at that resolution.
@@ -83,7 +92,7 @@ func TestAddGetRoundTrip_EveryFieldDistinct(t *testing.T) {
 		}
 		if g != w {
 			t.Errorf("%s: got %v, want %v — this field's value came back in the "+
-				"wrong field, so AddTx's argument order and allColumns disagree",
+				"wrong field, so AddTx's argument order and entryColumns disagree",
 				name, g, w)
 		}
 	}

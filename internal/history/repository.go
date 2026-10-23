@@ -52,7 +52,7 @@ type Entry struct {
 	NzoID        string
 	Storage      string
 	Path         string
-	ScriptLog    []byte
+	ScriptLog    []byte // written by AddTx; no read fills it, as entryColumns leaves script_log out
 	ScriptLine   string
 	DownloadTime int64
 	PostprocTime int64
@@ -180,7 +180,7 @@ func (r *Repository) Add(ctx context.Context, e Entry) error {
 // Get fetches the entry with the given nzo_id. It returns ErrNotFound (via
 // errors.Is) when no matching row exists.
 func (r *Repository) Get(ctx context.Context, nzoID string) (*Entry, error) {
-	const q = `SELECT ` + allColumns + ` FROM history WHERE nzo_id = ?`
+	const q = `SELECT ` + entryColumns + ` FROM history WHERE nzo_id = ?`
 	row := r.db.QueryRowContext(ctx, q, nzoID)
 	e, err := scanEntry(row)
 	if errors.Is(err, sql.ErrNoRows) {
@@ -198,7 +198,7 @@ func (r *Repository) Get(ctx context.Context, nzoID string) (*Entry, error) {
 func (r *Repository) Search(ctx context.Context, opts SearchOptions) ([]Entry, error) {
 	where, args := buildWhereClause(opts)
 
-	q := "SELECT " + allColumns + " FROM history"
+	q := "SELECT " + entryColumns + " FROM history"
 	if len(where) > 0 {
 		q += " WHERE " + strings.Join(where, " AND ")
 	}
@@ -435,7 +435,7 @@ func (r *Repository) ExpiredEntries(ctx context.Context, retainDays, retainFaile
 		failedCutoff = time.Now().AddDate(0, 0, -retainFailedDays).Unix()
 	}
 
-	const q = `SELECT ` + allColumns + `
+	const q = `SELECT ` + entryColumns + `
 FROM history
 WHERE (? = 1 AND status != 'Failed' AND completed < ?)
    OR (? = 1 AND status =  'Failed' AND completed < ?)
@@ -461,9 +461,11 @@ ORDER BY completed ASC`
 	return out, nil
 }
 
-// allColumns is the canonical SELECT column list, ordered to match scanEntry.
-const allColumns = `id, completed, name, nzb_name, category, pp, script,
-url, status, nzo_id, storage, path, script_log, script_line, download_time,
+// entryColumns is the SELECT column list every read uses, ordered to match
+// scanEntry. It leaves out script_log, which can be 512 KiB per row, so no
+// read pays for a column its caller would discard; AddTx still writes it.
+const entryColumns = `id, completed, name, nzb_name, category, pp, script,
+url, status, nzo_id, storage, path, script_line, download_time,
 postproc_time, stage_log, downloaded, completeness, fail_message, url_info,
 bytes, meta, md5sum, password, archive, time_added,
 nzb_backup, unwanted_ext`
@@ -500,7 +502,7 @@ func scanEntry(s scanner) (*Entry, error) {
 		&e.ID, &completed,
 		&name, &nzbName, &category, &pp, &script,
 		&urlField, &status, &nzoID, &storage, &path,
-		&e.ScriptLog, &scriptLine,
+		&scriptLine,
 		&downloadTime, &postprocTime, &stageLog,
 		&downloaded, &completeness, &failMessage, &urlInfo,
 		&bytesVal, &meta, &md5sum, &password,
