@@ -36,6 +36,9 @@ func TestBuildMetadataOnTheWire(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 			s := New(Options{Build: tt.build, Config: cfg})
+			// mode=about's public-IP lookup runs detached from the request
+			// context, so only a stubbed fetcher keeps this test off the network.
+			s.publicIPs.fetch = func(context.Context, string) string { return "" }
 
 			check := func(t *testing.T, m map[string]any) {
 				t.Helper()
@@ -72,12 +75,8 @@ func TestBuildMetadataOnTheWire(t *testing.T) {
 				check(t, general)
 			})
 			t.Run("about", func(t *testing.T) {
-				// A cancelled request context makes the handler's outbound
-				// public-IP lookups fail immediately instead of dialling out.
-				ctx, cancel := context.WithCancel(t.Context())
-				cancel()
 				rr := httptest.NewRecorder()
-				s.modeAbout(rr, httptest.NewRequest(http.MethodGet, "/api?mode=about", nil).WithContext(ctx))
+				s.modeAbout(rr, httptest.NewRequest(http.MethodGet, "/api?mode=about", nil))
 				about, ok := decodeJSON(t, rr)["about"].(map[string]any)
 				if !ok {
 					t.Fatalf("no about object in %s", rr.Body.String())

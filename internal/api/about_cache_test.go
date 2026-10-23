@@ -188,17 +188,21 @@ func TestModeAbout_CancelledCallerDoesNotPoisonCache(t *testing.T) {
 	}
 }
 
-func TestModeAbout_RequiresFullKey(t *testing.T) {
+// The modes that return config_path, the configured directories and the
+// resolved tool paths refuse the upload-only NZB key.
+func TestHostPathModes_RequireFullKey(t *testing.T) {
 	t.Parallel()
 	s := stubbedServer(newStubIPs("192.0.2.1", "2001:db8::1"))
 
-	rr := apiGet(t, s.Handler(), "/api?mode=about&apikey="+testNZBKey)
-	if rr.Code != http.StatusForbidden {
-		t.Errorf("NZB key: status = %d; want 403", rr.Code)
-	}
-	rr = apiGet(t, s.Handler(), "/api?mode=about&apikey="+testAPIKey)
-	if rr.Code != http.StatusOK {
-		t.Errorf("full key: status = %d; want 200", rr.Code)
+	for _, mode := range []string{"about", "status_overview"} {
+		rr := apiGet(t, s.Handler(), "/api?mode="+mode+"&apikey="+testNZBKey)
+		if rr.Code != http.StatusForbidden {
+			t.Errorf("%s with the NZB key: status = %d; want 403", mode, rr.Code)
+		}
+		rr = apiGet(t, s.Handler(), "/api?mode="+mode+"&apikey="+testAPIKey)
+		if rr.Code != http.StatusOK {
+			t.Errorf("%s with the full key: status = %d; want 200", mode, rr.Code)
+		}
 	}
 }
 

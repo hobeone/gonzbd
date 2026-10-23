@@ -1,5 +1,5 @@
 pkg ./internal/api/
-run TestModeAbout_
+run TestModeAbout_|TestHostPathModes_RequireFullKey
 
 [the cache check never hits]
 file internal/api/about.go
@@ -55,6 +55,14 @@ file internal/api/router.go
 "about":       {handler: s.modeAbout, level: LevelAdmin},
 --- replace
 "about":       {handler: s.modeAbout, level: LevelProtected},
+--- end
+
+[status_overview accepts the NZB key again]
+file internal/api/router.go
+--- anchor
+"status_overview": {handler: s.modeStatusOverview, level: LevelAdmin},
+--- replace
+"status_overview": {handler: s.modeStatusOverview, level: LevelProtected},
 --- end
 
 [concurrent callers each fetch]

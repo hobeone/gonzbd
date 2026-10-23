@@ -95,11 +95,16 @@ func (s *Server) registerModes() {
 		"addlocalfile": {handler: s.modeAddLocalFile, level: LevelAdmin},
 		"history":      {handler: s.modeHistory, level: LevelProtected},
 		// Status modes
+		//
+		// status_overview reveals the same host paths as about (see below), so
+		// it takes the same level. The web UI's status page is its only UI
+		// caller: `git grep -n 'apiUrl(.status_overview' -- ui/src` returns
+		// 1 line, in api.ts.
+		"status_overview": {handler: s.modeStatusOverview, level: LevelAdmin},
 		"fullstatus":      {handler: s.modeFullStatus, level: LevelProtected},
 		"status":          {handler: s.modeStatus, level: LevelProtected},
 		"warnings":        {handler: s.modeWarnings, level: LevelProtected},
 		"server_stats":    {handler: s.modeServerStats, level: LevelProtected},
-		"status_overview": {handler: s.modeStatusOverview, level: LevelProtected},
 		// Config modes
 		"config":     {handler: s.modeConfig, level: LevelAdmin},
 		"get_config": {handler: s.modeGetConfig, level: LevelAdmin},
