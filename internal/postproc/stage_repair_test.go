@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"math/rand/v2"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -980,10 +981,11 @@ func TestRepairStage_ExternalPar2RecordsBackupAndCrashRerunCleansIt(t *testing.T
 	dir := t.TempDir()
 	target := "ExtMovie.part03.rar"
 	targetPath := filepath.Join(dir, target)
+	// Seeded, so deterministic, and aperiodic: with -s4096 below, a payload that
+	// repeats on a divisor of the block size makes every block identical, and
+	// par2 finds all of them in the damaged file and repairs nothing.
 	payload := make([]byte, 32*1024)
-	for i := range payload {
-		payload[i] = byte((i*31 + 7) & 0xff)
-	}
+	_, _ = rand.NewChaCha8([32]byte{}).Read(payload) // never fails
 	if err := os.WriteFile(targetPath, payload, 0o600); err != nil {
 		t.Fatalf("WriteFile target: %v", err)
 	}
@@ -996,8 +998,11 @@ func TestRepairStage_ExternalPar2RecordsBackupAndCrashRerunCleansIt(t *testing.T
 		t.Fatalf("WriteFile pre-existing .1: %v", err)
 	}
 
+	// -s4096 gives 8 source blocks. Without it par2 picks its default block
+	// count, which for a 32 KiB file means 20-byte blocks, and the create and
+	// the repair Run performs each take over a minute of CPU on every core.
 	parFile := filepath.Join(dir, "ExtMovie.par2")
-	createCmd := exec.CommandContext(t.Context(), "par2", "c", "-q", "-r20", "-n1", parFile, targetPath)
+	createCmd := exec.CommandContext(t.Context(), "par2", "c", "-q", "-s4096", "-r20", "-n1", parFile, targetPath)
 	createCmd.Dir = dir
 	if out, err := createCmd.CombinedOutput(); err != nil {
 		t.Fatalf("par2 c failed: %v\n%s", err, out)
