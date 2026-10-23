@@ -106,6 +106,9 @@ type Server struct {
 	// the "gonzbd_apikey" cookie served to the embedded web SPA — see
 	// AuthConfig.SessionKey for why it is kept distinct from APIKey.
 	sessionKey string
+
+	// publicIPs caches mode=about's public address lookups.
+	publicIPs publicIPCache
 }
 
 // New constructs an API Server. It does not bind or listen; the returned

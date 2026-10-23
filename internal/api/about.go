@@ -5,12 +5,15 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"net/netip"
 	"os"
 	"os/exec"
 	"runtime"
 	"strings"
 	"sync"
 	"time"
+
+	"golang.org/x/sync/singleflight"
 
 	"github.com/hobeone/gonzbd/internal/unpack"
 )
@@ -47,14 +50,14 @@ func (s *Server) modeAbout(w http.ResponseWriter, r *http.Request) {
 		sevenzCmd = pp.SevenzCommand
 	}
 
-	// Fetch public IPv4 and IPv6 concurrently to halve the worst-case
-	// latency from ~6s (two sequential 3s-timeout calls) to ~3s.
+	// Look up the public IPv4 and IPv6 concurrently; a cache hit costs no
+	// request, and a miss is bounded by publicIP's 3s timeout.
 	var publicV4, publicV6 string
 	var ipWG sync.WaitGroup
 	ipWG.Add(2)
 	ctx := r.Context()
-	go func() { defer ipWG.Done(); publicV4 = publicIP(ctx, "https://api.ipify.org?format=text") }()
-	go func() { defer ipWG.Done(); publicV6 = publicIP(ctx, "https://api6.ipify.org?format=text") }()
+	go func() { defer ipWG.Done(); publicV4 = s.publicIPs.v4(ctx) }()
+	go func() { defer ipWG.Done(); publicV6 = s.publicIPs.v6(ctx) }()
 	ipWG.Wait()
 
 	about := map[string]any{
@@ -100,10 +103,116 @@ func localIPv4() string {
 	return ""
 }
 
+const (
+	publicIPv4URL = "https://api.ipify.org?format=text"
+	publicIPv6URL = "https://api6.ipify.org?format=text"
+
+	// publicIPTTL is how long a valid address is reused.
+	publicIPTTL = 10 * time.Minute
+	// publicIPNegativeTTL is how long a failed or invalid lookup is
+	// remembered. It is short on purpose: caching "" for publicIPTTL would
+	// hide a transient failure for ten minutes, but caching nothing would
+	// make every call against a dead endpoint cost the full 3s timeout. A
+	// host with no IPv6 route hits exactly that case on every call.
+	publicIPNegativeTTL = 30 * time.Second
+)
+
+// publicIPSlot caches one address family's lookup. mu guards val and expires
+// only and is never held across the fetch; flight makes concurrent callers
+// on an expired slot share one request instead of each making their own.
+type publicIPSlot struct {
+	mu      sync.Mutex
+	val     string
+	expires time.Time
+	flight  singleflight.Group
+}
+
+// fresh returns the cached value and whether it is still within its TTL.
+func (sl *publicIPSlot) fresh(now time.Time) (string, bool) {
+	sl.mu.Lock()
+	defer sl.mu.Unlock()
+	return sl.val, now.Before(sl.expires)
+}
+
+// publicIPCache caches the public-address lookups for mode=about. The zero
+// value is ready to use: a nil fetch means publicIP and a nil now means
+// time.Now. Tests set both so they never touch the network or sleep.
+type publicIPCache struct {
+	fetch  func(ctx context.Context, urlStr string) string
+	now    func() time.Time
+	v4Slot publicIPSlot
+	v6Slot publicIPSlot
+}
+
+func (c *publicIPCache) v4(ctx context.Context) string {
+	return c.get(ctx, &c.v4Slot, publicIPv4URL, false)
+}
+
+func (c *publicIPCache) v6(ctx context.Context) string {
+	return c.get(ctx, &c.v6Slot, publicIPv6URL, true)
+}
+
+// inFamily reports whether a belongs to the IPv6 family when wantV6 is set,
+// else to IPv4. A 4in6-mapped address is IPv4, so it is never IPv6 here.
+func inFamily(a netip.Addr, wantV6 bool) bool {
+	if wantV6 {
+		return a.Is6() && !a.Is4In6()
+	}
+	return a.Is4()
+}
+
+func (c *publicIPCache) get(ctx context.Context, slot *publicIPSlot, urlStr string, wantV6 bool) string {
+	now := c.now
+	if now == nil {
+		now = time.Now
+	}
+	fetch := c.fetch
+	if fetch == nil {
+		fetch = publicIP
+	}
+
+	if val, ok := slot.fresh(now()); ok {
+		return val
+	}
+
+	ch := slot.flight.DoChan("", func() (any, error) {
+		// A caller that checked just before the previous flight stored its
+		// result lands here as a new flight; do not fetch again.
+		if val, ok := slot.fresh(now()); ok {
+			return val, nil
+		}
+		// The result is shared with every caller of this flight, so one
+		// caller's cancellation must not turn it into a cached "".
+		raw := fetch(context.WithoutCancel(ctx), urlStr)
+		val := ""
+		if a, err := netip.ParseAddr(raw); err == nil && a.Zone() == "" && inFamily(a, wantV6) {
+			val = a.String()
+		}
+		ttl := publicIPNegativeTTL
+		if val != "" {
+			ttl = publicIPTTL
+		}
+		slot.mu.Lock()
+		slot.val, slot.expires = val, now().Add(ttl)
+		slot.mu.Unlock()
+		return val, nil
+	})
+	select {
+	case res := <-ch:
+		if val, ok := res.Val.(string); ok {
+			return val
+		}
+		return ""
+	case <-ctx.Done():
+		return ""
+	}
+}
+
 // publicIP queries an external service URL to determine a public IP
 // address. This is best-effort: on any failure (timeout, network error,
-// non-200 response) it returns "". Used with api.ipify.org for IPv4 and
-// api6.ipify.org for IPv6.
+// non-200 response) it returns "". It returns the body unvalidated;
+// publicIPCache.get checks it is an address of the right family. Used with
+// api.ipify.org for IPv4 and api6.ipify.org for IPv6.
 func publicIP(ctx context.Context, urlStr string) string {
 	ctx, cancel := context.WithTimeout(ctx, 3*time.Second)
 	defer cancel()
