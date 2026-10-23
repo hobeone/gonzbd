@@ -924,7 +924,7 @@ func TestScanEntry_MapsColumnsByPosition(t *testing.T) {
 		21: int64(4242),        // bytes
 		25: int64(1),           // archive, the next NullInt64 along
 		26: int64(1700000000),  // time_added, adjacent to archive
-	}})
+	}}, fullRow)
 	if err != nil {
 		t.Fatalf("scanEntry: %v", err)
 	}
@@ -949,7 +949,7 @@ func TestScanEntry_MapsColumnsByPosition(t *testing.T) {
 func TestScanEntry_PropagatesAScanError(t *testing.T) {
 	t.Parallel()
 	boom := errors.New("column count mismatch")
-	got, err := scanEntry(fixedScanner{err: boom})
+	got, err := scanEntry(fixedScanner{err: boom}, fullRow)
 	if !errors.Is(err, boom) {
 		t.Errorf("err = %v, want the scan error", err)
 	}
