@@ -52,7 +52,7 @@ type Entry struct {
 	NzoID        string
 	Storage      string
 	Path         string
-	ScriptLog    []byte
+	ScriptLog    []byte // written by AddTx; no read fills it, as entryColumns leaves script_log out
 	ScriptLine   string
 	DownloadTime int64
 	PostprocTime int64
@@ -180,10 +180,9 @@ func (r *Repository) Add(ctx context.Context, e Entry) error {
 // Get fetches the entry with the given nzo_id. It returns ErrNotFound (via
 // errors.Is) when no matching row exists.
 func (r *Repository) Get(ctx context.Context, nzoID string) (*Entry, error) {
-	shape := fullRow
-	q := `SELECT ` + shape.columns() + ` FROM history WHERE nzo_id = ?` //nolint:gosec // G202: columns() returns one of two package constants
+	const q = `SELECT ` + entryColumns + ` FROM history WHERE nzo_id = ?`
 	row := r.db.QueryRowContext(ctx, q, nzoID)
-	e, err := scanEntry(row, shape)
+	e, err := scanEntry(row)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, ErrNotFound
 	}
@@ -199,8 +198,7 @@ func (r *Repository) Get(ctx context.Context, nzoID string) (*Entry, error) {
 func (r *Repository) Search(ctx context.Context, opts SearchOptions) ([]Entry, error) {
 	where, args := buildWhereClause(opts)
 
-	shape := listRow
-	q := "SELECT " + shape.columns() + " FROM history" //nolint:gosec // G202: columns() returns one of two package constants
+	q := "SELECT " + entryColumns + " FROM history"
 	if len(where) > 0 {
 		q += " WHERE " + strings.Join(where, " AND ")
 	}
@@ -235,7 +233,7 @@ func (r *Repository) Search(ctx context.Context, opts SearchOptions) ([]Entry, e
 	}
 	out := make([]Entry, 0, capHint)
 	for rows.Next() {
-		e, err := scanEntry(rows, shape)
+		e, err := scanEntry(rows)
 		if err != nil {
 			return nil, fmt.Errorf("history: search scan: %w", err)
 		}
@@ -437,13 +435,11 @@ func (r *Repository) ExpiredEntries(ctx context.Context, retainDays, retainFaile
 		failedCutoff = time.Now().AddDate(0, 0, -retainFailedDays).Unix()
 	}
 
-	shape := listRow
-	const expiredTail = `
+	const q = `SELECT ` + entryColumns + `
 FROM history
 WHERE (? = 1 AND status != 'Failed' AND completed < ?)
    OR (? = 1 AND status =  'Failed' AND completed < ?)
 ORDER BY completed ASC`
-	q := `SELECT ` + shape.columns() + expiredTail //nolint:gosec // G202: columns() returns one of two package constants
 
 	rows, err := r.db.QueryContext(ctx, q, nonFailedOn, nonFailedCutoff, failedOn, failedCutoff)
 	if err != nil {
@@ -453,7 +449,7 @@ ORDER BY completed ASC`
 
 	var out []Entry
 	for rows.Next() {
-		e, scanErr := scanEntry(rows, shape)
+		e, scanErr := scanEntry(rows)
 		if scanErr != nil {
 			return nil, fmt.Errorf("history: expired entries scan: %w", scanErr)
 		}
@@ -465,46 +461,14 @@ ORDER BY completed ASC`
 	return out, nil
 }
 
-// The history SELECT column list is defined once, as the text on either side of
-// script_log, so the two lists below share every other column by construction.
-// script_log can be 512 KiB per row; a read that discards it must not select it.
-const (
-	columnsBeforeLog = `id, completed, name, nzb_name, category, pp, script,
-url, status, nzo_id, storage, path,`
-	columnsAfterLog = ` script_line, download_time,
+// entryColumns is the SELECT column list every read uses, ordered to match
+// scanEntry. It leaves out script_log, which can be 512 KiB per row, so no
+// read pays for a column its caller would discard; AddTx still writes it.
+const entryColumns = `id, completed, name, nzb_name, category, pp, script,
+url, status, nzo_id, storage, path, script_line, download_time,
 postproc_time, stage_log, downloaded, completeness, fail_message, url_info,
 bytes, meta, md5sum, password, archive, time_added,
 nzb_backup, unwanted_ext`
-
-	// allColumns is the SELECT column list that includes script_log.
-	allColumns = columnsBeforeLog + ` script_log,` + columnsAfterLog
-
-	// listColumns is allColumns without script_log.
-	listColumns = columnsBeforeLog + columnsAfterLog
-)
-
-// rowShape owns the choice between the two column lists. columns() is the
-// SELECT list for a shape and scanEntry reads the matching destinations, so a
-// call site names its shape once and passes that one value to both.
-type rowShape struct{ withScriptLog bool }
-
-// columns returns the SELECT column list for s.
-func (s rowShape) columns() string {
-	if s.withScriptLog {
-		return allColumns
-	}
-	return listColumns
-}
-
-var (
-	// fullRow includes script_log. Get uses it.
-	fullRow = rowShape{withScriptLog: true}
-	// listRow omits script_log, leaving Entry.ScriptLog nil. Search and
-	// ExpiredEntries use it, because their callers (the §10 history list, the
-	// duplicate-NZB check, retention) discard the log. A read that needs the
-	// log must use fullRow.
-	listRow = rowShape{withScriptLog: false}
-)
 
 // scanner abstracts over *sql.Row and *sql.Rows so scanEntry works for both.
 type scanner interface {
@@ -524,7 +488,7 @@ type scanner interface {
 // the whole result set. Scan through sql.Null* and coalesce NULL to the zero
 // value, matching the "SQL NULL round-trips as zero value" contract already
 // documented on the Entry struct.
-func scanEntry(s scanner, shape rowShape) (*Entry, error) {
+func scanEntry(s scanner) (*Entry, error) {
 	var (
 		e                                                            Entry
 		completed, timeAdded                                         sql.NullInt64
@@ -534,15 +498,10 @@ func scanEntry(s scanner, shape rowShape) (*Entry, error) {
 		downloadTime, postprocTime, downloaded, completeness         sql.NullInt64
 		bytesVal, archive                                            sql.NullInt64
 	)
-	dest := []any{
+	err := s.Scan(
 		&e.ID, &completed,
 		&name, &nzbName, &category, &pp, &script,
 		&urlField, &status, &nzoID, &storage, &path,
-	}
-	if shape.withScriptLog {
-		dest = append(dest, &e.ScriptLog)
-	}
-	dest = append(dest,
 		&scriptLine,
 		&downloadTime, &postprocTime, &stageLog,
 		&downloaded, &completeness, &failMessage, &urlInfo,
@@ -552,7 +511,7 @@ func scanEntry(s scanner, shape rowShape) (*Entry, error) {
 		// database/sql range-checks the narrowing into uint8.
 		&e.Unwanted,
 	)
-	if err := s.Scan(dest...); err != nil {
+	if err != nil {
 		return nil, err
 	}
 	e.Completed = fromUnix(completed.Int64)

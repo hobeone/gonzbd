@@ -6,12 +6,23 @@ import (
 	"time"
 )
 
-// TestListReads_DoNotLoadScriptLog pins which reads select script_log. The log
-// can be 512 KiB per row, so Search (the paged history view and the
-// duplicate-NZB MD5 lookup) and ExpiredEntries must not pull it, while Get
-// still returns it. The assertion is on the returned Entry, which is what a
-// query that re-added the column would change.
-func TestListReads_DoNotLoadScriptLog(t *testing.T) {
+// storedScriptLog reads script_log straight from the table. No repository read
+// selects the column, so this is the only way a test can see what AddTx wrote.
+func storedScriptLog(t *testing.T, repo *Repository, nzoID string) []byte {
+	t.Helper()
+	var log []byte
+	if err := repo.DB().QueryRowContext(t.Context(),
+		`SELECT script_log FROM history WHERE nzo_id = ?`, nzoID).Scan(&log); err != nil {
+		t.Fatalf("read script_log for %s: %v", nzoID, err)
+	}
+	return log
+}
+
+// TestReads_DoNotLoadScriptLog pins that no read loads script_log, which can be
+// 512 KiB per row, while AddTx still stores it. Get serves the retention
+// re-read and mode=history&nzo_ids; Search serves the paged history view and
+// the duplicate-NZB MD5 lookup; ExpiredEntries serves retention.
+func TestReads_DoNotLoadScriptLog(t *testing.T) {
 	t.Parallel()
 	_, repo := openTestDB(t)
 	ctx := t.Context()
@@ -24,75 +35,40 @@ func TestListReads_DoNotLoadScriptLog(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Add: %v", err)
 	}
+	if got := storedScriptLog(t, repo, "with-log"); string(got) != string(log) {
+		t.Fatalf("stored script_log = %d bytes, want the %d AddTx was given", len(got), len(log))
+	}
 
-	full, err := repo.Get(ctx, "with-log")
+	check := func(read string, e Entry) {
+		t.Helper()
+		if len(e.ScriptLog) != 0 {
+			t.Errorf("%s loaded %d bytes of script_log", read, len(e.ScriptLog))
+		}
+		if e.ScriptLine != "ran" {
+			t.Errorf("%s: ScriptLine = %q, want it kept", read, e.ScriptLine)
+		}
+	}
+
+	got, err := repo.Get(ctx, "with-log")
 	if err != nil {
 		t.Fatalf("Get: %v", err)
 	}
-	if string(full.ScriptLog) != string(log) {
-		t.Errorf("Get ScriptLog = %d bytes, want the stored %d", len(full.ScriptLog), len(log))
-	}
+	check("Get", *got)
 
 	for name, opts := range map[string]SearchOptions{
-		"page":      {},
-		"md5 probe": {MD5Sum: "abc"},
+		"Search page":      {},
+		"Search md5 probe": {MD5Sum: "abc"},
 	} {
-		got, err := repo.Search(ctx, opts)
-		if err != nil || len(got) != 1 {
-			t.Fatalf("%s: Search = %v, %v, want 1 entry", name, got, err)
+		found, err := repo.Search(ctx, opts)
+		if err != nil || len(found) != 1 {
+			t.Fatalf("%s = %v, %v, want 1 entry", name, found, err)
 		}
-		if len(got[0].ScriptLog) != 0 {
-			t.Errorf("%s: Search loaded %d bytes of script_log", name, len(got[0].ScriptLog))
-		}
-		if got[0].ScriptLine != "ran" {
-			t.Errorf("%s: ScriptLine = %q, want it kept", name, got[0].ScriptLine)
-		}
+		check(name, found[0])
 	}
 
 	exp, err := repo.ExpiredEntries(ctx, 1, 1)
 	if err != nil || len(exp) != 1 {
 		t.Fatalf("ExpiredEntries = %v, %v, want 1 entry", exp, err)
 	}
-	if len(exp[0].ScriptLog) != 0 {
-		t.Errorf("ExpiredEntries loaded %d bytes of script_log", len(exp[0].ScriptLog))
-	}
-}
-
-// TestColumnLists_DifferOnlyByScriptLog pins that the two SELECT lists are one
-// definition: removing script_log from allColumns yields listColumns exactly.
-func TestColumnLists_DifferOnlyByScriptLog(t *testing.T) {
-	t.Parallel()
-	if !strings.Contains(allColumns, "script_log") {
-		t.Fatal("allColumns lost script_log")
-	}
-	if strings.Contains(listColumns, "script_log") {
-		t.Error("listColumns selects script_log")
-	}
-	if got, want := len(strings.Split(listColumns, ",")), len(strings.Split(allColumns, ","))-1; got != want {
-		t.Errorf("listColumns has %d columns, want %d (allColumns minus script_log)", got, want)
-	}
-}
-
-// TestScanEntry_ListShapeMapsColumnsByPosition is the listRow counterpart of
-// TestScanEntry_MapsColumnsByPosition: with script_log absent every column after
-// it sits one position earlier.
-func TestScanEntry_ListShapeMapsColumnsByPosition(t *testing.T) {
-	t.Parallel()
-	got, err := scanEntry(fixedScanner{at: map[int]any{
-		8:  "Failed",
-		9:  "SABnzbd_nzo_xyz",
-		18: "par2 repair fail", // fail_message
-		19: "http://info",      // url_info
-		20: int64(4242),        // bytes
-		24: int64(1),           // archive
-		25: int64(1700000000),  // time_added
-	}}, listRow)
-	if err != nil {
-		t.Fatalf("scanEntry: %v", err)
-	}
-	if got.Status != "Failed" || got.NzoID != "SABnzbd_nzo_xyz" ||
-		got.FailMessage != "par2 repair fail" || got.URLInfo != "http://info" ||
-		got.Bytes != 4242 || got.Archive != 1 || got.TimeAdded.Unix() != 1700000000 {
-		t.Errorf("list-shape columns misplaced: %+v", got)
-	}
+	check("ExpiredEntries", exp[0])
 }

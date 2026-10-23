@@ -127,9 +127,9 @@ func TestAddGetRoundTrip(t *testing.T) {
 			t.Errorf("%s: got %v, want %v", c.field, c.got, c.want)
 		}
 	}
-	// ScriptLog is a []byte field.
-	if string(got.ScriptLog) != string(want.ScriptLog) {
-		t.Errorf("ScriptLog: got %q, want %q", got.ScriptLog, want.ScriptLog)
+	// No read selects script_log, so the stored value is checked directly.
+	if stored := storedScriptLog(t, repo, want.NzoID); string(stored) != string(want.ScriptLog) {
+		t.Errorf("stored script_log: got %q, want %q", stored, want.ScriptLog)
 	}
 }
 
@@ -919,12 +919,12 @@ func TestScanEntry_MapsColumnsByPosition(t *testing.T) {
 	got, err := scanEntry(fixedScanner{at: map[int]any{
 		8:  "Failed",           // status
 		9:  "SABnzbd_nzo_xyz",  // nzo_id, the NullString next to it
-		19: "par2 repair fail", // fail_message
-		20: "http://info",      // url_info, its NullString neighbour
-		21: int64(4242),        // bytes
-		25: int64(1),           // archive, the next NullInt64 along
-		26: int64(1700000000),  // time_added, adjacent to archive
-	}}, fullRow)
+		18: "par2 repair fail", // fail_message
+		19: "http://info",      // url_info, its NullString neighbour
+		20: int64(4242),        // bytes
+		24: int64(1),           // archive, the next NullInt64 along
+		25: int64(1700000000),  // time_added, adjacent to archive
+	}})
 	if err != nil {
 		t.Fatalf("scanEntry: %v", err)
 	}
@@ -949,7 +949,7 @@ func TestScanEntry_MapsColumnsByPosition(t *testing.T) {
 func TestScanEntry_PropagatesAScanError(t *testing.T) {
 	t.Parallel()
 	boom := errors.New("column count mismatch")
-	got, err := scanEntry(fixedScanner{err: boom}, fullRow)
+	got, err := scanEntry(fixedScanner{err: boom})
 	if !errors.Is(err, boom) {
 		t.Errorf("err = %v, want the scan error", err)
 	}

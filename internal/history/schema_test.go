@@ -30,15 +30,15 @@ func TestOpen_InvalidPath(t *testing.T) {
 	})
 }
 
-// T6: allColumns column count matches scanEntry's Scan argument count.
+// T6: entryColumns column count matches scanEntry's Scan argument count.
 // This guards against drift between the SELECT column list and the
 // scanEntry function — a common source of "sql: expected N destination
 // arguments, got M" panics.
-func TestAllColumns_CountMatchesScanEntry(t *testing.T) {
+func TestEntryColumns_CountMatchesScanEntry(t *testing.T) {
 	t.Parallel()
 
-	// Count columns in allColumns by splitting on commas.
-	colCount := len(strings.Split(allColumns, ","))
+	// Count columns in entryColumns by splitting on commas.
+	colCount := len(strings.Split(entryColumns, ","))
 
 	// Open a real DB, insert a row, and attempt a SELECT to verify
 	// the column list matches scanEntry's Scan call.
@@ -63,7 +63,7 @@ func TestAllColumns_CountMatchesScanEntry(t *testing.T) {
 		t.Fatalf("Add: %v", err)
 	}
 
-	// Get should succeed if allColumns and scanEntry are in sync.
+	// Get should succeed if entryColumns and scanEntry are in sync.
 	got, err := repo.Get(ctx, "test-nzo-id")
 	if err != nil {
 		t.Fatalf("Get failed (column count mismatch?): %v", err)
@@ -72,9 +72,10 @@ func TestAllColumns_CountMatchesScanEntry(t *testing.T) {
 		t.Errorf("Name = %q, want %q", got.Name, "test-name")
 	}
 
-	// The allColumns constant has 29 columns. Verify this as a safety net.
-	if colCount != 29 {
-		t.Errorf("allColumns has %d columns, expected 29 — did you add/remove a column without updating scanEntry?", colCount)
+	// entryColumns has 28 columns: the table's 29 less script_log. Verify this
+	// as a safety net.
+	if colCount != 28 {
+		t.Errorf("entryColumns has %d columns, expected 28 — did you add/remove a column without updating scanEntry?", colCount)
 	}
 }
 

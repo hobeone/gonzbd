@@ -1,40 +1,24 @@
 pkg ./internal/history/
-run ^TestListReads_DoNotLoadScriptLog$|^TestColumnLists_DifferOnlyByScriptLog$|^TestScanEntry_ListShapeMapsColumnsByPosition$
+run ^TestReads_DoNotLoadScriptLog$|^TestAddGetRoundTrip_EveryFieldDistinct$
 
-[Search reads the full shape, so selects and scans script_log]
+# Re-adding script_log to a read takes two edits, one to entryColumns and one
+# to scanEntry, and each alone fails every read with a column-count error, so
+# neither is a mutation worth recording. These pin the two halves a single edit
+# can break: that a read never returns the log's bytes, and that AddTx still
+# stores them, since no read would notice if it stopped.
+
+[a read returns script_log in another field's place]
 file internal/history/repository.go
 --- anchor
-	shape := listRow
-	q := "SELECT "
+url, status, nzo_id, storage, path, script_line, download_time,
 --- replace
-	shape := fullRow
-	q := "SELECT "
+url, status, nzo_id, storage, path, script_log, download_time,
 --- end
 
-[ExpiredEntries reads the full shape, so selects and scans script_log]
+[AddTx stops storing script_log]
 file internal/history/repository.go
 --- anchor
-	shape := listRow
-	const expiredTail = `
+		e.ScriptLog, e.ScriptLine,
 --- replace
-	shape := fullRow
-	const expiredTail = `
---- end
-
-[listColumns gains script_log]
-file internal/history/repository.go
---- anchor
-	listColumns = columnsBeforeLog + columnsAfterLog
---- replace
-	listColumns = allColumns
---- end
-
-[Get stops selecting script_log]
-file internal/history/repository.go
---- anchor
-	shape := fullRow
-	q := `SELECT `
---- replace
-	shape := listRow
-	q := `SELECT `
+		[]byte(nil), e.ScriptLine,
 --- end
