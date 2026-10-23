@@ -14,11 +14,10 @@ import (
 	"github.com/hobeone/gonzbd/internal/storagefault"
 )
 
-// TestWriteArticle_AfterTheJobClosedCreatesNoFile is #1053's acceptance
-// test, driven through a real assembler worker: a result registered its file
-// while the job was still the dispatcher's, and its write reaches the worker
-// after the job closed. No file is created and no storage fault is raised,
-// which the job-level tombstone used to guarantee.
+// TestWriteArticle_AfterTheJobClosedCreatesNoFile, driven through a real
+// assembler worker: a result registered its file while the job was still the
+// dispatcher's, and its write reaches the worker after the job closed. No
+// file is created and no storage fault is raised.
 func TestWriteArticle_AfterTheJobClosedCreatesNoFile(t *testing.T) {
 	t.Parallel()
 	handOver := func(t *testing.T, _ *Application, p *pipeline, a *assembler.Assembler, j *job.Job) {

@@ -31,8 +31,8 @@ func closeFaultRun(t *testing.T, closeErr error) (status, failMsg string, stageR
 
 // TestEnqueuePostProc_ACloseFaultFailsTheRun: any storage fault — permanent
 // or retryable — from the hand-off's handle close becomes the run's failure
-// reason, so the stages skip and the job is filed Failed with it. The close
-// arm tombstones the job either way, so nothing ever retries a fault
+// reason, so the stages skip and the job is filed Failed with it. The job is
+// admitted before the close either way, so nothing ever retries a fault
 // observed here, and the lost bytes would otherwise reach par2/unrar as a
 // hole.
 func TestEnqueuePostProc_ACloseFaultFailsTheRun(t *testing.T) {

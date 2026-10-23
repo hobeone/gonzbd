@@ -14,10 +14,10 @@ import (
 	"github.com/hobeone/gonzbd/internal/job"
 )
 
-// The resolver is the gate that replaced the assembler's job-level tombstone
-// (#1053): a write for a job that has left the dispatcher, or been handed to
-// post-processing, must not open a file. The register guard keeps a late
-// article from re-growing fileInfo once the job is gone.
+// The resolver is the assembler's one gate on a closed job: a write for a job
+// that has left the dispatcher, or been handed to post-processing, must not
+// open a file. The register guard keeps a late article from re-growing
+// fileInfo once the job is gone.
 
 func TestResolveFileInfo_RefusesAJobThatLeftTheDispatcher(t *testing.T) {
 	t.Parallel()
