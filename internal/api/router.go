@@ -117,7 +117,12 @@ func (s *Server) registerModes() {
 		"pause_pp":   {handler: s.modePausePP, level: LevelAdmin},
 		"resume_pp":  {handler: s.modeResumePP, level: LevelAdmin},
 		// Misc modes
-		"about":       {handler: s.modeAbout, level: LevelProtected},
+		// about reveals config_path, every configured directory and the
+		// resolved tool paths, so the upload-only NZB key must not reach it.
+		// The web UI's session cookie is LevelAdmin, and its About dialog is
+		// the only UI caller: `git grep -n 'mode=about' -- ui/src` returns
+		// 2 lines, the fetch in AboutDialog.svelte and a comment in api.ts.
+		"about":       {handler: s.modeAbout, level: LevelAdmin},
 		"get_cats":    {handler: s.modeGetCats, level: LevelProtected},
 		"get_scripts": {handler: s.modeGetScripts, level: LevelProtected},
 		"browse":      {handler: s.modeBrowse, level: LevelAdmin},

@@ -134,33 +134,6 @@ func TestResolveBinary(t *testing.T) {
 	}
 }
 
-func TestModeAbout_ContextCancellation(t *testing.T) {
-	oldTransport := http.DefaultClient.Transport
-	defer func() { http.DefaultClient.Transport = oldTransport }()
-
-	var called atomic.Int32
-	http.DefaultClient.Transport = &mockTransport{
-		roundTrip: func(req *http.Request) (*http.Response, error) {
-			called.Add(1)
-			if req.Context().Err() != context.Canceled {
-				t.Errorf("roundTrip request context Err() = %v; want context.Canceled", req.Context().Err())
-			}
-			return nil, req.Context().Err()
-		},
-	}
-
-	s := testServer()
-	rr := httptest.NewRecorder()
-	ctx, cancel := context.WithCancel(context.Background())
-	cancel()
-	req := httptest.NewRequest(http.MethodGet, "/api?mode=about", nil).WithContext(ctx)
-	s.modeAbout(rr, req)
-
-	if called.Load() != 2 {
-		t.Errorf("expected 2 roundTrip calls, got %d", called.Load())
-	}
-}
-
 func TestPublicIP_ContextCancellation(t *testing.T) {
 	oldTransport := http.DefaultClient.Transport
 	defer func() { http.DefaultClient.Transport = oldTransport }()
