@@ -824,18 +824,23 @@ func (a *Assembler) CloseJobHandles(ctx context.Context, jobID string) error {
 // file's completion or the hand-off — and wrong the moment the same job ID
 // comes back.
 //
-// Without this, an in-process retry re-dispatches articles whose writes all
-// land in handleLateDuplicate: the buffer is returned to the pool, nothing is
-// written, and the article is failed again. The retry cannot make progress on
-// any file the assembler already completed, and a restart is the only thing
-// that clears it, because the map dies with the process. A file that finalized
+// Without this, an in-process retry's articles are dropped unwritten and failed
+// again, and a restart is the only thing that clears it, because the maps die
+// with the process. Which tombstone drops them depends on how the previous
+// attempt ended. For a job the cancel or close-handles arm reached it is
+// cancelledJobs, below. For one neither arm reached — CloseJobHandles returns
+// ctx.Err() without sending its message when its timeout fires first — it is
+// the entry finalizeFile set for each finished file, which sends that file's
+// writes to handleLateDuplicate: the buffer is pooled and nothing is written.
+// A file that finalized
 // SHORT is the case that matters most — Job.ResetForRetry clears its Complete
 // flag precisely so the articles it is missing can be re-fetched, and this is
 // what lets those articles land.
 //
 // cancelledJobs is dropped too. An article for a job the cancel or close-handles
 // arm tombstoned is discarded before it reaches processRequest, so a retry of
-// such a job would otherwise have every article silently dropped rather than written.
+// such a job would otherwise have every article silently dropped rather than
+// written, for files never finished as well as finished ones.
 //
 // Open handles are deliberately left alone. This says nothing about a file
 // being written right now; it only forgets that one was finished earlier.
@@ -1256,9 +1261,8 @@ func (a *Assembler) syncAndClose(f *openFile) error {
 // returns 1 line, in Application.RemoveJob — and since #376 it removes the job
 // from the queue BEFORE calling in, returning early if that fails.
 //
-// The caller keeps the bookkeeping: the open-map delete and the per-file
-// completed tombstone are unconditional, and neither is this function's
-// business.
+// The caller keeps the bookkeeping: the open-map delete is unconditional, and
+// is not this function's business.
 func (a *Assembler) closeCancelledFile(f *openFile, disposition FileDisposition) {
 	// The close error is best-effort only under DeleteFiles, where the file is
 	// unlinked below and nothing it failed to flush could ever be read. Under
