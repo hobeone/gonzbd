@@ -31,8 +31,8 @@ file internal/app/pipeline.go
 			p.markDirty(j, fileIdx)
 		}
 	}
-	p.fileInfo[key] = info
+	p.fileInfo[key] = fileEntry{info: info, j: j}
 --- replace
 	}
-	p.fileInfo[key] = info
+	p.fileInfo[key] = fileEntry{info: info, j: j}
 --- end

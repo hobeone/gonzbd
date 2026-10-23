@@ -2427,7 +2427,9 @@ func (app *Application) enqueuePostProc(j *job.Job, hdr dispatch.Header, failMsg
 	// (downloader Options.HandedOff), and it must precede the close: a job
 	// handed off from Fetching keeps a dispatchable row until the finalizer's
 	// CancelJob. An article already in flight that arrives after the close
-	// is dropped by the assembler's whole-job tombstone.
+	// is refused at the assembler's open: pipeline.resolveForWrite answers
+	// ErrJobClosed for an admitted instance, and the admission precedes the
+	// close, so the worker sees it on every write past the close arm.
 	closeTimeout := app.closeHandlesTimeout
 	if closeTimeout <= 0 {
 		closeTimeout = closeHandlesTimeout
@@ -2872,11 +2874,13 @@ func (app *Application) retryHistoryJob(ctx context.Context, jobID string, allow
 		return fmt.Errorf("app: retry %s: %w", jobID, err)
 	}
 	j.ResetForRetry()
-	// A failure aborts the retry. The job-level tombstone the close-handles
-	// arm set when this job entered post-processing drops every article of
-	// the retry without resolving it, so a retry that kept it would sit at
-	// Fetching making no progress. ErrNotStarted is the one exception: a
-	// worker that never ran holds no tombstones.
+	// A failure aborts the retry. A per-file tombstone left by an attempt
+	// whose close-handles message never reached the worker sends every
+	// refetched article for that file to handleLateDuplicate, unwritten, so
+	// a retry that kept it could sit at Fetching making no progress.
+	// ErrNotStarted is the one exception: a worker that never ran holds no
+	// tombstones. Whether the retry's instance accepts writes at all is the
+	// resolver's answer (pipeline.resolveForWrite), and needs no forgetting.
 	if app.assembler != nil {
 		if err := app.assembler.ForgetJob(ctx, jobID); err != nil && !errors.Is(err, assembler.ErrNotStarted) {
 			return fmt.Errorf("app: retry %s: clear the assembler's tombstones: %w", jobID, err)

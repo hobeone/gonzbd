@@ -12,12 +12,11 @@ import (
 // TestForgetJob_DropsOnlyTheNamedJobsTombstones pins the control arm.
 //
 // The tombstone set is keyed on (jobID, fileIdx). The cancel and close-handles
-// arms drop a job's entries when they tombstone it; this arm drops whatever
-// entries remain, with the job-level tombstone. A retry returns under the SAME
-// job ID, so without this arm its writes are refused — pooled, never written,
-// failed again — and only a restart clears it: by the job-level tombstone if
-// either arm reached the job, or else as late duplicates, for each file
-// finalizeFile tombstoned.
+// arms drop a job's entries when they close its handles; this arm drops
+// whatever entries remain for a job neither arm reached. A retry returns under
+// the SAME job ID, so without this arm its writes for those files are refused
+// as late duplicates — pooled, never written, failed again — and only a
+// restart clears it.
 //
 // The other job's entry surviving is half the contract: this is scoped to one
 // retry, and dropping a bystander's tombstone would re-open the finalize race
@@ -37,7 +36,7 @@ func TestForgetJob_DropsOnlyTheNamedJobsTombstones(t *testing.T) {
 	ack := make(chan error, 1)
 	a.dispatchRequest(
 		WriteRequest{JobID: "", FileIdx: fileIdxForgetJob, MessageID: "retried", ackCh: ack},
-		map[fileKey]*openFile{}, completed, map[string]struct{}{})
+		map[fileKey]*openFile{}, completed)
 
 	if _, still := completed[retried0]; still {
 		t.Error("file 0 of the retried job is still tombstoned, so its re-fetched " +
@@ -60,33 +59,6 @@ func TestForgetJob_DropsOnlyTheNamedJobsTombstones(t *testing.T) {
 	}
 }
 
-// TestForgetJob_DropsTheCancelledMark covers the second tombstone, which fails
-// more quietly than the first.
-//
-// An article for a cancelled job is discarded in dispatchRequest before it
-// reaches processRequest at all — no write, no failure, no log at anything
-// above debug. A retry of a job that had been cancelled would have every
-// article silently dropped, which reads as a download that simply never
-// progresses.
-func TestForgetJob_DropsTheCancelledMark(t *testing.T) {
-	a := newHelperAssembler()
-	cancelled := map[string]struct{}{"retried": {}, "other": {}}
-
-	ack := make(chan error, 1)
-	a.dispatchRequest(
-		WriteRequest{JobID: "", FileIdx: fileIdxForgetJob, MessageID: "retried", ackCh: ack},
-		map[fileKey]*openFile{}, map[fileKey]struct{}{}, cancelled)
-
-	if _, still := cancelled["retried"]; still {
-		t.Error("the retried job is still marked cancelled, so every article of the " +
-			"retry is discarded before it reaches processRequest")
-	}
-	if _, ok := cancelled["other"]; !ok {
-		t.Error("another job's cancelled mark was dropped, which would let a " +
-			"cancelled job's in-flight articles start being written again")
-	}
-}
-
 // TestForgetJob_LeavesOpenHandlesAlone pins the deliberate non-action.
 //
 // This message forgets that files were FINISHED. It asserts nothing about a
@@ -103,7 +75,7 @@ func TestForgetJob_LeavesOpenHandlesAlone(t *testing.T) {
 	ack := make(chan error, 1)
 	a.dispatchRequest(
 		WriteRequest{JobID: "", FileIdx: fileIdxForgetJob, MessageID: "job", ackCh: ack},
-		open, map[fileKey]struct{}{}, map[string]struct{}{})
+		open, map[fileKey]struct{}{})
 
 	if _, ok := open[key]; !ok {
 		t.Error("an open file was removed by ForgetJob; the arm must not touch live " +
@@ -145,7 +117,7 @@ func TestForgetJob_LetsAPreviouslyCompletedFileAcceptArticlesAgain(t *testing.T)
 	ack := make(chan error, 1)
 	a.dispatchRequest(
 		WriteRequest{JobID: "", FileIdx: fileIdxForgetJob, MessageID: "job", ackCh: ack},
-		open, completed, map[string]struct{}{})
+		open, completed)
 
 	a.processRequest(req(), open, completed)
 	if got := f.w.parts(); got != 1 {
