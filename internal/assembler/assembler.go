@@ -43,6 +43,12 @@ var (
 
 	// ErrStopped is returned by WriteArticle after Stop has been called.
 	ErrStopped = errors.New("assembler: stopped")
+
+	// ErrJobClosed is what Options.FileInfo returns, bare or wrapped, for a
+	// job that no longer accepts writes: the worker drops the article it was
+	// resolving for, as it would an article for a cancelled job, instead of
+	// opening a file. See processRequest.
+	ErrJobClosed = errors.New("assembler: job no longer accepts writes")
 )
 
 // WriteRequest is the unit of work sent to the assembler. Each request
@@ -194,6 +200,10 @@ type Options struct {
 	// FileInfo is called once per (JobID, FileIdx) pair to obtain the target
 	// directory, name and expected part count. It must be non-nil; New panics
 	// otherwise.
+	//
+	// It may return ErrJobClosed, bare or wrapped, for a job that no longer
+	// accepts writes; the worker then drops the article silently. Any other
+	// error is a "resolve" storage fault, routed through OnWriteFault.
 	FileInfo func(jobID string, fileIdx int) (FileInfo, error)
 
 	// OnFileComplete, if non-nil, is called on the worker goroutine when all
@@ -1319,6 +1329,17 @@ func (a *Assembler) processRequest(req WriteRequest, open map[fileKey]*openFile,
 	if !ok {
 		var err error
 		f, err = a.openTargetFile(key, req, open)
+		if errors.Is(err, ErrJobClosed) {
+			// The resolver says the job no longer accepts writes. Dropped as
+			// an article for a cancelled job is: nothing is opened, nothing
+			// is reported, and the buffer goes back. The article stays
+			// Emitted, which is what a late article for a closed job was
+			// before too.
+			if req.Data != nil {
+				a.releaseBuffer(req.Data)
+			}
+			return
+		}
 		if err != nil {
 			// Routed through OnWriteFault, because nothing else can reach
 			// it: the file is never inserted into open, so no later fsync or
@@ -1453,6 +1474,11 @@ func (a *Assembler) handleLateDuplicate(req WriteRequest) {
 func (a *Assembler) openTargetFile(key fileKey, req WriteRequest, open map[fileKey]*openFile) (*openFile, error) {
 	info, err := a.opts.FileInfo(req.JobID, req.FileIdx)
 	if err != nil {
+		if errors.Is(err, ErrJobClosed) {
+			// Not a storage fault: the job has left the queue or been handed
+			// to post-processing, and processRequest drops the article.
+			return nil, err
+		}
 		return nil, storagefault.Classify("resolve", "", err)
 	}
 
