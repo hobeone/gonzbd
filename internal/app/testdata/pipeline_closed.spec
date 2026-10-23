@@ -9,15 +9,15 @@ run Test(ResolveFileInfo_RefusesAJobThatLeftTheDispatcher|ResolveFileInfo_Refuse
 [the resolver ignores the dispatcher]
 file internal/app/pipeline.go
 --- anchor
-	if !p.holds(entry.j) {
+	} else if !p.holds(j) {
 --- replace
-	if false {
+	} else if false {
 --- end
 
 [the resolver ignores the hand-over]
 file internal/app/pipeline.go
 --- anchor
-	if p.handedOff != nil && p.handedOff(entry.j) {
+	if p.handedOff != nil && p.handedOff(j) {
 --- replace
 	if false {
 --- end

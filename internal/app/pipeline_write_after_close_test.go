@@ -40,6 +40,26 @@ func TestWriteArticle_AfterTheJobClosedCreatesNoFile(t *testing.T) {
 		}, false},
 		{"handed off after CloseJobHandles", handOver, false},
 		{"FatalErr after the hand-over", handOver, true},
+		// enqueuePostProc forgets the job's file info after the close arm
+		// (app.go, the forgetJob after closeJobHandles) while the job is still
+		// the dispatcher's, so a write queued behind the arm misses the cache.
+		{"forgotten after the hand-over", func(t *testing.T, application *Application, p *pipeline, a *assembler.Assembler, j *job.Job) {
+			t.Helper()
+			handOver(t, application, p, a, j)
+			p.forgetJob(j.ID())
+		}, false},
+		// Application.RemoveJob's order: dispatcher removal, the cancel arm,
+		// then forgetJob.
+		{"forgotten after RemoveJob", func(t *testing.T, application *Application, p *pipeline, a *assembler.Assembler, j *job.Job) {
+			t.Helper()
+			if err := application.Dispatcher().RemoveJob(context.Background(), j); err != nil {
+				t.Fatalf("RemoveJob: %v", err)
+			}
+			if err := a.CancelJob(t.Context(), j.ID(), assembler.KeepFiles); err != nil {
+				t.Fatalf("CancelJob: %v", err)
+			}
+			p.forgetJob(j.ID())
+		}, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()

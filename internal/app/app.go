@@ -2429,8 +2429,9 @@ func (app *Application) enqueuePostProc(j *job.Job, hdr dispatch.Header, failMsg
 	// handed off from Fetching keeps a dispatchable row until the finalizer's
 	// CancelJob. An article already in flight that arrives after the close
 	// is refused at the assembler's open: pipeline.resolveForWrite answers
-	// ErrJobClosed for an admitted instance, and the admission precedes the
-	// close, so the worker sees it on every write past the close arm.
+	// ErrJobClosed for an admitted instance, with or without its cache entry
+	// (the forgetJob below drops it), and the admission precedes the close,
+	// so the worker sees it on every write past the close arm.
 	closeTimeout := app.closeHandlesTimeout
 	if closeTimeout <= 0 {
 		closeTimeout = closeHandlesTimeout

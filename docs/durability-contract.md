@@ -978,7 +978,9 @@ pipeline's resolver (`resolveForWrite`) answers `assembler.ErrJobClosed` for an
 instance that is admitted or is no longer the dispatcher's, and the worker
 drops the article without opening a file. The admission precedes the close
 message and the dispatcher removal precedes the cancel message, so a write
-processed after either arm sees the flipped state
+processed after either arm sees the flipped state; a write that arrives after
+the job's cache entries were also forgotten is judged the same way by the
+instance the dispatcher holds under the ID
 (`TestWriteArticle_AfterTheJobClosedCreatesNoFile`). A retry under the same
 ID is a new instance, so its writes resolve, and a stale write of the earlier
 instance is refused because the cached entry names the instance that
