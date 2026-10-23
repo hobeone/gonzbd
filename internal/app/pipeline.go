@@ -384,8 +384,38 @@ func (p *pipeline) handleResult(ctx context.Context, res *downloader.ArticleResu
 // handler runs, and the handlers then act on res.Job rather than looking the
 // ID up again.
 func (p *pipeline) isCurrent(res *downloader.ArticleResult) bool {
-	cur, ok := p.dispatcher.Job(res.JobID())
-	return ok && cur == res.Job
+	return p.holds(res.Job)
+}
+
+// holds reports whether j is the instance the dispatcher now holds under its
+// ID. It is the one definition of "current instance" in this file
+// (`git grep -n 'dispatcher\.Job(' -- internal/app/pipeline.go` returns 1
+// line): the gate (isCurrent), the register guard (registerFileAttempt) and
+// the write resolver (resolveForWrite) all ask it.
+func (p *pipeline) holds(j *job.Job) bool {
+	cur, ok := p.dispatcher.Job(j.ID())
+	return ok && cur == j
+}
+
+// registerForResult registers res's file and reports whether the handler may
+// go on. A refusal for an instance that left the dispatcher meanwhile is the
+// instance-check drop, repeated under the register lock: logged at Debug and
+// NOT returned to the pool. Any other refusal returns the article to the
+// dispatch pool (clearEmitted), which fetches it again.
+func (p *pipeline) registerForResult(res *downloader.ArticleResult, what string) bool {
+	err := p.registerFile(res.Job, res.FileIdx)
+	if err == nil {
+		return true
+	}
+	if errors.Is(err, assembler.ErrJobClosed) {
+		p.log.Debug("dropping "+what+" for a job instance that left the dispatcher while its file was being registered",
+			"job", res.JobID(), "msgid", res.MessageID)
+		return false
+	}
+	p.log.Warn("register file for "+what+" failed, returning to dispatch pool",
+		"job", res.JobID(), "fileidx", res.FileIdx, "msgid", res.MessageID, "err", err)
+	p.clearEmitted(res)
+	return false
 }
 
 func (p *pipeline) handleFailureResult(ctx context.Context, res *downloader.ArticleResult) {
@@ -404,18 +434,7 @@ func (p *pipeline) handleFailureResult(ctx context.Context, res *downloader.Arti
 		// is NOT marked failed first: the file may yet be registered by
 		// another result, and a failure it never receives is a part its
 		// TotalParts count can never reach.
-		if err := p.registerFile(res.Job, res.FileIdx); err != nil {
-			if errors.Is(err, assembler.ErrJobClosed) {
-				// As in handleSuccessResult: the instance left the
-				// dispatcher during the register, so this is the
-				// instance-check drop.
-				p.log.Debug("dropping a permanent failure for a job instance that left the dispatcher while its file was being registered",
-					"job", res.JobID(), "msgid", res.MessageID)
-				return
-			}
-			p.log.Warn("register file for a permanent failure failed, returning to dispatch pool",
-				"job", res.JobID(), "fileidx", res.FileIdx, "msgid", res.MessageID, "err", err)
-			p.clearEmitted(res)
+		if !p.registerForResult(res, "a permanent failure") {
 			return
 		}
 
@@ -503,18 +522,7 @@ func (p *pipeline) handleSuccessResult(ctx context.Context, res *downloader.Arti
 		"job", res.JobID(), "msgid", res.MessageID,
 		"offset", res.Offset, "bytes", len(res.Data))
 
-	if err := p.registerFile(res.Job, res.FileIdx); err != nil {
-		if errors.Is(err, assembler.ErrJobClosed) {
-			// The instance check at the top of handleResult, re-run under
-			// the register lock: the job left the dispatcher meanwhile.
-			// Dropped as that check drops, not returned to the pool.
-			p.log.Debug("dropping a result for a job instance that left the dispatcher while its file was being registered",
-				"job", res.JobID(), "msgid", res.MessageID)
-			return
-		}
-		p.log.Warn("register file failed",
-			"job", res.JobID(), "fileidx", res.FileIdx, "err", err)
-		p.clearEmitted(res)
+	if !p.registerForResult(res, "a decoded article") {
 		return
 	}
 
@@ -684,7 +692,7 @@ func (p *pipeline) registerFileAttempt(j *job.Job, m *job.Manifest, fileIdx int)
 	// article re-grows the map for a job nothing will forget again. The
 	// handlers treat this as the instance-check drop. The write for an
 	// instance still registered but handed off is refused by resolveForWrite.
-	if cur, live := p.dispatcher.Job(jobID); !live || cur != j {
+	if !p.holds(j) {
 		p.mu.Unlock()
 		return fmt.Errorf("register %s[%d]: instance left the dispatcher: %w", jobID, fileIdx, assembler.ErrJobClosed)
 	}
@@ -718,13 +726,19 @@ func (p *pipeline) registerFileAttempt(j *job.Job, m *job.Manifest, fileIdx int)
 // the entry before enqueuing the corresponding WriteArticle, so the
 // assembler worker always sees it by the time it calls this.
 func (p *pipeline) resolveFileInfo(jobID string, fileIdx int) (assembler.FileInfo, error) {
+	entry, err := p.lookupFile(jobID, fileIdx)
+	return entry.info, err
+}
+
+// lookupFile is the cache read both resolvers share.
+func (p *pipeline) lookupFile(jobID string, fileIdx int) (fileEntry, error) {
 	p.mu.RLock()
 	defer p.mu.RUnlock()
 	entry, ok := p.fileInfo[fileKey{jobID: jobID, fileIdx: fileIdx}]
 	if !ok {
-		return assembler.FileInfo{}, fmt.Errorf("no file info for %s[%d]", jobID, fileIdx)
+		return fileEntry{}, fmt.Errorf("no file info for %s[%d]", jobID, fileIdx)
 	}
-	return entry.info, nil
+	return entry, nil
 }
 
 // resolveForWrite is the FileInfo resolver handed to the assembler
@@ -751,13 +765,11 @@ func (p *pipeline) resolveFileInfo(jobID string, fileIdx int) (assembler.FileInf
 // (directunpack_orchestrator, archive_peek), which resolve a finished file
 // of an admitted job.
 func (p *pipeline) resolveForWrite(jobID string, fileIdx int) (assembler.FileInfo, error) {
-	p.mu.RLock()
-	entry, ok := p.fileInfo[fileKey{jobID: jobID, fileIdx: fileIdx}]
-	p.mu.RUnlock()
-	if !ok {
-		return assembler.FileInfo{}, fmt.Errorf("no file info for %s[%d]", jobID, fileIdx)
+	entry, err := p.lookupFile(jobID, fileIdx)
+	if err != nil {
+		return assembler.FileInfo{}, err
 	}
-	if cur, live := p.dispatcher.Job(jobID); !live || cur != entry.j {
+	if !p.holds(entry.j) {
 		return assembler.FileInfo{}, fmt.Errorf("resolve %s[%d]: instance left the dispatcher: %w", jobID, fileIdx, assembler.ErrJobClosed)
 	}
 	if p.handedOff != nil && p.handedOff(entry.j) {

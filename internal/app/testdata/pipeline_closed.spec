@@ -9,7 +9,7 @@ run Test(ResolveFileInfo_RefusesAJobThatLeftTheDispatcher|ResolveFileInfo_Refuse
 [the resolver ignores the dispatcher]
 file internal/app/pipeline.go
 --- anchor
-	if cur, live := p.dispatcher.Job(jobID); !live || cur != entry.j {
+	if !p.holds(entry.j) {
 --- replace
 	if false {
 --- end
@@ -25,7 +25,7 @@ file internal/app/pipeline.go
 [registerFile ignores the dispatcher]
 file internal/app/pipeline.go
 --- anchor
-	if cur, live := p.dispatcher.Job(jobID); !live || cur != j {
+	if !p.holds(j) {
 --- replace
 	if false {
 --- end
@@ -33,11 +33,11 @@ file internal/app/pipeline.go
 [the handler returns a closed job's article to the pool]
 file internal/app/pipeline.go
 --- anchor
-		if errors.Is(err, assembler.ErrJobClosed) {
-			// The instance check at the top of handleResult, re-run under
+	if errors.Is(err, assembler.ErrJobClosed) {
+		p.log.Debug("dropping "+what+" for a job instance that left the dispatcher while its file was being registered",
 --- replace
-		if false {
-			// The instance check at the top of handleResult, re-run under
+	if false {
+		p.log.Debug("dropping "+what+" for a job instance that left the dispatcher while its file was being registered",
 --- end
 
 [New leaves the hand-over out of the resolver]

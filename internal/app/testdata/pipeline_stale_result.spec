@@ -17,19 +17,17 @@ run TestHandleResult_DropsAResultFetchedForAnEarlierInstance|TestHandlers_ActOnT
 [the gate admits a result for any instance under the registered ID]
 file internal/app/pipeline.go
 --- anchor
-	return ok && cur == res.Job
+	return ok && cur == j
 --- replace
 	return ok && cur != nil
 --- end
 
-[a terminal failure registers the file of whatever instance holds the ID]
+[a handler registers the file of whatever instance holds the ID]
 file internal/app/pipeline.go
 --- anchor
-		if err := p.registerFile(res.Job, res.FileIdx); err != nil {
-			if errors.Is(err, assembler.ErrJobClosed) {
+	err := p.registerFile(res.Job, res.FileIdx)
 --- replace
-		if err := p.registerFile(func() *job.Job { j, _ := p.dispatcher.Job(res.JobID()); return j }(), res.FileIdx); err != nil {
-			if errors.Is(err, assembler.ErrJobClosed) {
+	err := p.registerFile(func() *job.Job { j, _ := p.dispatcher.Job(res.JobID()); return j }(), res.FileIdx)
 --- end
 
 [a retryable failure returns whatever instance holds the ID to the pool]
@@ -60,24 +58,12 @@ file internal/app/pipeline.go
 	_ = func() *job.Job { j, _ := p.dispatcher.Job(res.JobID()); return j }().RecordDownload(res.ServerName, len(res.Data))
 --- end
 
-[a success registers the file of whatever instance holds the ID]
-file internal/app/pipeline.go
---- anchor
-	if err := p.registerFile(res.Job, res.FileIdx); err != nil {
-		if errors.Is(err, assembler.ErrJobClosed) {
---- replace
-	if err := p.registerFile(func() *job.Job { j, _ := p.dispatcher.Job(res.JobID()); return j }(), res.FileIdx); err != nil {
-		if errors.Is(err, assembler.ErrJobClosed) {
---- end
-
 [a failed registration returns whatever instance holds the ID to the pool]
 file internal/app/pipeline.go
 --- anchor
-"fileidx", res.FileIdx, "err", err)
-		p.clearEmitted(res)
-		return
+	p.clearEmitted(res)
+	return false
 --- replace
-"fileidx", res.FileIdx, "err", err)
-		p.clearEmitted(func() *downloader.ArticleResult { c := *res; c.Job, _ = p.dispatcher.Job(res.JobID()); return &c }())
-		return
+	p.clearEmitted(func() *downloader.ArticleResult { c := *res; c.Job, _ = p.dispatcher.Job(res.JobID()); return &c }())
+	return false
 --- end

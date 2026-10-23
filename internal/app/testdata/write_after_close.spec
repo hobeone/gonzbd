@@ -8,7 +8,7 @@ run TestWriteArticle_AfterTheJobClosedCreatesNoFile$
 [the resolver ignores the dispatcher]
 file internal/app/pipeline.go
 --- anchor
-	if cur, live := p.dispatcher.Job(jobID); !live || cur != entry.j {
+	if !p.holds(entry.j) {
 --- replace
 	if false {
 --- end
