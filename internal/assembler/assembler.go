@@ -724,8 +724,9 @@ func (a *Assembler) CancelJob(ctx context.Context, jobID string, disposition Fil
 // and blocks until the worker has actually done so. This is called when a job
 // enters post-processing, ensuring no open handles remain that would trigger
 // NFS silly-rename (.nfs*) leaks when post-processing unlinks files. The worker
-// also tombstones the whole job, so no later article for it is written until
-// ForgetJob.
+// also drops the job's per-file tombstones; a later article for the job is
+// refused at the open by Options.FileInfo answering ErrJobClosed, which the
+// caller arranges by admitting the job before it calls this.
 // Its error can be a *storagefault.Fault about a FILE, not only a submit or
 // timeout error about the call — a caller matching on it has to expect both.
 // That reports at least one of the job's files failing its close-time Sync
@@ -800,8 +801,7 @@ func (a *Assembler) CloseJobHandles(ctx context.Context, jobID string) error {
 		// returns it; reading `<-ack` and returning nil made the send side
 		// dead code and handed enqueuePostProc a job whose unsynced bytes never
 		// reached the platter, with only a Warn inside syncAndClose as a
-		// trace. That is the defect this arm's own tombstone comment describes
-		// as fixed — it was fixed on the send side only.
+		// trace. An earlier fix had closed that on the send side only.
 		//
 		// Not covered end-to-end: faulting a file that a STARTED assembler
 		// owns needs the *openFile, and no seam reaches it — every

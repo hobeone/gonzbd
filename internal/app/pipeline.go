@@ -101,7 +101,7 @@ func refFor(res *downloader.ArticleResult) assembler.ArticleRef {
 // already decoded each body (internal/downloader's dispatch.go calls the
 // decoder). The reader goroutine (run) fans out ArticleResults to a pool of worker
 // goroutines that call handleResult concurrently. The fileInfo map is
-// populated by workers and read by the assembler worker via resolveFileInfo,
+// populated by workers and read by the assembler worker via resolveForWrite,
 // so access is protected by mu.
 type pipeline struct {
 	log         *slog.Logger
@@ -150,7 +150,7 @@ type pipeline struct {
 	inFlight sync.WaitGroup
 
 	// handedOff, when non-nil, reports whether j has been admitted to
-	// post-processing (postProcAdmissions.has). resolveFileInfo refuses an
+	// post-processing (postProcAdmissions.has). resolveForWrite refuses an
 	// admitted instance's files. nil means never handed off.
 	handedOff func(j *job.Job) bool
 
@@ -159,7 +159,7 @@ type pipeline struct {
 }
 
 // fileEntry is one registered file: its resolved FileInfo and the job
-// instance that registered it. resolveFileInfo compares that instance with the
+// instance that registered it. resolveForWrite compares that instance with the
 // dispatcher's, so a stale write from an earlier attempt under the same ID is
 // refused.
 type fileEntry struct {
@@ -737,11 +737,15 @@ func (p *pipeline) resolveFileInfo(jobID string, fileIdx int) (assembler.FileInf
 // This is the gate on a late article: dispatch stops at the hand-over, but a
 // fetch already in flight still reaches WriteArticle, and openTargetFile
 // would otherwise create a file for a job in history. It is race-free
-// because of two orderings in this package: enqueuePostProc admits the job
-// before it sends CloseJobHandles, and RemoveJob removes the job from the
-// dispatcher before it sends CancelJob. Each arm empties the job's open
-// handles on the worker, so every later write for the job comes back here,
-// and sees the state those calls flipped before the arm ran.
+// because of two orderings at the assembler's two control-message callers:
+// enqueuePostProc admits the job before it calls CloseJobHandles
+// (`git grep -n 'assembler\.CloseJobHandles' -- 'internal/app/*.go'
+// ':!*_test.go'` returns 2 lines, that call and the hook that overrides it
+// in tests), and RemoveJob removes the job from the dispatcher before it
+// calls CancelJob (`git grep -n 'assembler\.CancelJob(' --
+// 'internal/app/*.go' ':!*_test.go'` returns 1 line). Each arm empties the
+// job's open handles on the worker, so every later write for the job comes
+// back here, and sees the state those calls flipped before the arm ran.
 //
 // resolveFileInfo stays the plain lookup for the completion paths
 // (directunpack_orchestrator, archive_peek), which resolve a finished file

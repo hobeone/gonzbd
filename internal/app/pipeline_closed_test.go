@@ -32,7 +32,7 @@ func TestResolveFileInfo_RefusesAJobThatLeftTheDispatcher(t *testing.T) {
 	}
 	_, err := p.resolveForWrite(j.ID(), 0)
 	if !errors.Is(err, assembler.ErrJobClosed) {
-		t.Fatalf("resolveFileInfo after RemoveJob = %v, want ErrJobClosed: the assembler would open a file for a job in history", err)
+		t.Fatalf("resolveForWrite after RemoveJob = %v, want ErrJobClosed: the assembler would open a file for a job in history", err)
 	}
 }
 
@@ -47,12 +47,12 @@ func TestResolveFileInfo_RefusesAHandedOffJob(t *testing.T) {
 		t.Fatalf("registerFile: %v", err)
 	}
 	if _, err := p.resolveForWrite(j.ID(), 0); err != nil {
-		t.Fatalf("resolveFileInfo before the hand-over = %v, want nil", err)
+		t.Fatalf("resolveForWrite before the hand-over = %v, want nil", err)
 	}
 	handed.Store(true)
 	_, err := p.resolveForWrite(j.ID(), 0)
 	if !errors.Is(err, assembler.ErrJobClosed) {
-		t.Fatalf("resolveFileInfo after the hand-over = %v, want ErrJobClosed", err)
+		t.Fatalf("resolveForWrite after the hand-over = %v, want ErrJobClosed", err)
 	}
 }
 
@@ -72,7 +72,7 @@ func TestResolveFileInfo_RefusesAnEarlierInstance(t *testing.T) {
 	p.mu.Unlock()
 	_, err := p.resolveForWrite(first.ID(), 0)
 	if !errors.Is(err, assembler.ErrJobClosed) {
-		t.Fatalf("resolveFileInfo for an earlier instance = %v, want ErrJobClosed: attempt 1's write would land in attempt 2's file", err)
+		t.Fatalf("resolveForWrite for an earlier instance = %v, want ErrJobClosed: attempt 1's write would land in attempt 2's file", err)
 	}
 }
 

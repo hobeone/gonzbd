@@ -14,9 +14,9 @@ import (
 // been handed to post-processing, the same way it already drops one for a
 // paused, cancelled, or superseded-instance job. Without this, an article
 // already queued into workCh (or pipelined) when enqueuePostProc admits the
-// job is fetched over NNTP and then discarded by the assembler's whole-job
-// tombstone (docs/post-processing-contract.md "An admitted job is not
-// downloaded").
+// job is fetched over NNTP and then refused at the assembler's open by the
+// pipeline's resolver (docs/post-processing-contract.md "An admitted job is
+// not downloaded").
 //
 // The same gate (dispatch.go:646-658) also unmarks the server the dropped
 // request was tried on. That is not specific to a hand-off: the gate is
