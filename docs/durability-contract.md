@@ -939,7 +939,8 @@ the recorder synchronously, then forgets the job's cached `FileInfo`.
 
 `CloseJobHandles`' close arm `Sync`s and `Close`s every open handle of the job
 without deleting, untrusts a file whose fsync or close failed (§4), tombstones
-the files and the job, and **sends any close-time fault on its ack**.
+the job and drops the per-file tombstones the job-level one shadows, and
+**sends any close-time fault on its ack**.
 `enqueuePostProc` reads it: any `*storagefault.Fault` in the joined error,
 permanent or retryable, becomes the run's failure reason, because nothing ever
 retries a fault observed here and the lost bytes would otherwise reach
@@ -1243,8 +1244,8 @@ every file handle, has done the work and answered.
 
 | Control | Encoding | Worker behaviour |
 |---|---|---|
-| **CancelJob** | `fileIdxCancelJob` (-1), `MessageID=jobID`, `disposition` | closes all open files for the job and *deletes* them under `DeleteFiles` or leaves them on disk under `KeepFiles`; tombstones the job in `cancelledJobs` under **both** |
-| **CloseJobHandles** | `fileIdxCloseHandles` (-2), `MessageID=jobID` | `Sync`s and `Close`s handles *without deleting*, untrusts a file whose fsync or close failed, tombstones the files and the job, **sends any close-time fault on `ackCh`**. Used when a job enters post-processing |
+| **CancelJob** | `fileIdxCancelJob` (-1), `MessageID=jobID`, `disposition` | closes all open files for the job and *deletes* them under `DeleteFiles` or leaves them on disk under `KeepFiles`; tombstones the job in `cancelledJobs` under **both**, dropping its per-file `completed` entries |
+| **CloseJobHandles** | `fileIdxCloseHandles` (-2), `MessageID=jobID` | `Sync`s and `Close`s handles *without deleting*, untrusts a file whose fsync or close failed, tombstones the job and drops its per-file `completed` entries, **sends any close-time fault on `ackCh`**. Used when a job enters post-processing |
 | **ForgetJob** | `fileIdxForgetJob` (-4), `MessageID=jobID` | drops the job's file and job tombstones so a retry under the same ID can write again; open handles are left alone |
 | **Quiesce** | `fileIdxQuiesce` (-5) | answers once everything queued ahead of it has been processed |
 

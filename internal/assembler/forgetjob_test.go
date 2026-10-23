@@ -11,11 +11,13 @@ import (
 
 // TestForgetJob_DropsOnlyTheNamedJobsTombstones pins the control arm.
 //
-// The tombstone set is keyed on (jobID, fileIdx) and nothing else removes an
-// entry for the life of the worker goroutine. A retry returns under the SAME
-// job ID, so without this arm every file the assembler already finished for
-// that job refuses the retry's writes as late duplicates — pooled, never
-// written, failed again — and only a restart clears it.
+// The tombstone set is keyed on (jobID, fileIdx). The cancel and close-handles
+// arms drop a job's entries when they tombstone it; this arm drops whatever
+// entries remain, with the job-level tombstone. A retry returns under the SAME
+// job ID, so without this arm its writes are refused — pooled, never written,
+// failed again — and only a restart clears it: by the job-level tombstone if
+// either arm reached the job, or else as late duplicates, for each file
+// finalizeFile tombstoned.
 //
 // The other job's entry surviving is half the contract: this is scoped to one
 // retry, and dropping a bystander's tombstone would re-open the finalize race

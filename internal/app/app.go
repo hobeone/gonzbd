@@ -2440,7 +2440,7 @@ func (app *Application) enqueuePostProc(j *job.Job, hdr dispatch.Header, failMsg
 	closeErr := closeJobHandles(closeCtx, j.ID())
 	closeCancel()
 	// A *storagefault.Fault on a file's close-time sync or close fails
-	// the run, permanent or retryable: this close arm tombstones the handle
+	// the run, permanent or retryable: this close arm tombstones the job
 	// either way, so nothing ever retries it, and the lost bytes would
 	// otherwise reach par2/unrar as a hole. It is offered to the admission as
 	// any other reason is, and the admission is sealed only after this, by

@@ -21,8 +21,7 @@ const (
 
 	// fileIdxForgetJob asks the worker to drop a job's tombstones so its
 	// files can be written again. A retry reuses the job ID, and the
-	// tombstone set is keyed on (jobID, fileIdx) and never expires
-	// otherwise — see Assembler.ForgetJob.
+	// job's tombstones never expire otherwise — see Assembler.ForgetJob.
 	fileIdxForgetJob = -4
 
 	// fileIdxQuiesce asks the worker to answer once everything queued ahead

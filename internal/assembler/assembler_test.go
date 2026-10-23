@@ -1541,8 +1541,8 @@ func TestWriteArticle_TheRefsMessageIDIsWhatTheWorkerReports(t *testing.T) {
 // forgery wrote nothing" is true whether or not the worker acted on it, and an
 // earlier version of this test asserted exactly that and passed against the
 // cancel arm unfixed. What separates the two worlds is the damage left behind:
-// a cancel tombstones the job and a close-handles tombstones its files, so the
-// article that follows is silently dropped.
+// a cancel or a close-handles tombstones the job, so the article that follows
+// is silently dropped.
 //
 // The forgery is sandwiched between two real articles rather than sent first,
 // because close-handles closes the job's OPEN handles: arriving before any
