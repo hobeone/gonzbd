@@ -505,6 +505,7 @@ func New(cfg *config.Config, repo *history.Repository, opts ...func(*Application
 			app.finalizeHopeless(jobID, hopelessEarlyAbort)
 		},
 		markDirty: app.markFileDirty,
+		handedOff: app.postProcAdmissions.has,
 		updateCh:  make(chan completionSwap, 1),
 		fileInfo:  make(map[fileKey]fileEntry),
 	}

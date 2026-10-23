@@ -1,9 +1,10 @@
 pkg ./internal/app/
-run Test(ResolveFileInfo_RefusesAJobThatLeftTheDispatcher|ResolveFileInfo_RefusesAHandedOffJob|ResolveFileInfo_RefusesAnEarlierInstance|RegisterFile_RefusesOnceTheJobLeftTheDispatcher|HandleSuccessResult_DropsAClosedJobsArticleWithoutReturningIt)$
+run Test(ResolveFileInfo_RefusesAJobThatLeftTheDispatcher|ResolveFileInfo_RefusesAHandedOffJob|ResolveFileInfo_RefusesAnEarlierInstance|RegisterFile_RefusesOnceTheJobLeftTheDispatcher|HandleSuccessResult_DropsAClosedJobsArticleWithoutReturningIt|New_WiresTheHandOverIntoTheResolver)$
 
-# resolveForWrite is the gate that replaced the assembler's job-level
-# tombstone (#1053); the register guard keeps a late article from re-growing
-# fileInfo; the handler treats a closed-job refusal as the instance-check drop.
+# resolveForWrite is the assembler's gate on a closed job (#1053); the
+# register guard keeps a late article from re-growing fileInfo; the handler
+# treats a closed-job refusal as the instance-check drop; and New wires the
+# hand-over half of the gate, which a literal can silently omit.
 
 [the resolver ignores the dispatcher]
 file internal/app/pipeline.go
@@ -29,7 +30,7 @@ file internal/app/pipeline.go
 	if false {
 --- end
 
-[the success handler returns a closed job's article to the pool]
+[the handler returns a closed job's article to the pool]
 file internal/app/pipeline.go
 --- anchor
 		if errors.Is(err, assembler.ErrJobClosed) {
@@ -37,4 +38,12 @@ file internal/app/pipeline.go
 --- replace
 		if false {
 			// The instance check at the top of handleResult, re-run under
+--- end
+
+[New leaves the hand-over out of the resolver]
+file internal/app/app.go
+--- anchor
+		handedOff: app.postProcAdmissions.has,
+--- replace
+		// mutated: hand-over not wired
 --- end

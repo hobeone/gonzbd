@@ -146,7 +146,32 @@ func TestHandleSuccessResult_DropsAClosedJobsArticleWithoutReturningIt(t *testin
 	// manifest, so the observation is the handler's own account of which
 	// path it took: the register-failure path warns and returns the article
 	// to the pool, the instance-check drop says so at Debug.
-	if got := logs.String(); strings.Contains(got, "register file failed") || !strings.Contains(got, "left the dispatcher while its file was being registered") {
+	if got := logs.String(); strings.Contains(got, "returning to dispatch pool") || !strings.Contains(got, "left the dispatcher while its file was being registered") {
 		t.Errorf("the article was treated as a registration failure and returned to the dispatch pool for a job that left the dispatcher; the instance-check drop leaves it Emitted. log:\n%s", got)
+	}
+}
+
+// TestNew_WiresTheHandOverIntoTheResolver goes through New rather than a
+// test-assigned hook: the admission half of resolveForWrite is a field the
+// pipeline literal has to set, and a literal that omits it compiles, passes
+// every hook-injecting test, and leaves a handed-off job's late article free
+// to open a file under the post-processor.
+func TestNew_WiresTheHandOverIntoTheResolver(t *testing.T) {
+	t.Parallel()
+	application := newTestApplication(t)
+	_, j := helperJob(t, application, "wired-handoff", 1, 1)
+	p := application.pipeline
+	if err := p.registerFile(j, 0); err != nil {
+		t.Fatalf("registerFile: %v", err)
+	}
+	if _, err := p.resolveForWrite(j.ID(), 0); err != nil {
+		t.Fatalf("resolveForWrite before the hand-over = %v, want nil", err)
+	}
+	if out := application.postProcAdmissions.admit(j, ""); out != admitted {
+		t.Fatalf("admit = %v, want admitted", out)
+	}
+	_, err := p.resolveForWrite(j.ID(), 0)
+	if !errors.Is(err, assembler.ErrJobClosed) {
+		t.Fatalf("resolveForWrite after the hand-over = %v, want ErrJobClosed: New did not wire postProcAdmissions.has into the pipeline", err)
 	}
 }
