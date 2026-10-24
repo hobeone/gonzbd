@@ -43,6 +43,12 @@ var (
 
 	// ErrStopped is returned by WriteArticle after Stop has been called.
 	ErrStopped = errors.New("assembler: stopped")
+
+	// ErrJobClosed is what Options.FileInfo returns, bare or wrapped, for a
+	// job that no longer accepts writes: the worker drops the article it was
+	// resolving for, as it would an article for a cancelled job, instead of
+	// opening a file. See processRequest.
+	ErrJobClosed = errors.New("assembler: job no longer accepts writes")
 )
 
 // WriteRequest is the unit of work sent to the assembler. Each request
@@ -194,6 +200,10 @@ type Options struct {
 	// FileInfo is called once per (JobID, FileIdx) pair to obtain the target
 	// directory, name and expected part count. It must be non-nil; New panics
 	// otherwise.
+	//
+	// It may return ErrJobClosed, bare or wrapped, for a job that no longer
+	// accepts writes; the worker then drops the article silently. Any other
+	// error is a "resolve" storage fault, routed through OnWriteFault.
 	FileInfo func(jobID string, fileIdx int) (FileInfo, error)
 
 	// OnFileComplete, if non-nil, is called on the worker goroutine when all
@@ -714,8 +724,9 @@ func (a *Assembler) CancelJob(ctx context.Context, jobID string, disposition Fil
 // and blocks until the worker has actually done so. This is called when a job
 // enters post-processing, ensuring no open handles remain that would trigger
 // NFS silly-rename (.nfs*) leaks when post-processing unlinks files. The worker
-// also tombstones the whole job, so no later article for it is written until
-// ForgetJob.
+// also drops the job's per-file tombstones; a later article for the job is
+// refused at the open by Options.FileInfo answering ErrJobClosed, which the
+// caller arranges by admitting the job before it calls this.
 // Its error can be a *storagefault.Fault about a FILE, not only a submit or
 // timeout error about the call — a caller matching on it has to expect both.
 // That reports at least one of the job's files failing its close-time Sync
@@ -790,8 +801,7 @@ func (a *Assembler) CloseJobHandles(ctx context.Context, jobID string) error {
 		// returns it; reading `<-ack` and returning nil made the send side
 		// dead code and handed enqueuePostProc a job whose unsynced bytes never
 		// reached the platter, with only a Warn inside syncAndClose as a
-		// trace. That is the defect this arm's own tombstone comment describes
-		// as fixed — it was fixed on the send side only.
+		// trace. An earlier fix had closed that on the send side only.
 		//
 		// Not covered end-to-end: faulting a file that a STARTED assembler
 		// owns needs the *openFile, and no seam reaches it — every
@@ -809,38 +819,28 @@ func (a *Assembler) CloseJobHandles(ctx context.Context, jobID string) error {
 	}
 }
 
-// ForgetJob drops every tombstone this assembler holds for jobID, so its files
-// can be written again. A retry returns under the SAME job ID, and per-job
-// state latched during the previous attempt would otherwise silently apply to
-// the new one.
+// ForgetJob drops the per-file tombstones this assembler holds for jobID, so
+// its finished files can be written again. A retry returns under the SAME job
+// ID, and per-file state latched during the previous attempt would otherwise
+// silently apply to the new one.
 //
 // # What it is for
 //
 // finalizeFile tombstones a file the moment it reaches TotalParts, and the
-// cancel and close-handles arms tombstone the whole job, dropping its per-file
-// entries as they do. Nothing removes the job-level tombstone but this: it
-// lives as long as the worker goroutine. That is right while the instance is
-// still in flight — the tombstones are what stop a late article racing a
-// file's completion or the hand-off — and wrong the moment the same job ID
-// comes back.
+// cancel and close-handles arms drop a job's entries as they close its
+// handles. For a job neither arm reached — CloseJobHandles returns ctx.Err()
+// without sending its message when its timeout fires first — the entries
+// remain, and they live as long as the worker goroutine: each sends that
+// file's writes to handleLateDuplicate, where the buffer is pooled and nothing
+// is written. Without this, such a retry's articles for those files are
+// dropped unwritten and failed again, and a restart is the only thing that
+// clears it. A file that finalized SHORT is the case that matters most —
+// Job.ResetForRetry clears its Complete flag precisely so the articles it is
+// missing can be re-fetched, and this is what lets those articles land.
 //
-// Without this, an in-process retry's articles are dropped unwritten and failed
-// again, and a restart is the only thing that clears it, because the maps die
-// with the process. Which tombstone drops them depends on how the previous
-// attempt ended. For a job the cancel or close-handles arm reached it is
-// cancelledJobs, below. For one neither arm reached — CloseJobHandles returns
-// ctx.Err() without sending its message when its timeout fires first — it is
-// the entry finalizeFile set for each finished file, which sends that file's
-// writes to handleLateDuplicate: the buffer is pooled and nothing is written.
-// A file that finalized
-// SHORT is the case that matters most — Job.ResetForRetry clears its Complete
-// flag precisely so the articles it is missing can be re-fetched, and this is
-// what lets those articles land.
-//
-// cancelledJobs is dropped too. An article for a job the cancel or close-handles
-// arm tombstoned is discarded before it reaches processRequest, so a retry of
-// such a job would otherwise have every article silently dropped rather than
-// written, for files never finished as well as finished ones.
+// Whether the job accepts writes at all is not held here: the resolver
+// (Options.FileInfo) answers that per open, from the caller's own state, so a
+// retry's new instance resolves without anything to forget.
 //
 // Open handles are deliberately left alone. This says nothing about a file
 // being written right now; it only forgets that one was finished earlier.
@@ -960,8 +960,7 @@ func (a *Assembler) worker() {
 	defer a.wg.Done()
 
 	open := make(map[fileKey]*openFile)
-	completed := make(map[fileKey]struct{})    // tombstone set for finished files
-	cancelledJobs := make(map[string]struct{}) // tombstone set for cancelled and closed jobs
+	completed := make(map[fileKey]struct{}) // tombstone set for finished files
 	reqCount := 0
 
 	reqsClosed := false
@@ -979,7 +978,7 @@ mainLoop:
 				reqsClosed = true
 				break mainLoop
 			}
-			reqCount += a.dispatchRequest(req, open, completed, cancelledJobs)
+			reqCount += a.dispatchRequest(req, open, completed)
 			if a.minFreeBytes.Load() > 0 && reqCount%diskCheckInterval == 0 {
 				a.checkDiskSpace(open)
 			}
@@ -1007,7 +1006,7 @@ mainLoop:
 						reqsClosed = true
 						break drain
 					}
-					reqCount += a.dispatchRequest(req, open, completed, cancelledJobs)
+					reqCount += a.dispatchRequest(req, open, completed)
 					if a.minFreeBytes.Load() > 0 && reqCount%diskCheckInterval == 0 {
 						a.checkDiskSpace(open)
 					}
@@ -1033,15 +1032,19 @@ mainLoop:
 }
 
 // dispatchRequest handles a single request from the channel. It processes the
-// control messages — each a non-nil ackCh plus a FileIdx sentinel —
-// skips articles for jobs the cancel or close-handles arm tombstoned, and delegates normal write
-// requests to processRequest. Returns 1 if a normal request was processed (for
-// reqCount tracking), 0 otherwise.
+// control messages — each a non-nil ackCh plus a FileIdx sentinel — and
+// delegates normal write requests to processRequest. Returns 1 if a normal
+// request was processed (for reqCount tracking), 0 otherwise.
 //
 // The control messages, in the order the arms below test for them:
 // fileIdxCancelJob (close and remove a job's files), fileIdxCloseHandles (close
-// a job's handles, leaving the files), fileIdxForgetJob (drop a job's
+// a job's handles, leaving the files), fileIdxForgetJob (drop a job's per-file
 // tombstones so a retry under the same ID can write again) and fileIdxQuiesce.
+//
+// The worker keeps no record of which jobs are closed. A later article for a
+// job the cancel or close-handles arm emptied from open comes back through
+// openTargetFile, whose resolver (Options.FileInfo) answers ErrJobClosed for
+// a job that no longer accepts writes, and processRequest drops it.
 //
 // This method is called from both the main select loop and the shutdown
 // drain loop to ensure cancel messages are handled correctly in both paths.
@@ -1049,7 +1052,6 @@ func (a *Assembler) dispatchRequest(
 	req WriteRequest,
 	open map[fileKey]*openFile,
 	completed map[fileKey]struct{},
-	cancelledJobs map[string]struct{},
 ) int {
 	// Control messages are told from articles by an unexported field being
 	// set, not by the FileIdx sentinel alone.
@@ -1070,21 +1072,13 @@ func (a *Assembler) dispatchRequest(
 		// encoded in MessageID, and unlink them or leave them on disk
 		// according to req.disposition.
 		//
-		// The job-level tombstone is set under BOTH dispositions, and it has
-		// to be: it gates article admission for the WHOLE job at the bottom of
-		// this function, including files that were never opened, and
-		// openTargetFile performs no queue-membership check before creating
-		// and preallocating one. RemoveJob's pipeline.forgetJob closes that
-		// hole too, but only after this returns, and not for requests already
-		// queued behind this message.
-		//
-		// After this arm it is the job's only tombstone: dropFileTombstones
-		// clears the per-file ones, and the one write to completed, in
-		// finalizeFile, is reached only past dispatchRequest's cancelledJobs
-		// check.
-		// TestCancelJob_KeepFilesStillTombstonesTheWholeJob is the pin.
+		// A later article for the job, for a file that was open or one that
+		// never was, is refused at openTargetFile: the caller removed the job
+		// from its queue before sending this message, so its resolver answers
+		// ErrJobClosed. The job's per-file tombstones are dropped here: once
+		// no later article can open a file, nothing reads them, and keeping
+		// them would hold one per finished file for the life of the worker.
 		cancelID := req.MessageID
-		cancelledJobs[cancelID] = struct{}{}
 		dropFileTombstones(completed, cancelID)
 		for k, f := range open {
 			if k.jobID != cancelID {
@@ -1104,15 +1098,14 @@ func (a *Assembler) dispatchRequest(
 	if req.ackCh != nil && req.FileIdx == fileIdxCloseHandles {
 		// Control message: close all open file handles for a job without deleting files.
 		//
-		// The job-level tombstone refuses every later article for the job,
-		// including one for a file it never opened, which openTargetFile would
-		// otherwise create under the post-processor with an fd nothing closes.
 		// Dispatch stops at the hand-off (downloader Options.HandedOff), but an
-		// article already in flight still arrives. ForgetJob clears it for a
-		// retry. TestCloseJobHandles_TombstonesTheWholeJob is the pin. As in
-		// the cancel arm, the job's per-file tombstones are dropped with it.
+		// article already in flight still arrives, and for a file the job
+		// never opened openTargetFile would create one under the
+		// post-processor with an fd nothing closes. The caller admits the job
+		// to post-processing before sending this message, so its resolver
+		// answers ErrJobClosed for that article and nothing is opened. As in
+		// the cancel arm, the job's per-file tombstones are dropped here.
 		targetID := req.MessageID
-		cancelledJobs[targetID] = struct{}{}
 		dropFileTombstones(completed, targetID)
 		var closeErr error
 		for k, f := range open {
@@ -1141,15 +1134,14 @@ func (a *Assembler) dispatchRequest(
 		return 0
 	}
 	if req.ackCh != nil && req.FileIdx == fileIdxForgetJob {
-		// Control message: drop a job's tombstones so a retry under the same
-		// ID can write its files again. See Assembler.ForgetJob.
+		// Control message: drop a job's per-file tombstones so a retry under
+		// the same ID can write its files again. See Assembler.ForgetJob.
 		//
 		// The open map is untouched on purpose. This forgets that files were
 		// FINISHED; it asserts nothing about one currently being written, and
 		// closing a live handle here would leave its writer's unreported articles stranded.
 		forgetID := req.MessageID
 		dropFileTombstones(completed, forgetID)
-		delete(cancelledJobs, forgetID)
 		if req.ackCh != nil {
 			close(req.ackCh)
 		}
@@ -1168,24 +1160,17 @@ func (a *Assembler) dispatchRequest(
 	if req.Release != nil {
 		defer req.Release()
 	}
-	// Skip articles for cancelled and closed jobs.
-	if _, cancelled := cancelledJobs[req.JobID]; cancelled {
-		if req.Data != nil {
-			a.releaseBuffer(req.Data)
-		}
-		return 0
-	}
 	a.processRequest(req, open, completed)
 	return 1
 }
 
 // dropFileTombstones deletes jobID's entries from completed.
 //
-// The cancel and close-handles arms call it once they have set the job-level
-// tombstone, which dispatchRequest checks before processRequest reads
-// completed: from then on the job's per-file entries are never consulted, and
-// keeping them would hold one per finished file until a retry's ForgetJob, the
-// only other caller.
+// The cancel and close-handles arms call it once they have dropped the job's
+// open handles: every later write for the job re-opens through the resolver,
+// which answers ErrJobClosed for a closed job before completed is read, so
+// the per-file entries are never consulted again, and keeping them would hold
+// one per finished file until a retry's ForgetJob, the only other caller.
 func dropFileTombstones(completed map[fileKey]struct{}, jobID string) {
 	maps.DeleteFunc(completed, func(k fileKey, _ struct{}) bool { return k.jobID == jobID })
 }
@@ -1319,6 +1304,17 @@ func (a *Assembler) processRequest(req WriteRequest, open map[fileKey]*openFile,
 	if !ok {
 		var err error
 		f, err = a.openTargetFile(key, req, open)
+		if errors.Is(err, ErrJobClosed) {
+			// The resolver says the job no longer accepts writes. Dropped as
+			// an article for a cancelled job is: nothing is opened, nothing
+			// is reported, and the buffer goes back. The article stays
+			// Emitted, which is what a late article for a closed job was
+			// before too.
+			if req.Data != nil {
+				a.releaseBuffer(req.Data)
+			}
+			return
+		}
 		if err != nil {
 			// Routed through OnWriteFault, because nothing else can reach
 			// it: the file is never inserted into open, so no later fsync or
@@ -1453,6 +1449,11 @@ func (a *Assembler) handleLateDuplicate(req WriteRequest) {
 func (a *Assembler) openTargetFile(key fileKey, req WriteRequest, open map[fileKey]*openFile) (*openFile, error) {
 	info, err := a.opts.FileInfo(req.JobID, req.FileIdx)
 	if err != nil {
+		if errors.Is(err, ErrJobClosed) {
+			// Not a storage fault: the job has left the queue or been handed
+			// to post-processing, and processRequest drops the article.
+			return nil, err
+		}
 		return nil, storagefault.Classify("resolve", "", err)
 	}
 

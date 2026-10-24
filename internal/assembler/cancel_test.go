@@ -76,26 +76,38 @@ func TestCancelJob_ClosesOpenFileHandles(t *testing.T) {
 func TestCancelJob_RejectsLateArticles(t *testing.T) {
 	dir := t.TempDir()
 	files := make(map[string]FileInfo)
-	// The cancel arm keeps no per-file tombstone, so what drops these late
-	// articles — for a file that was open — is the job-level cancelledJobs one.
-	// TestCancelJob_KeepFilesStillTombstonesTheWholeJob pins the same tombstone
-	// for a file that was never opened.
+	// The cancel arm closes the file and keeps no tombstone for the job, so
+	// a late article comes back through openTargetFile, and what drops it is
+	// the resolver answering ErrJobClosed: the caller removed the job from
+	// its queue before sending the cancel. TestOpenTargetFile_ClosedJobDropsTheArticle
+	// pins the worker's half; this pins the shape end to end, with the
+	// resolver flipped the way the pipeline's does once the job is gone.
 	//
 	// The pin is the os.Stat below. The completion count cannot catch a
-	// missing tombstone: the late articles would reopen the file under a fresh
+	// missing refusal: the late articles would reopen the file under a fresh
 	// writer that sees 4 parts, not 5, so completions stays 0 either way.
 	path := registerFile(t, dir, files, "job1", 0, 5)
 
 	var completions atomic.Int32
+	var closed atomic.Bool
 	opts := makeOpts(dir, files)
 	opts.OnFileComplete = func(_ string, _ int) { completions.Add(1) }
+	resolve := opts.FileInfo
+	opts.FileInfo = func(jobID string, fileIdx int) (FileInfo, error) {
+		if closed.Load() {
+			return FileInfo{}, fmt.Errorf("resolve %s: %w", jobID, ErrJobClosed)
+		}
+		return resolve(jobID, fileIdx)
+	}
 
 	a := startAssembler(t, opts)
 
-	// Write one article then cancel.
+	// Write one article, then cancel as RemoveJob does: the job leaves the
+	// queue first, so the resolver refuses from here on.
 	_ = writeArticle(t.Context(), a, WriteRequest{
 		JobID: "job1", FileIdx: 0, ArtIdx: 0, Offset: 0, Data: []byte("data"),
 	})
+	closed.Store(true)
 	_ = a.CancelJob(t.Context(), "job1", DeleteFiles)
 
 	// Send more articles after cancellation — they should be silently dropped.
@@ -238,49 +250,6 @@ func TestCancelJob_KeepFilesLeavesThemOnDisk(t *testing.T) {
 		if string(got) != want {
 			t.Errorf("kept file content = %q, want %q", got, want)
 		}
-	}
-}
-
-// TestCancelJob_KeepFilesStillTombstonesTheWholeJob pins the axis that must
-// NOT move with the disposition.
-//
-// cancelledJobs gates article admission for the whole job, including files
-// that were never opened, and openTargetFile performs no queue-membership
-// check before creating and preallocating one. Keeping a job's bytes does not
-// make its articles wanted again — so a late article is dropped under both
-// dispositions.
-func TestCancelJob_KeepFilesStillTombstonesTheWholeJob(t *testing.T) {
-	dir := t.TempDir()
-	files := make(map[string]FileInfo)
-	registerFile(t, dir, files, "job1", 0, 1)
-	// Registered but never written before the cancel, so the worker never
-	// opens it and it never enters the open map.
-	neverOpened := registerFile(t, dir, files, "job1", 1, 1)
-
-	a := startAssembler(t, makeOpts(dir, files))
-
-	// Open file 0 only.
-	_ = writeArticle(t.Context(), a, WriteRequest{
-		JobID: "job1", FileIdx: 0, ArtIdx: 0, Offset: 0, Data: []byte("data"),
-	})
-	_ = a.CancelJob(t.Context(), "job1", KeepFiles)
-
-	// A late article for the file that was NEVER opened. No per-file tombstone
-	// was ever set for it, so only the job-level one stands in its way, and
-	// openTargetFile performs no queue-membership check before creating and
-	// preallocating a file.
-	_ = writeArticle(t.Context(), a, WriteRequest{
-		JobID: "job1", FileIdx: 1, ArtIdx: 0, Offset: 0, Data: []byte("late"),
-	})
-
-	_ = a.Stop()
-
-	if _, err := os.Stat(neverOpened); !os.IsNotExist(err) {
-		t.Errorf("os.Stat(%s) = %v, want not-exist — an article arriving after the "+
-			"cancel created a file for a job that has left the queue. Nothing will "+
-			"ever close that handle: CancelJob is one-shot and the job is gone, so it "+
-			"leaks until the process exits and on NFS the handle held across a later "+
-			"unlink is a silly-rename", neverOpened, err)
 	}
 }
 

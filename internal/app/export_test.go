@@ -98,9 +98,10 @@ func (a *Application) TriggerMaybeFinalizeJob(j *job.Job, failMsg string) {
 
 // InjectPipelineFileInfo inserts a file path in the pipeline's fileInfo cache.
 func (a *Application) InjectPipelineFileInfo(jobID string, fileIdx int, path string) {
+	j, _ := a.dispatcher.Job(jobID)
 	a.pipeline.mu.Lock()
 	defer a.pipeline.mu.Unlock()
-	a.pipeline.fileInfo[fileKey{jobID: jobID, fileIdx: fileIdx}] = assembler.FileInfo{Dir: filepath.Dir(path), Name: filepath.Base(path)}
+	a.pipeline.fileInfo[fileKey{jobID: jobID, fileIdx: fileIdx}] = fileEntry{info: assembler.FileInfo{Dir: filepath.Dir(path), Name: filepath.Base(path)}, j: j}
 }
 
 // InjectCtx injects a lifecycle context.

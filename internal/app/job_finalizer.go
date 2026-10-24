@@ -401,6 +401,15 @@ func (f *jobFinalizer) persistAndCommit(log *slog.Logger, entry history.Entry, p
 			warnUnlessGone(log, "record the operational error", jobID,
 				app.dispatcher.SetOperationalError(jobID, "failed to remove finalized job from queue: "+err.Error()))
 			app.emit(Event{Type: "queue_updated"})
+		} else {
+			// The forget that bounds the cache. enqueuePostProc's runs while
+			// the job is still the dispatcher's, so an article in flight
+			// across the hand-over registers its file again after it. This
+			// instance is now gone from the dispatcher, and the cache's one
+			// writer, registerFileAttempt (`git grep -n 'p\.fileInfo\[key\] = '
+			// -- 'internal/app/*.go' ':!*_test.go'` returns 1 line), refuses
+			// an instance the dispatcher does not hold.
+			app.pipeline.forgetJob(jobID)
 		}
 
 		// Unconditional: the rule decides from the queue and history as they

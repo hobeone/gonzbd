@@ -18,33 +18,33 @@ func TestDispatchRequest_ReleasesEveryArticleRequestOnce(t *testing.T) {
 		name string
 		// setup prepares the worker state; it returns the request to dispatch.
 		setup func(t *testing.T, a *Assembler, open map[fileKey]*openFile,
-			completed map[fileKey]struct{}, cancelled map[string]struct{}) WriteRequest
+			completed map[fileKey]struct{}) WriteRequest
 	}{
-		{"written", func(*testing.T, *Assembler, map[fileKey]*openFile, map[fileKey]struct{}, map[string]struct{}) WriteRequest {
+		{"written", func(*testing.T, *Assembler, map[fileKey]*openFile, map[fileKey]struct{}) WriteRequest {
 			return WriteRequest{JobID: "job", FileIdx: 0, ArtIdx: 1, Data: data()}
 		}},
-		{"failed fetch", func(*testing.T, *Assembler, map[fileKey]*openFile, map[fileKey]struct{}, map[string]struct{}) WriteRequest {
+		{"failed fetch", func(*testing.T, *Assembler, map[fileKey]*openFile, map[fileKey]struct{}) WriteRequest {
 			return WriteRequest{JobID: "job", FileIdx: 0, ArtIdx: 1, FatalErr: errors.New("gone")}
 		}},
-		{"offset out of range", func(*testing.T, *Assembler, map[fileKey]*openFile, map[fileKey]struct{}, map[string]struct{}) WriteRequest {
+		{"offset out of range", func(*testing.T, *Assembler, map[fileKey]*openFile, map[fileKey]struct{}) WriteRequest {
 			return WriteRequest{JobID: "job", FileIdx: 0, ArtIdx: 1, Offset: -1, Data: data()}
 		}},
-		{"write fault", func(t *testing.T, a *Assembler, open map[fileKey]*openFile, _ map[fileKey]struct{}, _ map[string]struct{}) WriteRequest {
+		{"write fault", func(t *testing.T, a *Assembler, open map[fileKey]*openFile, _ map[fileKey]struct{}) WriteRequest {
 			f := newHelperFile(t, t.TempDir(), "job_0.dat", 0)
 			f.w.writeAt = func([]byte, int64) (int, error) { return 0, syscall.EIO }
 			open[fileKey{jobID: "job", fileIdx: 0}] = f
 			return WriteRequest{JobID: "job", FileIdx: 0, ArtIdx: 1, Data: data()}
 		}},
-		{"file cannot be resolved", func(_ *testing.T, a *Assembler, _ map[fileKey]*openFile, _ map[fileKey]struct{}, _ map[string]struct{}) WriteRequest {
+		{"file cannot be resolved", func(_ *testing.T, a *Assembler, _ map[fileKey]*openFile, _ map[fileKey]struct{}) WriteRequest {
 			a.opts.FileInfo = func(string, int) (FileInfo, error) { return FileInfo{}, errors.New("no such file") }
 			return WriteRequest{JobID: "job", FileIdx: 0, ArtIdx: 1, Data: data()}
 		}},
-		{"late duplicate", func(_ *testing.T, _ *Assembler, _ map[fileKey]*openFile, completed map[fileKey]struct{}, _ map[string]struct{}) WriteRequest {
+		{"late duplicate", func(_ *testing.T, _ *Assembler, _ map[fileKey]*openFile, completed map[fileKey]struct{}) WriteRequest {
 			completed[fileKey{jobID: "job", fileIdx: 0}] = struct{}{}
 			return WriteRequest{JobID: "job", FileIdx: 0, ArtIdx: 1, Data: data()}
 		}},
-		{"cancelled job", func(_ *testing.T, _ *Assembler, _ map[fileKey]*openFile, _ map[fileKey]struct{}, cancelled map[string]struct{}) WriteRequest {
-			cancelled["job"] = struct{}{}
+		{"closed job", func(_ *testing.T, a *Assembler, _ map[fileKey]*openFile, _ map[fileKey]struct{}) WriteRequest {
+			a.opts.FileInfo = func(string, int) (FileInfo, error) { return FileInfo{}, ErrJobClosed }
 			return WriteRequest{JobID: "job", FileIdx: 0, ArtIdx: 1, Data: data()}
 		}},
 	}
@@ -60,13 +60,12 @@ func TestDispatchRequest_ReleasesEveryArticleRequestOnce(t *testing.T) {
 			a.opts.OnArticlesUnwritten = func(string, int, []int32) {}
 			open := map[fileKey]*openFile{}
 			completed := map[fileKey]struct{}{}
-			cancelled := map[string]struct{}{}
 			t.Cleanup(func() { a.syncAndCloseAll(open) })
 
-			req := tt.setup(t, a, open, completed, cancelled)
+			req := tt.setup(t, a, open, completed)
 			releases := 0
 			req.Release = func() { releases++ }
-			a.dispatchRequest(req, open, completed, cancelled)
+			a.dispatchRequest(req, open, completed)
 			if releases != 1 {
 				t.Fatalf("Release called %d times, want exactly 1", releases)
 			}
@@ -92,7 +91,7 @@ func TestDispatchRequest_ADuplicateIsReleasedOnItsOwn(t *testing.T) {
 		a.dispatchRequest(WriteRequest{
 			JobID: "job", FileIdx: 0, ArtIdx: 1, Data: []byte("abc"),
 			Release: func() { releases++ },
-		}, open, map[fileKey]struct{}{}, map[string]struct{}{})
+		}, open, map[fileKey]struct{}{})
 	}
 	if releases != 2 {
 		t.Fatalf("Release called %d times for two copies, want 2", releases)

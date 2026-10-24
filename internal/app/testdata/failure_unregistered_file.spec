@@ -8,28 +8,20 @@ run TestPipeline_HandleFailureResult_UnregisterableFileIsNotForwarded
 [the failure is still marked and forwarded after the article is returned]
 file internal/app/pipeline.go
 --- anchor
-			p.clearEmitted(res)
+		if !p.registerForResult(res, "a permanent failure") {
 			return
 		}
-
-		// Record the permanent failure directly.
 --- replace
-			p.clearEmitted(res)
-		}
-
-		// Record the permanent failure directly.
+		_ = p.registerForResult(res, "a permanent failure")
 --- end
 
 [a failed registration is logged and ignored, as before the fix]
 file internal/app/pipeline.go
 --- anchor
-			p.clearEmitted(res)
-			return
-		}
-
-		// Record the permanent failure directly.
+		"job", res.JobID(), "fileidx", res.FileIdx, "msgid", res.MessageID, "err", err)
+	p.clearEmitted(res)
+	return false
 --- replace
-		}
-
-		// Record the permanent failure directly.
+		"job", res.JobID(), "fileidx", res.FileIdx, "msgid", res.MessageID, "err", err)
+	return true
 --- end

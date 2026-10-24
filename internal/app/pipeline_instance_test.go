@@ -4,8 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"path/filepath"
-	"strings"
 	"testing"
 
 	"github.com/hobeone/gonzbd/internal/assembler"
@@ -197,8 +195,14 @@ func TestHandleResult_DropsAResultFetchedForAnEarlierInstance(t *testing.T) {
 // instance that is no longer registered, which the gate would have dropped,
 // so a by-ID lookup would find the later instance and act on it instead.
 //
-// The assembler is never started, so every write fails and each path's
-// return-to-pool clear runs.
+// What a stale result may still do is bounded by registerFile's own instance
+// check: the stats it credits before registering go to res.Job, and from the
+// register on it is dropped — not marked failed, not registered, not offered
+// to early abort, whose finalizeHopeless resolves by ID and would act on the
+// later instance. The retryable path registers nothing and returns the
+// article to its own instance's pool.
+//
+// The assembler is never started, so a write that did reach it would fail.
 func TestHandlers_ActOnTheResultsOwnInstance(t *testing.T) {
 	t.Parallel()
 	cases := []struct {
@@ -206,23 +210,26 @@ func TestHandlers_ActOnTheResultsOwnInstance(t *testing.T) {
 		fileIdx int
 		err     error
 		data    []byte
+		// dropped: the register guard dropped the result, so its own
+		// instance's article stays Emitted rather than returning to the pool.
+		dropped bool
 		check   func(t *testing.T, p *pipeline, first, second *job.Job, hopeless bool)
 	}{
-		{name: "terminal failure", err: errors.New("yenc: garbage"),
+		{name: "terminal failure", err: errors.New("yenc: garbage"), dropped: true,
 			check: func(t *testing.T, p *pipeline, first, second *job.Job, hopeless bool) {
-				if !first.Progress().ArticleFailed(0) {
-					t.Error("the result's own instance's article 0 is not marked failed")
+				if first.Progress().ArticleFailed(0) {
+					t.Error("the result's own instance's article 0 is marked failed although the register guard dropped the result")
 				}
 				if second.Progress().ArticleFailed(0) {
 					t.Error("the registered instance's article 0 is marked failed by a result for another instance")
 				}
-				if !hopeless {
-					t.Error("early abort did not fire although the result's own instance crossed its threshold")
+				if hopeless {
+					t.Error("early abort fired for a stale instance; finalizeHopeless resolves by ID and would finalize the registered one")
 				}
-				assertRegisteredBy(t, p, first.ID(), "first")
+				assertNotRegistered(t, p, first.ID())
 			}},
 		{name: "retryable failure", err: nntp.ErrNoArticle},
-		{name: "success", data: []byte("payload"),
+		{name: "success", data: []byte("payload"), dropped: true,
 			check: func(t *testing.T, p *pipeline, first, second *job.Job, _ bool) {
 				if first.Progress().DownloadStarted().IsZero() {
 					t.Error("the result's own instance's download-started was not recorded")
@@ -236,7 +243,7 @@ func TestHandlers_ActOnTheResultsOwnInstance(t *testing.T) {
 				if got := second.Progress().ServerStats()["s1"]; got != 0 {
 					t.Errorf("the registered instance's ServerStats[s1] = %d, credited by a result for another instance", got)
 				}
-				assertRegisteredBy(t, p, first.ID(), "first")
+				assertNotRegistered(t, p, first.ID())
 			}},
 		{name: "success for a file that cannot be registered", fileIdx: 9, data: []byte("payload")},
 	}
@@ -263,8 +270,12 @@ func TestHandlers_ActOnTheResultsOwnInstance(t *testing.T) {
 				p.handleSuccessResult(t.Context(), res)
 			}
 
-			if articleInFlight(t, first, 0) {
-				t.Error("the result's own instance's article 0 is still marked emitted after it was returned to the pool")
+			if got := articleInFlight(t, first, 0); got != tc.dropped {
+				if tc.dropped {
+					t.Error("the result's own instance's article 0 was returned to the pool although the register guard dropped the result")
+				} else {
+					t.Error("the result's own instance's article 0 is still marked emitted after it was returned to the pool")
+				}
 			}
 			if !articleInFlight(t, second, 0) {
 				t.Error("the registered instance's article 0 lost its emitted mark to a result for another instance")
@@ -299,16 +310,11 @@ func TestIsCurrent(t *testing.T) {
 	}
 }
 
-// assertRegisteredBy fails unless file 0 under id was registered from the
-// instance named name: registerFile puts the file in a directory named after
-// the job, and the two instances carry different names.
-func assertRegisteredBy(t *testing.T, p *pipeline, id, name string) {
+// assertNotRegistered fails if file 0 under id has a cached entry: the register
+// guard refused the stale instance, so nothing was cached for it.
+func assertNotRegistered(t *testing.T, p *pipeline, id string) {
 	t.Helper()
-	info, err := p.resolveFileInfo(id, 0)
-	if err != nil {
-		t.Fatalf("resolveFileInfo: %v", err)
-	}
-	if dir := filepath.Base(filepath.Dir(info.Path())); !strings.EqualFold(dir, name) {
-		t.Errorf("file 0 was registered in %q, want the %q instance's directory", info.Path(), name)
+	if info, err := p.resolveFileInfo(id, 0); err == nil {
+		t.Errorf("file 0 was registered at %q by a result for an instance the dispatcher no longer holds", info.Path())
 	}
 }

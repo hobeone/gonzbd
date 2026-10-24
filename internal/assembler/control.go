@@ -19,9 +19,9 @@ const (
 	// the job itself alone.
 	fileIdxCloseHandles = -2
 
-	// fileIdxForgetJob asks the worker to drop a job's tombstones so its
-	// files can be written again. A retry reuses the job ID, and the
-	// job's tombstones never expire otherwise — see Assembler.ForgetJob.
+	// fileIdxForgetJob asks the worker to drop a job's per-file tombstones
+	// so its finished files can be written again. A retry reuses the job
+	// ID, and the entries never expire otherwise — see Assembler.ForgetJob.
 	fileIdxForgetJob = -4
 
 	// fileIdxQuiesce asks the worker to answer once everything queued ahead

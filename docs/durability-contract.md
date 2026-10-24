@@ -938,9 +938,8 @@ incomplete (#349, #387).
 the recorder synchronously, then forgets the job's cached `FileInfo`.
 
 `CloseJobHandles`' close arm `Sync`s and `Close`s every open handle of the job
-without deleting, untrusts a file whose fsync or close failed (§4), tombstones
-the job and drops the per-file tombstones the job-level one shadows, and
-**sends any close-time fault on its ack**.
+without deleting, untrusts a file whose fsync or close failed (§4), drops the
+job's per-file tombstones, and **sends any close-time fault on its ack**.
 `enqueuePostProc` reads it: any `*storagefault.Fault` in the joined error,
 permanent or retryable, becomes the run's failure reason, because nothing ever
 retries a fault observed here and the lost bytes would otherwise reach
@@ -973,10 +972,22 @@ an article the fault rolled back is never fetched again, and the run's
 `FailMsg` or a note in its history entry is the fault's only disposition.
 
 **A job instance whose handles `CloseJobHandles` closed is not downloaded
-again.** The job-level tombstone drops any article still in flight, and the
-downloader skips an admitted job (`downloader.Options.HandedOff`). A retry
-under the same ID is a new instance; `RetryHistoryJob`'s `ForgetJob` clears the
-assembler's tombstones for it, and a retry whose `ForgetJob` fails is aborted.
+again.** The downloader skips an admitted job (`downloader.Options.HandedOff`),
+and an article still in flight is refused at the assembler's open: the
+pipeline's resolver (`resolveForWrite`) answers `assembler.ErrJobClosed` for an
+instance that is admitted or is no longer the dispatcher's, and the worker
+drops the article without opening a file. The admission precedes the close
+message and the dispatcher removal precedes the cancel message, so a write
+processed after either arm sees the flipped state; a write that arrives after
+the job's cache entries were also forgotten is judged the same way by the
+instance the dispatcher holds under the ID
+(`TestWriteArticle_AfterTheJobClosedCreatesNoFile`). A retry under the same
+ID is a new instance, so its writes resolve, and a stale write of the earlier
+instance is refused because the cached entry names the instance that
+registered it (`TestResolveFileInfo_RefusesAnEarlierInstance`).
+`RetryHistoryJob`'s `ForgetJob` clears the per-file `completed` entries of an
+attempt whose close-handles message never reached the worker, and a retry
+whose `ForgetJob` fails is aborted.
 
 ## Clean shutdown
 
@@ -1244,9 +1255,9 @@ every file handle, has done the work and answered.
 
 | Control | Encoding | Worker behaviour |
 |---|---|---|
-| **CancelJob** | `fileIdxCancelJob` (-1), `MessageID=jobID`, `disposition` | closes all open files for the job and *deletes* them under `DeleteFiles` or leaves them on disk under `KeepFiles`; tombstones the job in `cancelledJobs` under **both**, dropping its per-file `completed` entries |
-| **CloseJobHandles** | `fileIdxCloseHandles` (-2), `MessageID=jobID` | `Sync`s and `Close`s handles *without deleting*, untrusts a file whose fsync or close failed, tombstones the job and drops its per-file `completed` entries, **sends any close-time fault on `ackCh`**. Used when a job enters post-processing |
-| **ForgetJob** | `fileIdxForgetJob` (-4), `MessageID=jobID` | drops the job's file and job tombstones so a retry under the same ID can write again; open handles are left alone |
+| **CancelJob** | `fileIdxCancelJob` (-1), `MessageID=jobID`, `disposition` | closes all open files for the job and *deletes* them under `DeleteFiles` or leaves them on disk under `KeepFiles`; drops the job's per-file `completed` entries under **both**. A later article is refused at the open by the resolver (`ErrJobClosed`) |
+| **CloseJobHandles** | `fileIdxCloseHandles` (-2), `MessageID=jobID` | `Sync`s and `Close`s handles *without deleting*, untrusts a file whose fsync or close failed, drops the job's per-file `completed` entries, **sends any close-time fault on `ackCh`**. Used when a job enters post-processing |
+| **ForgetJob** | `fileIdxForgetJob` (-4), `MessageID=jobID` | drops the job's per-file `completed` entries so a retry under the same ID can write its finished files again; open handles are left alone |
 | **Quiesce** | `fileIdxQuiesce` (-5) | answers once everything queued ahead of it has been processed |
 
 The sentinel is the encoding, not the proof: `ackCh` is unexported, so no value
@@ -1520,8 +1531,9 @@ are bounded by the flush cadence and by file size, as below.
   `OnArticlesUnwritten`, and the fault is routed through `OnWriteFault`. The
   file is never opened and never appears in `open`, so nothing later could
   surface it.
-- **CancelJob** — closes open files and tombstones the job so subsequent
-  articles are discarded. The `ackCh` synchronisation lets the caller delete the
+- **CancelJob** — closes open files; a subsequent article is refused at the
+  open by the caller's resolver, which answers `ErrJobClosed` once the job has
+  left the queue. The `ackCh` synchronisation lets the caller delete the
   job directory the moment `CancelJob` returns. `KeepFiles` does **not** `Sync`:
   nothing reads a removed job's files, so the fsync would only stall ingest for
   every other job on the single worker goroutine. What `KeepFiles` leaves is a

@@ -48,7 +48,7 @@ func TestPipeline_GivesBackTheBudgetOnEveryPath(t *testing.T) {
 			dispatcher:  app.Dispatcher(),
 			downloadDir: t.TempDir(),
 			assembler:   a,
-			fileInfo:    make(map[fileKey]assembler.FileInfo),
+			fileInfo:    make(map[fileKey]fileEntry),
 		}
 	}
 	unstarted := func() *assembler.Assembler {
@@ -139,7 +139,7 @@ func TestPipeline_GivesBackTheBudgetOfAResultDroppedAtShutdown(t *testing.T) {
 		assembler: assembler.New(assembler.Options{
 			FileInfo: func(string, int) (assembler.FileInfo, error) { return assembler.FileInfo{}, nil },
 		}, slog.New(slog.DiscardHandler)),
-		fileInfo:    make(map[fileKey]assembler.FileInfo),
+		fileInfo:    make(map[fileKey]fileEntry),
 		numWorkers:  1,
 		completions: completions,
 	}

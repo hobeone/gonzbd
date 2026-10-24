@@ -71,7 +71,7 @@ func helperPipeline(t *testing.T, d *dispatch.Dispatcher) *pipeline {
 		log:         slog.Default(),
 		dispatcher:  d,
 		downloadDir: t.TempDir(),
-		fileInfo:    make(map[fileKey]assembler.FileInfo),
+		fileInfo:    make(map[fileKey]fileEntry),
 	}
 }
 
@@ -118,7 +118,7 @@ func TestForgetJob(t *testing.T) {
 		}
 	}
 	_, jobB := helperJob(t, app, "forgetB", 1, 1)
-	p.fileInfo[fileKey{jobID: jobB.ID(), fileIdx: 0}] = assembler.FileInfo{Dir: "/tmp", Name: "b"}
+	p.fileInfo[fileKey{jobID: jobB.ID(), fileIdx: 0}] = fileEntry{info: assembler.FileInfo{Dir: "/tmp", Name: "b"}, j: jobB}
 
 	if len(p.fileInfo) != 3 {
 		t.Fatalf("fileInfo has %d entries, want 3", len(p.fileInfo))
@@ -256,7 +256,7 @@ func TestSetCompletions_WaitsForQueuedWritesNotJustTheChannel(t *testing.T) {
 	p := &pipeline{
 		log:        slog.New(slog.DiscardHandler),
 		dispatcher: newTestApplication(t).Dispatcher(),
-		fileInfo:   make(map[fileKey]assembler.FileInfo),
+		fileInfo:   make(map[fileKey]fileEntry),
 		updateCh:   make(chan completionSwap, 1),
 		numWorkers: 1,
 		onHeartbeat: func() {
@@ -301,7 +301,7 @@ func TestSetCompletions(t *testing.T) {
 		p := &pipeline{
 			log:      slog.Default(),
 			updateCh: make(chan completionSwap),
-			fileInfo: make(map[fileKey]assembler.FileInfo),
+			fileInfo: make(map[fileKey]fileEntry),
 		}
 		p.ctx = t.Context()
 
@@ -332,7 +332,7 @@ func TestSetCompletions(t *testing.T) {
 			log:      slog.Default(),
 			ctx:      ctx,
 			updateCh: make(chan completionSwap),
-			fileInfo: make(map[fileKey]assembler.FileInfo),
+			fileInfo: make(map[fileKey]fileEntry),
 		}
 		done := make(chan struct{})
 		go func() { p.setCompletions(nil); close(done) }()
@@ -349,7 +349,7 @@ func TestSetCompletions(t *testing.T) {
 			log:      slog.Default(),
 			ctx:      ctx,
 			updateCh: make(chan completionSwap),
-			fileInfo: make(map[fileKey]assembler.FileInfo),
+			fileInfo: make(map[fileKey]fileEntry),
 		}
 		go func() {
 			<-p.updateCh

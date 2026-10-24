@@ -1,9 +1,9 @@
 pkg ./internal/assembler/
-run Test(JobTombstone_DropsTheJobsFileTombstones|ForgetJob_DropsOnlyTheNamedJobsTombstones|CancelJob_RejectsLateArticles|CancelJob_KeepFilesStillTombstonesTheWholeJob)$
+run Test(JobTombstone_DropsTheJobsFileTombstones|ForgetJob_DropsOnlyTheNamedJobsTombstones)$
 
 # The cancel and close-handles arms drop the per-file tombstones of the job
-# they tombstone, so a finished job leaves one entry in the worker rather than
-# one per file; the job-level tombstone alone keeps its late articles out.
+# whose handles they close, so a finished job leaves nothing in the worker;
+# the resolver alone keeps its late articles out.
 
 [the cancel arm keeps the job's per-file tombstones]
 file internal/assembler/assembler.go
@@ -27,12 +27,4 @@ file internal/assembler/assembler.go
 	maps.DeleteFunc(completed, func(k fileKey, _ struct{}) bool { return k.jobID == jobID })
 --- replace
 	maps.DeleteFunc(completed, func(fileKey, struct{}) bool { return true })
---- end
-
-[the cancel arm sets no job-level tombstone]
-file internal/assembler/assembler.go
---- anchor
-		cancelledJobs[cancelID] = struct{}{}
---- replace
-		_ = cancelID
 --- end

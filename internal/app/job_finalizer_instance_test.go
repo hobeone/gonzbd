@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/hobeone/gonzbd/internal/assembler"
 	"github.com/hobeone/gonzbd/internal/dispatch"
 	"github.com/hobeone/gonzbd/internal/history"
 	"github.com/hobeone/gonzbd/internal/job"
@@ -187,5 +188,37 @@ func TestPersistAndCommit_WithoutTheLock_LeavesARetryRegisteredDuringTheTeardown
 	}
 	if row, _ := application.dispatcher.Row(id); row.Header.OperationalError != "" {
 		t.Errorf("the second instance carries the operational error %q from the first instance's teardown", row.Header.OperationalError)
+	}
+}
+
+// TestPersistAndCommit_DropsTheJobsFileInfo: once the job has left the
+// dispatcher nothing can register its files again (registerFile refuses an
+// instance the dispatcher does not hold), so this forget is the one that
+// bounds the pipeline's file-info cache. The hand-over's forget runs while
+// the job is still current, and a late article re-adds entries after it.
+func TestPersistAndCommit_DropsTheJobsFileInfo(t *testing.T) {
+	app, _, _ := newLifecycleTestApp(t)
+	const id = "feedface00105302"
+	j := job.New(id, "fileinfo", job.Policy{})
+	if err := app.dispatcher.Add(context.Background(), j, dispatch.Header{Name: "fileinfo"}); err != nil {
+		t.Fatalf("Add: %v", err)
+	}
+	if app.pipeline == nil {
+		app.pipeline = helperPipeline(t, app.dispatcher)
+	}
+	key := fileKey{jobID: id, fileIdx: 0}
+	app.pipeline.mu.Lock()
+	app.pipeline.fileInfo[key] = fileEntry{info: assembler.FileInfo{Dir: t.TempDir(), Name: "f0", TotalParts: 1}, j: j}
+	app.pipeline.mu.Unlock()
+
+	ppJob := &postproc.Job{Job: j}
+	if err := app.finalizer.persistAndCommit(app.log, buildHistoryEntry(ppJob), ppJob); err != nil {
+		t.Fatalf("persistAndCommit: %v", err)
+	}
+	app.pipeline.mu.RLock()
+	_, still := app.pipeline.fileInfo[key]
+	app.pipeline.mu.RUnlock()
+	if still {
+		t.Error("fileInfo still holds the filed job's entry: a late article re-added it during post-processing and nothing drops it again")
 	}
 }

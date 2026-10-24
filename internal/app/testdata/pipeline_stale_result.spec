@@ -6,53 +6,28 @@ run TestHandleResult_DropsAResultFetchedForAnEarlierInstance|TestHandlers_ActOnT
 # holds under its ID. Each handler mutation puts back a lookup of the ID where
 # the handler acts on res.Job, which TestHandlers_ActOnTheResultsOwnInstance
 # catches by calling the handlers with a result the gate would have dropped.
+#
+# Only the sites BEFORE registerFile are mutated. registerFile refuses an
+# instance the dispatcher does not hold (pipeline_closed.spec), so past it a
+# stale result is gone and res.Job is the dispatcher's instance by
+# construction: a by-ID lookup at MarkArticleFailed, CheckEarlyAbort or the
+# post-write clearEmitted is observationally equivalent, and no fixture can
+# make it differ without a hook in the window between the guard and the site.
 
 [the gate admits a result for any instance under the registered ID]
 file internal/app/pipeline.go
 --- anchor
-	return ok && cur == res.Job
+	return ok && cur == j
 --- replace
 	return ok && cur != nil
 --- end
 
-[a terminal failure registers the file of whatever instance holds the ID]
+[a handler registers the file of whatever instance holds the ID]
 file internal/app/pipeline.go
 --- anchor
-		if err := p.registerFile(res.Job, res.FileIdx); err != nil {
-			p.log.Warn("register file for a permanent failure failed, returning to dispatch pool",
+	err := p.registerFile(res.Job, res.FileIdx)
 --- replace
-		if err := p.registerFile(func() *job.Job { j, _ := p.dispatcher.Job(res.JobID()); return j }(), res.FileIdx); err != nil {
-			p.log.Warn("register file for a permanent failure failed, returning to dispatch pool",
---- end
-
-[a terminal failure is recorded on whatever instance holds the ID]
-file internal/app/pipeline.go
---- anchor
-		if err := res.Job.MarkArticleFailed(int(res.ArtIdx), job.WholeArticle); err != nil {
---- replace
-		if err := func() *job.Job { j, _ := p.dispatcher.Job(res.JobID()); return j }().MarkArticleFailed(int(res.ArtIdx), job.WholeArticle); err != nil {
---- end
-
-[a failed fatal write returns whatever instance holds the ID to the pool]
-file internal/app/pipeline.go
---- anchor
-"job", res.JobID(), "msgid", res.MessageID, "err", writeErr)
-			p.clearEmitted(res)
-		}
-		telemetry.ArticlesFailed.Add(1)
---- replace
-"job", res.JobID(), "msgid", res.MessageID, "err", writeErr)
-			p.clearEmitted(func() *downloader.ArticleResult { c := *res; c.Job, _ = p.dispatcher.Job(res.JobID()); return &c }())
-		}
-		telemetry.ArticlesFailed.Add(1)
---- end
-
-[early abort is judged on whatever instance holds the ID]
-file internal/app/pipeline.go
---- anchor
-		if res.Job.CheckEarlyAbort() {
---- replace
-		if func() *job.Job { j, _ := p.dispatcher.Job(res.JobID()); return j }().CheckEarlyAbort() {
+	err := p.registerFile(func() *job.Job { j, _ := p.dispatcher.Job(res.JobID()); return j }(), res.FileIdx)
 --- end
 
 [a retryable failure returns whatever instance holds the ID to the pool]
@@ -83,36 +58,12 @@ file internal/app/pipeline.go
 	_ = func() *job.Job { j, _ := p.dispatcher.Job(res.JobID()); return j }().RecordDownload(res.ServerName, len(res.Data))
 --- end
 
-[a success registers the file of whatever instance holds the ID]
-file internal/app/pipeline.go
---- anchor
-	if err := p.registerFile(res.Job, res.FileIdx); err != nil {
-		p.log.Warn("register file failed",
---- replace
-	if err := p.registerFile(func() *job.Job { j, _ := p.dispatcher.Job(res.JobID()); return j }(), res.FileIdx); err != nil {
-		p.log.Warn("register file failed",
---- end
-
 [a failed registration returns whatever instance holds the ID to the pool]
 file internal/app/pipeline.go
 --- anchor
-"fileidx", res.FileIdx, "err", err)
-		p.clearEmitted(res)
-		return
+	p.clearEmitted(res)
+	return false
 --- replace
-"fileidx", res.FileIdx, "err", err)
-		p.clearEmitted(func() *downloader.ArticleResult { c := *res; c.Job, _ = p.dispatcher.Job(res.JobID()); return &c }())
-		return
---- end
-
-[a failed write returns whatever instance holds the ID to the pool]
-file internal/app/pipeline.go
---- anchor
-"err", writeErr)
-		p.clearEmitted(res)
-	} else if writeErr == nil {
---- replace
-"err", writeErr)
-		p.clearEmitted(func() *downloader.ArticleResult { c := *res; c.Job, _ = p.dispatcher.Job(res.JobID()); return &c }())
-	} else if writeErr == nil {
+	p.clearEmitted(func() *downloader.ArticleResult { c := *res; c.Job, _ = p.dispatcher.Job(res.JobID()); return &c }())
+	return false
 --- end

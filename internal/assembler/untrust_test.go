@@ -77,7 +77,7 @@ func TestCloseJobHandles_UntrustsAFileWhoseCloseTimeSyncFailed(t *testing.T) {
 	ack := make(chan error, 1)
 	a.dispatchRequest(
 		WriteRequest{FileIdx: fileIdxCloseHandles, MessageID: "job", ackCh: ack},
-		open, map[fileKey]struct{}{}, map[string]struct{}{})
+		open, map[fileKey]struct{}{})
 	if err := <-ack; !errors.Is(err, syscall.EIO) {
 		t.Errorf("close-handles ack = %v, want the fsync's EIO", err)
 	}

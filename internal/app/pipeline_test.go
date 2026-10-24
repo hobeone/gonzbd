@@ -131,7 +131,7 @@ func TestPipeline_HandleFailureResult(t *testing.T) {
 		log:        slog.Default(),
 		dispatcher: app.Dispatcher(),
 		assembler:  a,
-		fileInfo:   make(map[fileKey]assembler.FileInfo),
+		fileInfo:   make(map[fileKey]fileEntry),
 	}
 
 	// 1. Test handleFailureResult with a non-retryable error (triggering early abort)
@@ -274,7 +274,7 @@ func TestPipeline_HandleSuccessResult(t *testing.T) {
 		log:        slog.Default(),
 		dispatcher: app.Dispatcher(),
 		assembler:  a,
-		fileInfo:   make(map[fileKey]assembler.FileInfo),
+		fileInfo:   make(map[fileKey]fileEntry),
 	}
 
 	if err := j.MarkArticleEmitted(0); err != nil {
@@ -317,7 +317,7 @@ func TestRegisterFile_ErrorPaths(t *testing.T) {
 			log:         slog.Default(),
 			dispatcher:  d,
 			downloadDir: t.TempDir(),
-			fileInfo:    make(map[fileKey]assembler.FileInfo),
+			fileInfo:    make(map[fileKey]fileEntry),
 		}
 	}
 
@@ -374,7 +374,7 @@ func TestHandleResult_AbandonsTheArticleWhenTheJobIsGone(t *testing.T) {
 		log:        slog.New(slog.DiscardHandler),
 		dispatcher: app.Dispatcher(),
 		assembler:  forbidden,
-		fileInfo:   make(map[fileKey]assembler.FileInfo),
+		fileInfo:   make(map[fileKey]fileEntry),
 	}
 
 	p.handleResult(t.Context(), &downloader.ArticleResult{
@@ -400,7 +400,7 @@ func TestHandleSuccessResult_ReturnsTheArticleWhenTheFileCannotBeRegistered(t *t
 		assembler: assembler.New(assembler.Options{
 			FileInfo: func(string, int) (assembler.FileInfo, error) { return assembler.FileInfo{}, nil },
 		}, slog.New(slog.DiscardHandler)),
-		fileInfo: make(map[fileKey]assembler.FileInfo),
+		fileInfo: make(map[fileKey]fileEntry),
 	}
 
 	// File 9 does not exist in a one-file job, so registerFile fails.
@@ -436,7 +436,7 @@ func TestHandleSuccessResult_LeavesTheArticleUnresolved(t *testing.T) {
 				return assembler.FileInfo{TotalParts: 2}, nil
 			},
 		}, slog.New(slog.DiscardHandler)),
-		fileInfo: make(map[fileKey]assembler.FileInfo),
+		fileInfo: make(map[fileKey]fileEntry),
 	}
 	if err := p.assembler.Start(t.Context()); err != nil {
 		t.Fatalf("assembler.Start: %v", err)

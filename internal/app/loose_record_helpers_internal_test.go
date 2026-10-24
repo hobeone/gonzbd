@@ -736,6 +736,15 @@ func TestVerifyAndAttach_RemovesUnrecordedFilesAndStageDirsWhenFetching(t *testi
 		t.Errorf("staging dir %s still exists on disk after hydration of Fetching job", stageDir)
 	}
 
+	// registerFile refuses an instance the dispatcher does not hold under its
+	// ID, and in production the hydrated instance IS the dispatcher's: make
+	// it so here, in place of the instance AddJob registered.
+	if err := a.dispatcher.Remove(t.Context(), j0.ID()); err != nil {
+		t.Fatalf("Remove(j0): %v", err)
+	}
+	if err := a.dispatcher.Add(t.Context(), fresh, hdr); err != nil {
+		t.Fatalf("Add(fresh): %v", err)
+	}
 	if err := a.pipeline.registerFile(fresh, 1); err != nil {
 		t.Fatalf("registerFile: %v", err)
 	}

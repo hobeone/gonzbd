@@ -3,15 +3,15 @@ package assembler
 import "testing"
 
 // TestJobTombstone_DropsTheJobsFileTombstones pins that the cancel and
-// close-handles arms leave no per-file tombstone behind for the job they
-// tombstone.
+// close-handles arms leave no per-file tombstone behind for the job whose
+// handles they close.
 //
-// dispatchRequest drops an article for a job in cancelledJobs before
-// processRequest reads completed, so a tombstoned job's completed entries are
-// never consulted again. A job handed to post-processing passes through the
-// close-handles arm (enqueuePostProc), and only a retry's ForgetJob clears what
-// it leaves, so an entry kept here is one per such file for the life of the
-// process.
+// After either arm, a later article for the job is refused at openTargetFile
+// by the resolver, before processRequest reads completed, so the job's
+// entries are never consulted again. A job handed to post-processing passes
+// through the close-handles arm (enqueuePostProc), and only a retry's
+// ForgetJob clears what it leaves, so an entry kept here is one per such file
+// for the life of the process.
 //
 // The finished file (fileIdx 0) is the case that grew: it left open when it
 // completed, so neither arm's loop over open reaches it. The open file
@@ -37,17 +37,12 @@ func TestJobTombstone_DropsTheJobsFileTombstones(t *testing.T) {
 				writing: newHelperFile(t, t.TempDir(), "job_1.dat", 1),
 			}
 			completed := map[fileKey]struct{}{finished: {}, bystander: {}}
-			cancelledJobs := map[string]struct{}{}
 
 			ack := make(chan error, 1)
 			a.dispatchRequest(
 				WriteRequest{JobID: "", FileIdx: tc.fileIdx, MessageID: "job", ackCh: ack},
-				open, completed, cancelledJobs)
+				open, completed)
 
-			if _, ok := cancelledJobs["job"]; !ok {
-				t.Fatal("the job was not tombstoned, so its file tombstones are still " +
-					"the only thing rejecting its late articles and must not be dropped")
-			}
 			for _, k := range []fileKey{finished, writing} {
 				if _, still := completed[k]; still {
 					t.Errorf("completed still holds %+v after the job was tombstoned; "+
