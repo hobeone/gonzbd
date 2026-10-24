@@ -1,5 +1,5 @@
 pkg ./internal/app/
-run Test(ResolveFileInfo_RefusesAJobThatLeftTheDispatcher|ResolveFileInfo_RefusesAHandedOffJob|ResolveFileInfo_RefusesAnEarlierInstance|RegisterFile_RefusesOnceTheJobLeftTheDispatcher|HandleSuccessResult_DropsAClosedJobsArticleWithoutReturningIt|New_WiresTheHandOverIntoTheResolver)$
+run Test(ResolveFileInfo_RefusesAJobThatLeftTheDispatcher|RegisterFile_ReplacesAnEarlierInstancesEntry|ResolveFileInfo_RefusesAHandedOffJob|ResolveFileInfo_RefusesAnEarlierInstance|RegisterFile_RefusesOnceTheJobLeftTheDispatcher|HandleSuccessResult_DropsAClosedJobsArticleWithoutReturningIt|New_WiresTheHandOverIntoTheResolver)$
 
 # resolveForWrite is the assembler's gate on a closed job (#1053); the
 # register guard keeps a late article from re-growing fileInfo; the handler
@@ -46,4 +46,36 @@ file internal/app/app.go
 		handedOff: app.postProcAdmissions.has,
 --- replace
 		// mutated: hand-over not wired
+--- end
+
+[registerFile's fast path defers to any instance's entry]
+file internal/app/pipeline.go
+--- anchor
+	entry, exists := p.fileInfo[key]
+	p.mu.RUnlock()
+	if exists && entry.j == j {
+--- replace
+	_, exists := p.fileInfo[key]
+	p.mu.RUnlock()
+	if exists {
+--- end
+
+[registerFileAttempt's double-check defers to any instance's entry]
+file internal/app/pipeline.go
+--- anchor
+	// the race between RUnlock and Lock.
+	if entry, exists := p.fileInfo[key]; exists && entry.j == j {
+--- replace
+	// the race between RUnlock and Lock.
+	if _, exists := p.fileInfo[key]; exists {
+--- end
+
+[registerFileAttempt's third check defers to any instance's entry]
+file internal/app/pipeline.go
+--- anchor
+	// nothing forgot; this instance's registration replaces it.
+	if entry, exists := p.fileInfo[key]; exists && entry.j == j {
+--- replace
+	// nothing forgot; this instance's registration replaces it.
+	if _, exists := p.fileInfo[key]; exists {
 --- end

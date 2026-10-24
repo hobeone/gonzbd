@@ -175,3 +175,24 @@ func TestNew_WiresTheHandOverIntoTheResolver(t *testing.T) {
 		t.Fatalf("resolveForWrite after the hand-over = %v, want ErrJobClosed: New did not wire postProcAdmissions.has into the pipeline", err)
 	}
 }
+
+// TestRegisterFile_ReplacesAnEarlierInstancesEntry: a cache entry an earlier
+// attempt left under the same key must not short-circuit the retry's
+// registration, or resolveForWrite refuses every write of the retry.
+func TestRegisterFile_ReplacesAnEarlierInstancesEntry(t *testing.T) {
+	t.Parallel()
+	application := newTestApplication(t)
+	first, second := retriedUnderOneID(t, application, "feedface00105302")
+	p := helperPipeline(t, application.Dispatcher())
+	p.mu.Lock()
+	p.fileInfo[fileKey{jobID: first.ID(), fileIdx: 0}] = fileEntry{
+		info: assembler.FileInfo{Dir: t.TempDir(), Name: "f0", TotalParts: 1}, j: first,
+	}
+	p.mu.Unlock()
+	if err := p.registerFile(second, 0); err != nil {
+		t.Fatalf("registerFile for the retry = %v", err)
+	}
+	if _, err := p.resolveForWrite(second.ID(), 0); err != nil {
+		t.Fatalf("resolveForWrite for the retry after it registered = %v, want nil: the earlier attempt's entry still answers for the key", err)
+	}
+}

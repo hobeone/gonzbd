@@ -579,9 +579,9 @@ func (p *pipeline) registerFile(j *job.Job, fileIdx int) error {
 	key := fileKey{jobID: jobID, fileIdx: fileIdx}
 
 	p.mu.RLock()
-	_, exists := p.fileInfo[key]
+	entry, exists := p.fileInfo[key]
 	p.mu.RUnlock()
-	if exists {
+	if exists && entry.j == j {
 		return nil
 	}
 
@@ -627,7 +627,7 @@ func (p *pipeline) registerFileAttempt(j *job.Job, m *job.Manifest, fileIdx int)
 
 	// Double-check under the write lock — another goroutine may have won
 	// the race between RUnlock and Lock.
-	if _, exists := p.fileInfo[key]; exists {
+	if entry, exists := p.fileInfo[key]; exists && entry.j == j {
 		p.mu.Unlock()
 		return nil
 	}
@@ -684,8 +684,10 @@ func (p *pipeline) registerFileAttempt(j *job.Job, m *job.Manifest, fileIdx int)
 	// uniqueJobFileName only consults on-disk state (never a file this
 	// process creates), and the winner recorded its filename under the
 	// job's current name (RecordFileFilename), so its resolved path is the
-	// one to keep — deferring to it is correct, not just harmless.
-	if _, exists := p.fileInfo[key]; exists {
+	// one to keep — deferring to it is correct, not just harmless. An entry
+	// of another instance under the key is a retry's predecessor that
+	// nothing forgot; this instance's registration replaces it.
+	if entry, exists := p.fileInfo[key]; exists && entry.j == j {
 		p.mu.Unlock()
 		return nil
 	}
