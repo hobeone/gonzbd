@@ -1166,11 +1166,11 @@ func (a *Assembler) dispatchRequest(
 
 // dropFileTombstones deletes jobID's entries from completed.
 //
-// The cancel and close-handles arms call it once they have set the job-level
-// tombstone, which dispatchRequest checks before processRequest reads
-// completed: from then on the job's per-file entries are never consulted, and
-// keeping them would hold one per finished file until a retry's ForgetJob, the
-// only other caller.
+// The cancel and close-handles arms call it once they have dropped the job's
+// open handles: every later write for the job re-opens through the resolver,
+// which answers ErrJobClosed for a closed job before completed is read, so
+// the per-file entries are never consulted again, and keeping them would hold
+// one per finished file until a retry's ForgetJob, the only other caller.
 func dropFileTombstones(completed map[fileKey]struct{}, jobID string) {
 	maps.DeleteFunc(completed, func(k fileKey, _ struct{}) bool { return k.jobID == jobID })
 }
