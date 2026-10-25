@@ -384,6 +384,10 @@ type fileKey struct {
 type openFile struct {
 	w    *fileWriter
 	info FileInfo
+	// owner is the instance whose write opened the handle. A request under
+	// the same key from another owner does not take the handle
+	// (processRequest): an attempt and its retry share a job ID.
+	owner Owner
 }
 
 // Assembler receives decoded article data and writes it to target files using
@@ -1330,6 +1334,26 @@ func (a *Assembler) processRequest(req WriteRequest, open map[fileKey]*openFile,
 	}
 
 	f, ok := open[key]
+	if ok && f.owner != req.Owner {
+		// The handle belongs to another instance of this job ID. Usually the
+		// request is a straggler of an attempt that has left and the handle
+		// is the retry's; the resolver refuses it and it is dropped exactly
+		// as a closed job's article is below. Otherwise the request's owner
+		// is the held instance and the handle is a predecessor's that
+		// outlived its CancelJob arm (a timed-out arm leaves handles open,
+		// closehandles_fault_test.go): it is closed with its file kept, as
+		// the arm would have, and the request opens its own below, which
+		// resolves once more.
+		if _, err := a.opts.FileInfo(req.Owner, req.FileIdx); errors.Is(err, ErrJobClosed) {
+			if req.Data != nil {
+				a.releaseBuffer(req.Data)
+			}
+			return
+		}
+		a.closeCancelledFile(f, KeepFiles)
+		delete(open, key)
+		ok = false
+	}
 	if !ok {
 		var err error
 		f, err = a.openTargetFile(key, req, open)
@@ -1516,8 +1540,9 @@ func (a *Assembler) openTargetFile(key fileKey, req WriteRequest, open map[fileK
 	// the file's ownedRanges (maxEnd, finish.go), which seedOwned fills from the
 	// record below, so there is nothing left for a seed to protect.
 	f := &openFile{
-		w:    newFileWriter(fh, path, key),
-		info: info,
+		w:     newFileWriter(fh, path, key),
+		info:  info,
+		owner: req.Owner,
 	}
 	if syncFn := a.opts.SyncFile; syncFn != nil {
 		f.w.syncFile = func() error { return syncFn(fh) }
