@@ -162,9 +162,9 @@ type pipeline struct {
 }
 
 // fileEntry is one registered file: its resolved FileInfo and the job
-// instance that registered it. resolveForWrite compares that instance with the
-// dispatcher's, so a stale write from an earlier attempt under the same ID is
-// refused.
+// instance that registered it. registerFileAttempt reads the instance to tell
+// its own earlier registration, which it defers to, from an earlier attempt's
+// entry under the same ID, which it replaces.
 type fileEntry struct {
 	info assembler.FileInfo
 	j    *job.Job
@@ -750,8 +750,10 @@ func (p *pipeline) lookupFile(jobID string, fileIdx int) (fileEntry, error) {
 // (Options.FileInfo). It is resolveFileInfo plus the question the assembler
 // cannot answer itself: does this job still accept writes? It answers
 // assembler.ErrJobClosed, and the worker drops the article, when the
-// instance that registered the file is no longer the dispatcher's (removed,
-// or replaced by a retry) or has been admitted to post-processing.
+// instance the write carries is no longer the dispatcher's (removed, or
+// replaced by a retry) or has been admitted to post-processing. An owner
+// that is not a *job.Job is a plain error, which the worker reports as a
+// resolve fault.
 //
 // This is the gate on a late article: dispatch stops at the hand-over, but a
 // fetch already in flight still reaches WriteArticle, and openTargetFile

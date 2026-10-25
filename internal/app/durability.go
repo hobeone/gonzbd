@@ -111,12 +111,13 @@ func (app *Application) handleArticlesUnwritten(jobID string, fileIdx int, artId
 // Stall and Fail act on the instance they are given, through the dispatcher's
 // instance doors. It is looked up on the worker, while the write that faulted
 // is being processed, so a retry registered under the same ID before the
-// goroutine runs is left alone (#914). The lookup identifies the attempt as
-// well as the worker's own queue does: a write of an earlier attempt still
-// blocked in Assembler.WriteArticle when the retry registered is refused at
-// the open (pipeline.resolveForWrite compares instances,
-// TestResolveFileInfo_RefusesAnEarlierInstance), but one that had already
-// opened its file would fault against the retry.
+// goroutine runs is left alone (#914). A write of an earlier attempt that
+// reaches the worker after the retry registered never gets as far as a fault:
+// the resolver refuses the owner it carries, and an open handle refuses
+// another owner (TestWriteArticle_OfAnEarlierAttemptNeverReachesTheRetrysFile).
+// What the lookup here still decides is a fault on the earlier attempt's own
+// handle that the worker reports after the retry registered; that fault
+// reaches the retry until the callbacks carry the owner (#1056).
 func (app *Application) handleWriteFault(jobID string, _ int, f *storagefault.Fault) {
 	j, ok := app.dispatcher.Job(jobID)
 	if !ok {

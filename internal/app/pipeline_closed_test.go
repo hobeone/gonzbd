@@ -56,10 +56,10 @@ func TestResolveFileInfo_RefusesAHandedOffJob(t *testing.T) {
 	}
 }
 
-// TestResolveFileInfo_RefusesAnEarlierInstance: the entry carries the
-// instance that registered it, so a stale write from attempt 1 arriving after
-// attempt 2 registered under the same ID is refused rather than landing in
-// attempt 2's file.
+// TestResolveFileInfo_RefusesAnEarlierInstance: the owner the write carries
+// is checked against the dispatcher, so a stale write from attempt 1 arriving
+// after attempt 2 registered under the same ID is refused rather than landing
+// in attempt 2's file, whatever the cache holds under the key.
 func TestResolveFileInfo_RefusesAnEarlierInstance(t *testing.T) {
 	t.Parallel()
 	application := newTestApplication(t)

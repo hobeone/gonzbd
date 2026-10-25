@@ -152,7 +152,7 @@ type WriteRequest struct {
 }
 
 // FileInfo describes a target file. The assembler requests it from the caller's
-// resolver the first time an owner writes to a (JobID, FileIdx) pair.
+// resolver (Options.FileInfo) when it opens a file for an owner.
 type FileInfo struct {
 	// Dir is the job directory the file belongs in, and Name the file's
 	// name inside it. openTargetFile creates Dir and then opens Name with
@@ -209,8 +209,9 @@ type Options struct {
 
 	// FileInfo is called when a file is first opened for an owner, with the
 	// Owner the article's ref carried and the file's index, to obtain the
-	// target directory, name and expected part count. It must be non-nil;
-	// New panics otherwise.
+	// target directory, name and expected part count, and once more to vet a
+	// request that finds another owner's handle open under its key
+	// (processRequest). It must be non-nil; New panics otherwise.
 	//
 	// It may return ErrJobClosed, bare or wrapped, for an owner that no
 	// longer accepts writes; the worker then drops the article silently. Any
@@ -537,9 +538,10 @@ func (a *Assembler) Stop() error {
 }
 
 // Owner is the job instance a write belongs to. The assembler reads only its
-// ID and compares owners with ==, so an implementation is a pointer type: two
-// instances of one job (an attempt and its retry) share an ID and are
-// different owners. *job.Job is the production implementation.
+// ID and compares owners with ==, so an implementation must be comparable,
+// and a pointer type for the comparison to mean identity: two instances of
+// one job (an attempt and its retry) share an ID and are different owners.
+// *job.Job is the production implementation.
 type Owner interface {
 	ID() string
 }
@@ -1338,12 +1340,14 @@ func (a *Assembler) processRequest(req WriteRequest, open map[fileKey]*openFile,
 		// The handle belongs to another instance of this job ID. Usually the
 		// request is a straggler of an attempt that has left and the handle
 		// is the retry's; the resolver refuses it and it is dropped exactly
-		// as a closed job's article is below. Otherwise the request's owner
-		// is the held instance and the handle is a predecessor's that
-		// outlived its CancelJob arm (a timed-out arm leaves handles open,
-		// closehandles_fault_test.go): it is closed with its file kept, as
-		// the arm would have, and the request opens its own below, which
-		// resolves once more.
+		// as a closed job's article is below. On any other answer the
+		// request's owner is the held instance and the handle is a
+		// predecessor's that outlived its CancelJob arm (the arm's caller
+		// returns on closeHandlesTimeout with the message still queued, so
+		// the handles stay open until it runs): it is closed with its file
+		// kept, as the arm would have, and the request opens its own below,
+		// which resolves once more and reports any resolve error there.
+		// TestProcessRequest_EvictsADepartedOwnersHandle pins the eviction.
 		if _, err := a.opts.FileInfo(req.Owner, req.FileIdx); errors.Is(err, ErrJobClosed) {
 			if req.Data != nil {
 				a.releaseBuffer(req.Data)
