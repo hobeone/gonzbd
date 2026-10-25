@@ -1342,11 +1342,13 @@ func (a *Assembler) processRequest(req WriteRequest, open map[fileKey]*openFile,
 		// is the retry's; the resolver refuses it and it is dropped exactly
 		// as a closed job's article is below. On any other answer the
 		// request's owner is the held instance and the handle is a
-		// predecessor's that outlived its CancelJob arm (the arm's caller
-		// returns on closeHandlesTimeout with the message still queued, so
-		// the handles stay open until it runs): it is closed with its file
-		// kept, as the arm would have, and the request opens its own below,
-		// which resolves once more and reports any resolve error there.
+		// predecessor's whose CancelJob message was never enqueued (the
+		// caller's context expired or the worker stopped before the send,
+		// CancelJob's first select); a message that was enqueued runs ahead
+		// of any retry write on this FIFO and closes the handle itself. The
+		// surviving handle is closed with its file kept, as the arm would
+		// have, and the request opens its own below, which resolves once
+		// more and reports any resolve error there.
 		// TestProcessRequest_EvictsADepartedOwnersHandle pins the eviction.
 		if _, err := a.opts.FileInfo(req.Owner, req.FileIdx); errors.Is(err, ErrJobClosed) {
 			if req.Data != nil {
