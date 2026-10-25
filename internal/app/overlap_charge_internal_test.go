@@ -15,7 +15,7 @@ func writeFixtureArticleAt(t *testing.T, application *Application, jobID string,
 	if err := application.pipeline.registerFile(j, 0); err != nil {
 		t.Fatalf("registerFile 0: %v", err)
 	}
-	ref, req := assemblerWrite(jobID, 0, globalArt, offset)
+	ref, req := assemblerWrite(j, 0, globalArt, offset)
 	if err := application.assembler.WriteArticle(t.Context(), ref, req); err != nil {
 		t.Fatalf("WriteArticle %d: %v", globalArt, err)
 	}

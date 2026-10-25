@@ -29,7 +29,7 @@ func TestRefFor_CarriesEveryIdentityField(t *testing.T) {
 	}
 
 	want := assembler.ArticleRef{
-		JobID:     "job-7",
+		Owner:     res.Job,
 		FileIdx:   4,
 		ArtIdx:    11,
 		MessageID: "a@b",
@@ -152,7 +152,7 @@ func TestHandleResult_RoutesOnError(t *testing.T) {
 		app := newTestApplication(t)
 		disp, j := helperJob(t, app, name, 1, 2)
 		p := helperPipeline(t, disp)
-		p.assembler = assembler.New(assembler.Options{FileInfo: p.resolveFileInfo}, nil)
+		p.assembler = assembler.New(assembler.Options{FileInfo: p.resolveForWrite}, nil)
 		return p, j
 	}
 	startedAt := func(t *testing.T, p *pipeline, jobID string) time.Time {

@@ -84,7 +84,7 @@ func writeFixtureArticle(t *testing.T, application *Application, jobID string, f
 	}
 	// Offset 0: this helper writes one article at the start of its file, so
 	// the offset is file-local and does not follow the global article index.
-	ref, req := assemblerWrite(jobID, fileIdx, globalArt, 0)
+	ref, req := assemblerWrite(j, fileIdx, globalArt, 0)
 	if err := application.assembler.WriteArticle(t.Context(), ref, req); err != nil {
 		t.Fatalf("WriteArticle: %v", err)
 	}
@@ -98,9 +98,9 @@ func writeFixtureArticle(t *testing.T, application *Application, jobID string, f
 
 // assemblerWrite is one 100-byte article of a fixture file, as the pipeline
 // would hand it to the assembler.
-func assemblerWrite(jobID string, fileIdx, globalArt int, offset int64) (assembler.ArticleRef, assembler.WriteRequest) {
+func assemblerWrite(j *job.Job, fileIdx, globalArt int, offset int64) (assembler.ArticleRef, assembler.WriteRequest) {
 	return assembler.ArticleRef{
-		JobID: jobID, FileIdx: fileIdx, ArtIdx: int32(globalArt), //nolint:gosec // G115: test article counts are tiny
+		Owner: j, FileIdx: fileIdx, ArtIdx: int32(globalArt), //nolint:gosec // G115: test article counts are tiny
 		MessageID: string(rune('a'+globalArt)) + "@t",
 	}, assembler.WriteRequest{
 		Offset: offset,
@@ -292,15 +292,15 @@ type wedgeOnFile struct {
 	fileIdx int
 	entered chan struct{}
 	release chan struct{}
-	inner   func(string, int) (assembler.FileInfo, error)
+	inner   func(assembler.Owner, int) (assembler.FileInfo, error)
 }
 
-func (w *wedgeOnFile) resolve(jobID string, fileIdx int) (assembler.FileInfo, error) {
+func (w *wedgeOnFile) resolve(owner assembler.Owner, fileIdx int) (assembler.FileInfo, error) {
 	if fileIdx == w.fileIdx {
 		close(w.entered)
 		<-w.release
 	}
-	return w.inner(jobID, fileIdx)
+	return w.inner(owner, fileIdx)
 }
 
 // newWedgedApp builds an Application whose assembler holds file 0 open and
@@ -342,7 +342,7 @@ func newArmableWedgedApp(t *testing.T) (application *Application, j *job.Job, ar
 		fileIdx: 1,
 		entered: make(chan struct{}),
 		release: make(chan struct{}),
-		inner:   application.pipeline.resolveFileInfo,
+		inner:   application.pipeline.resolveForWrite,
 	}
 	application.assembler = assembler.New(assembler.Options{
 		FileInfo: wedge.resolve,
@@ -373,7 +373,7 @@ func newArmableWedgedApp(t *testing.T) (application *Application, j *job.Job, ar
 		// wedge. It is not routed through writeFixtureArticle because that
 		// waits for the file to open, and the whole point here is that the
 		// open never returns.
-		ref, req := assemblerWrite(j.ID(), 1, 1, 0)
+		ref, req := assemblerWrite(j, 1, 1, 0)
 		if err := application.assembler.WriteArticle(ctx, ref, req); err != nil {
 			t.Errorf("WriteArticle 1: %v", err)
 			return

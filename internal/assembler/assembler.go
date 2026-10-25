@@ -49,22 +49,32 @@ var (
 	// resolving for, as it would an article for a cancelled job, instead of
 	// opening a file. See processRequest.
 	ErrJobClosed = errors.New("assembler: job no longer accepts writes")
+
+	// ErrNoOwner is returned by WriteArticle for a ref whose Owner is nil.
+	// Every production ref is built from a downloader result, which carries
+	// its instance; a nil owner is a caller that bypassed that, and the
+	// worker is not left to infer one from the ID.
+	ErrNoOwner = errors.New("assembler: article ref has no owner")
 )
 
 // WriteRequest is the unit of work sent to the assembler. Each request
 // corresponds to one decoded NZB article segment.
 type WriteRequest struct {
-	// JobID, FileIdx, ArtIdx and MessageID identify the article, and on the
-	// article path the CALLER DOES NOT OWN THEM: WriteArticle overwrites all
-	// four from its ArticleRef argument, and a value supplied here is
-	// discarded. Setting them on a request destined for WriteArticle has no
-	// effect. See ArticleRef for why the identity is a parameter.
+	// Owner, JobID, FileIdx, ArtIdx and MessageID identify the article, and
+	// on the article path the CALLER DOES NOT OWN THEM: WriteArticle
+	// overwrites all five from its ArticleRef argument, and a value supplied
+	// here is discarded. Setting them on a request destined for WriteArticle
+	// has no effect. See ArticleRef for why the identity is a parameter.
 	//
 	// They stay on this struct because control messages are WriteRequest
 	// values too, and those DO own them: a control message carries one of the
-	// negative FileIdx sentinels (see control.go) with JobID empty and the
-	// job named in MessageID, which is how dispatchRequest tells an operation
-	// from an article before any writer sees it.
+	// negative FileIdx sentinels (see control.go) with Owner nil, JobID empty
+	// and the job named in MessageID, which is how dispatchRequest tells an
+	// operation from an article before any writer sees it.
+	Owner Owner
+
+	// JobID is Owner.ID(), copied once by WriteArticle so the worker's keys,
+	// logs and reports have the string without re-asking the owner.
 	JobID string
 
 	// FileIdx is the index into the job's Files slice on the article path, or
@@ -197,14 +207,15 @@ type Options struct {
 	// Zero selects the default (2048).
 	QueueSize int
 
-	// FileInfo is called once per (JobID, FileIdx) pair to obtain the target
-	// directory, name and expected part count. It must be non-nil; New panics
-	// otherwise.
+	// FileInfo is called when a file is first opened for an owner, with the
+	// Owner the article's ref carried and the file's index, to obtain the
+	// target directory, name and expected part count. It must be non-nil;
+	// New panics otherwise.
 	//
-	// It may return ErrJobClosed, bare or wrapped, for a job that no longer
-	// accepts writes; the worker then drops the article silently. Any other
-	// error is a "resolve" storage fault, routed through OnWriteFault.
-	FileInfo func(jobID string, fileIdx int) (FileInfo, error)
+	// It may return ErrJobClosed, bare or wrapped, for an owner that no
+	// longer accepts writes; the worker then drops the article silently. Any
+	// other error is a "resolve" storage fault, routed through OnWriteFault.
+	FileInfo func(owner Owner, fileIdx int) (FileInfo, error)
 
 	// OnFileComplete, if non-nil, is called on the worker goroutine when all
 	// TotalParts for a file have been accounted for and the file has been
@@ -521,8 +532,17 @@ func (a *Assembler) Stop() error {
 	return nil
 }
 
+// Owner is the job instance a write belongs to. The assembler reads only its
+// ID and compares owners with ==, so an implementation is a pointer type: two
+// instances of one job (an attempt and its retry) share an ID and are
+// different owners. *job.Job is the production implementation.
+type Owner interface {
+	ID() string
+}
+
 // ArticleRef is the identity of the article a WriteArticle call carries: which
-// job, which file, which article, and the Message-ID it was fetched by.
+// job instance, which file, which article, and the Message-ID it was fetched
+// by.
 //
 // It is a separate parameter rather than four fields the caller may leave unset
 // on WriteRequest, because ArtIdx has no invalid value. A Message-ID is empty or
@@ -533,10 +553,14 @@ func (a *Assembler) Stop() error {
 //
 // The identity is un-omittable, not unrepresentable: a caller passing a zero
 // ArtIdx deliberately cannot be told apart from one who defaulted it. Read the
-// guarantee as "someone supplied an identity", not "the identity is valid".
+// guarantee as "someone supplied an identity", not "the identity is valid". The
+// one field with an invalid value, Owner, is checked: WriteArticle refuses a nil
+// one with ErrNoOwner.
 type ArticleRef struct {
-	// JobID identifies the parent download job.
-	JobID string
+	// Owner is the instance the article was fetched for. The job ID is
+	// derived from it rather than carried beside it, so the two cannot
+	// disagree; a retry under the same ID is a different Owner.
+	Owner Owner
 
 	// FileIdx is the index into the job's Files slice.
 	FileIdx int
@@ -559,7 +583,8 @@ type ArticleRef struct {
 // sentinels, and those do not pass through here.
 //
 // The identity is applied after the started/stopped checks, so a caller probing
-// those errors with a bare request still gets them.
+// those errors with a bare request still gets them. A ref with a nil Owner is
+// refused with ErrNoOwner at the same point.
 func (a *Assembler) WriteArticle(ctx context.Context, ref ArticleRef, req WriteRequest) error {
 	a.mu.Lock()
 	if !a.started {
@@ -580,7 +605,11 @@ func (a *Assembler) WriteArticle(ctx context.Context, ref ArticleRef, req WriteR
 	// request's own fields is the whole point of the parameter: there is no
 	// path from outside this package that reaches the worker with an identity
 	// nobody supplied.
-	req.JobID = ref.JobID
+	if ref.Owner == nil {
+		return ErrNoOwner
+	}
+	req.Owner = ref.Owner
+	req.JobID = ref.Owner.ID()
 	req.FileIdx = ref.FileIdx
 	req.ArtIdx = ref.ArtIdx
 	req.MessageID = ref.MessageID
@@ -1447,7 +1476,7 @@ func (a *Assembler) handleLateDuplicate(req WriteRequest) {
 // release on each failure return while processRequest released on the error it
 // got back, putting one backing array in decoder's pool twice (#574).
 func (a *Assembler) openTargetFile(key fileKey, req WriteRequest, open map[fileKey]*openFile) (*openFile, error) {
-	info, err := a.opts.FileInfo(req.JobID, req.FileIdx)
+	info, err := a.opts.FileInfo(req.Owner, req.FileIdx)
 	if err != nil {
 		if errors.Is(err, ErrJobClosed) {
 			// Not a storage fault: the job has left the queue or been handed

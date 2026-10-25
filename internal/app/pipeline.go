@@ -90,7 +90,7 @@ type fileKey struct {
 // assembler's caller contract, so it should not be reintroduced here.
 func refFor(res *downloader.ArticleResult) assembler.ArticleRef {
 	return assembler.ArticleRef{
-		JobID:     res.JobID(),
+		Owner:     res.Job,
 		FileIdx:   res.FileIdx,
 		ArtIdx:    res.ArtIdx,
 		MessageID: res.MessageID,
@@ -777,7 +777,8 @@ func (p *pipeline) lookupFile(jobID string, fileIdx int) (fileEntry, error) {
 // resolveFileInfo stays the plain lookup for the completion paths
 // (directunpack_orchestrator, archive_peek), which resolve a finished file
 // of an admitted job.
-func (p *pipeline) resolveForWrite(jobID string, fileIdx int) (assembler.FileInfo, error) {
+func (p *pipeline) resolveForWrite(owner assembler.Owner, fileIdx int) (assembler.FileInfo, error) {
+	jobID := owner.ID()
 	entry, lookupErr := p.lookupFile(jobID, fileIdx)
 	j := entry.j
 	if lookupErr != nil {

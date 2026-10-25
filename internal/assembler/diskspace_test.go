@@ -66,7 +66,7 @@ func TestCheckDiskSpace_SurvivesHungStatfs(t *testing.T) {
 	dir := t.TempDir()
 	var lowDiskCalls int
 	opts := Options{
-		FileInfo: func(string, int) (FileInfo, error) {
+		FileInfo: func(Owner, int) (FileInfo, error) {
 			return FileInfo{}, nil
 		},
 		OnLowDisk:        func(string, int64) { lowDiskCalls++ },

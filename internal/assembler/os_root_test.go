@@ -85,7 +85,7 @@ func TestOpenTargetFile_RefusesToWriteOutOfTheJobDirectory(t *testing.T) {
 			name, target := tc.plant(t, jobDir, outside)
 
 			a := newHelperAssembler()
-			a.opts.FileInfo = func(string, int) (FileInfo, error) {
+			a.opts.FileInfo = func(Owner, int) (FileInfo, error) {
 				return FileInfo{Dir: jobDir, Name: name, TotalParts: 1}, nil
 			}
 			var faults []*storagefault.Fault

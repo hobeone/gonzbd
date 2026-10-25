@@ -122,7 +122,7 @@ func TestPipeline_HandleFailureResult(t *testing.T) {
 	ackDone(t, app.Dispatcher(), j.ID(), "filldone@x")
 
 	a := assembler.New(assembler.Options{
-		FileInfo: func(jobID string, fileIdx int) (assembler.FileInfo, error) {
+		FileInfo: func(owner assembler.Owner, fileIdx int) (assembler.FileInfo, error) {
 			return assembler.FileInfo{}, nil
 		},
 	}, nil)
@@ -215,7 +215,7 @@ func TestPipeline_HandleFailureResult_UnregisterableFileIsNotForwarded(t *testin
 	p := helperPipeline(t, app.Dispatcher())
 	faults := make(chan string, 4)
 	a := assembler.New(assembler.Options{
-		FileInfo: p.resolveFileInfo,
+		FileInfo: p.resolveForWrite,
 		OnWriteFault: func(jobID string, fileIdx int, f *storagefault.Fault) {
 			faults <- fmt.Sprintf("job %s file %d: %v", jobID, fileIdx, f)
 		},
@@ -265,7 +265,7 @@ func TestPipeline_HandleSuccessResult(t *testing.T) {
 	_ = app.Dispatcher().Add(context.Background(), j, hdr)
 
 	a := assembler.New(assembler.Options{
-		FileInfo: func(jobID string, fileIdx int) (assembler.FileInfo, error) {
+		FileInfo: func(owner assembler.Owner, fileIdx int) (assembler.FileInfo, error) {
 			return assembler.FileInfo{}, nil
 		},
 	}, nil)
@@ -364,7 +364,7 @@ func TestHandleResult_AbandonsTheArticleWhenTheJobIsGone(t *testing.T) {
 	app := newTestApplication(t)
 
 	forbidden := assembler.New(assembler.Options{
-		FileInfo: func(string, int) (assembler.FileInfo, error) {
+		FileInfo: func(assembler.Owner, int) (assembler.FileInfo, error) {
 			t.Error("registerFile ran for a job that is not in the dispatcher")
 			return assembler.FileInfo{}, errors.New("no such job")
 		},
@@ -398,7 +398,7 @@ func TestHandleSuccessResult_ReturnsTheArticleWhenTheFileCannotBeRegistered(t *t
 		log:        slog.New(slog.DiscardHandler),
 		dispatcher: disp,
 		assembler: assembler.New(assembler.Options{
-			FileInfo: func(string, int) (assembler.FileInfo, error) { return assembler.FileInfo{}, nil },
+			FileInfo: func(assembler.Owner, int) (assembler.FileInfo, error) { return assembler.FileInfo{}, nil },
 		}, slog.New(slog.DiscardHandler)),
 		fileInfo: make(map[fileKey]fileEntry),
 	}
@@ -432,7 +432,7 @@ func TestHandleSuccessResult_LeavesTheArticleUnresolved(t *testing.T) {
 		dispatcher:  disp,
 		downloadDir: dir,
 		assembler: assembler.New(assembler.Options{
-			FileInfo: func(string, int) (assembler.FileInfo, error) {
+			FileInfo: func(assembler.Owner, int) (assembler.FileInfo, error) {
 				return assembler.FileInfo{TotalParts: 2}, nil
 			},
 		}, slog.New(slog.DiscardHandler)),

@@ -12,9 +12,9 @@ func BenchmarkDiskThroughput(b *testing.B) {
 	const articleSize = 700 * 1024 // 700KB
 
 	opts := Options{
-		FileInfo: func(jobID string, fileIdx int) (FileInfo, error) {
+		FileInfo: func(owner Owner, fileIdx int) (FileInfo, error) {
 			return FileInfo{
-				Dir: dir, Name: fmt.Sprintf("%s_%d.dat", jobID, fileIdx),
+				Dir: dir, Name: fmt.Sprintf("%s_%d.dat", owner.ID(), fileIdx),
 				TotalParts: partsPerFile,
 			}, nil
 		},

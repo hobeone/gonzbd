@@ -79,16 +79,16 @@ func TestProcessRequest_FailedOpenReleasesTheBufferOnce(t *testing.T) {
 
 	cases := []struct {
 		name     string
-		resolver func(string, int) (FileInfo, error)
+		resolver func(Owner, int) (FileInfo, error)
 	}{
-		{"resolve fails", func(string, int) (FileInfo, error) {
+		{"resolve fails", func(Owner, int) (FileInfo, error) {
 			return FileInfo{}, os.ErrNotExist
 		}},
-		{"mkdir fails", func(string, int) (FileInfo, error) {
+		{"mkdir fails", func(Owner, int) (FileInfo, error) {
 			// The parent is a regular file, so MkdirAll reports ENOTDIR.
 			return FileInfo{Dir: filepath.Join(notADir, "sub"), Name: "f.bin"}, nil
 		}},
-		{"open fails", func(string, int) (FileInfo, error) {
+		{"open fails", func(Owner, int) (FileInfo, error) {
 			// The target is a directory, so OpenFile(O_WRONLY) reports EISDIR.
 			return FileInfo{Dir: filepath.Dir(isADir), Name: filepath.Base(isADir)}, nil
 		}},

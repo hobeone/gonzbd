@@ -154,7 +154,7 @@ func TestHandleResult_DropsAResultFetchedForAnEarlierInstance(t *testing.T) {
 
 			p := helperPipeline(t, application.Dispatcher())
 			p.assembler = assembler.New(assembler.Options{
-				FileInfo: func(string, int) (assembler.FileInfo, error) {
+				FileInfo: func(assembler.Owner, int) (assembler.FileInfo, error) {
 					t.Error("the assembler resolved a file for a stale result")
 					return assembler.FileInfo{}, errors.New("stale")
 				},
@@ -256,7 +256,7 @@ func TestHandlers_ActOnTheResultsOwnInstance(t *testing.T) {
 			emit(t, first, second)
 
 			p := helperPipeline(t, application.Dispatcher())
-			p.assembler = assembler.New(assembler.Options{FileInfo: p.resolveFileInfo}, nil)
+			p.assembler = assembler.New(assembler.Options{FileInfo: p.resolveForWrite}, nil)
 			var hopeless bool
 			p.onJobHopeless = func(string) { hopeless = true }
 

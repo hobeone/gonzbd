@@ -84,7 +84,7 @@ func TestOpenTargetFile_SeedsFromOwnedAndDropsInvalid(t *testing.T) {
 	var logs bytes.Buffer
 	a.log = slog.New(slog.NewTextHandler(&logs, &slog.HandlerOptions{Level: slog.LevelWarn}))
 	path := filepath.Join(t.TempDir(), "o.dat")
-	a.opts.FileInfo = func(string, int) (FileInfo, error) {
+	a.opts.FileInfo = func(Owner, int) (FileInfo, error) {
 		return FileInfo{Dir: filepath.Dir(path), Name: filepath.Base(path), ExpectedSize: 1 << 20, TotalParts: 1, Owned: []Range{
 			{Off: -5, Len: 100},         // negative offset
 			{Off: 3000, Len: -1},        // negative length
@@ -122,7 +122,7 @@ func TestOpenTargetFile_ZeroLengthOwnedRowIsSilent(t *testing.T) {
 	var logs bytes.Buffer
 	a.log = slog.New(slog.NewTextHandler(&logs, &slog.HandlerOptions{Level: slog.LevelWarn}))
 	path := filepath.Join(t.TempDir(), "z.dat")
-	a.opts.FileInfo = func(string, int) (FileInfo, error) {
+	a.opts.FileInfo = func(Owner, int) (FileInfo, error) {
 		return FileInfo{Dir: filepath.Dir(path), Name: filepath.Base(path), ExpectedSize: 1 << 20, TotalParts: 1, Owned: []Range{
 			{Off: 0, Len: 1000},
 			{Off: 1000, Len: 0}, // abuts the first range

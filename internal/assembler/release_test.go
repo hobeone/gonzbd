@@ -36,7 +36,7 @@ func TestDispatchRequest_ReleasesEveryArticleRequestOnce(t *testing.T) {
 			return WriteRequest{JobID: "job", FileIdx: 0, ArtIdx: 1, Data: data()}
 		}},
 		{"file cannot be resolved", func(_ *testing.T, a *Assembler, _ map[fileKey]*openFile, _ map[fileKey]struct{}) WriteRequest {
-			a.opts.FileInfo = func(string, int) (FileInfo, error) { return FileInfo{}, errors.New("no such file") }
+			a.opts.FileInfo = func(Owner, int) (FileInfo, error) { return FileInfo{}, errors.New("no such file") }
 			return WriteRequest{JobID: "job", FileIdx: 0, ArtIdx: 1, Data: data()}
 		}},
 		{"late duplicate", func(_ *testing.T, _ *Assembler, _ map[fileKey]*openFile, completed map[fileKey]struct{}) WriteRequest {
@@ -44,7 +44,7 @@ func TestDispatchRequest_ReleasesEveryArticleRequestOnce(t *testing.T) {
 			return WriteRequest{JobID: "job", FileIdx: 0, ArtIdx: 1, Data: data()}
 		}},
 		{"closed job", func(_ *testing.T, a *Assembler, _ map[fileKey]*openFile, _ map[fileKey]struct{}) WriteRequest {
-			a.opts.FileInfo = func(string, int) (FileInfo, error) { return FileInfo{}, ErrJobClosed }
+			a.opts.FileInfo = func(Owner, int) (FileInfo, error) { return FileInfo{}, ErrJobClosed }
 			return WriteRequest{JobID: "job", FileIdx: 0, ArtIdx: 1, Data: data()}
 		}},
 	}
@@ -53,7 +53,7 @@ func TestDispatchRequest_ReleasesEveryArticleRequestOnce(t *testing.T) {
 			dir := t.TempDir()
 			a := newHelperAssembler()
 			a.putBuffer = func([]byte) {}
-			a.opts.FileInfo = func(string, int) (FileInfo, error) {
+			a.opts.FileInfo = func(Owner, int) (FileInfo, error) {
 				return FileInfo{Dir: dir, Name: "job_0.dat", TotalParts: 2}, nil
 			}
 			a.opts.OnArticleRejected = func(string, int, int32, string, int64) {}
@@ -80,7 +80,7 @@ func TestDispatchRequest_ADuplicateIsReleasedOnItsOwn(t *testing.T) {
 	dir := t.TempDir()
 	a := newHelperAssembler()
 	a.putBuffer = func([]byte) {}
-	a.opts.FileInfo = func(string, int) (FileInfo, error) {
+	a.opts.FileInfo = func(Owner, int) (FileInfo, error) {
 		return FileInfo{Dir: dir, Name: "job_0.dat", TotalParts: 3}, nil
 	}
 	open := map[fileKey]*openFile{}
