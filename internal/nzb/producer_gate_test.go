@@ -27,7 +27,7 @@ const nzbImportPath = "github.com/hobeone/gonzbd/internal/nzb"
 // through the parser or removes it.
 //
 // Test files are exempt. Tests hand-build NZB models to drive consumers
-// (`git grep -l 'nzb\.Article' -- '*_test.go' ':!internal/nzb/'` lists 56 files), and a test-built value never reaches a manifest a production build
+// (`git grep -l 'nzb\.Article' -- '*_test.go' ':!internal/nzb/'` lists 57 files), and a test-built value never reaches a manifest a production build
 // wrote. The invariant concerns what production writes to disk.
 //
 // What this does not catch: a write to an article already sitting in a
