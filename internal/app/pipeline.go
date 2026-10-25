@@ -80,7 +80,10 @@ type fileKey struct {
 }
 
 // refFor is the sole place a downloaded article's identity becomes an
-// assembler.ArticleRef.
+// assembler.ArticleRef, and so the one producer of an assembler.Owner outside
+// tests (`git grep -n -E '^\s+Owner:' -- 'internal/*.go' ':!*_test.go'`
+// returns 1 line): the owner is res.Job, the instance the fetch was
+// dispatched for, which is why resolveForWrite may assert it to a *job.Job.
 //
 // Both write paths need the same four fields off the same result, and writing
 // them out twice would leave the derivation with two authors a hundred lines
@@ -389,11 +392,9 @@ func (p *pipeline) isCurrent(res *downloader.ArticleResult) bool {
 
 // holds reports whether j is the instance the dispatcher now holds under its
 // ID. It is the one definition of "current instance" in this file
-// (`git grep -n 'dispatcher\.Job(' -- internal/app/pipeline.go` returns 2
-// lines: this one, and resolveForWrite's miss path, which has no instance
-// to compare and asks which one is held): the gate (isCurrent), the
-// register guard (registerFileAttempt) and the write resolver
-// (resolveForWrite) all ask it.
+// (`git grep -n 'dispatcher\.Job(' -- internal/app/pipeline.go` returns 1
+// line, this one): the gate (isCurrent), the register guard
+// (registerFileAttempt) and the write resolver (resolveForWrite) all ask it.
 func (p *pipeline) holds(j *job.Job) bool {
 	cur, ok := p.dispatcher.Job(j.ID())
 	return ok && cur == j
@@ -766,35 +767,33 @@ func (p *pipeline) lookupFile(jobID string, fileIdx int) (fileEntry, error) {
 // later write for the job comes back here, and sees the state those calls
 // flipped before the arm ran.
 //
-// Both callers also forget the job's cache entries after their arm
-// (`git grep -n 'pipeline\.forgetJob(' -- 'internal/app/*.go' ':!*_test.go'`
-// returns 3 lines: RemoveJob, enqueuePostProc and the finalizer), and a
-// write queued behind the arm can arrive after that forget. A miss is
-// therefore judged by the instance the dispatcher holds under the ID, with
-// the same two questions; only a miss for a held, un-admitted job is the
-// plain lookup error, which openTargetFile reports as a resolve fault.
+// The two questions are asked of the owner the write carries, which is the
+// instance the article was fetched for (refFor), not of whatever the cache
+// or the dispatcher holds under the ID: an attempt and its retry share the
+// ID, and a write of the earlier attempt that reaches the worker after the
+// retry registered the same file must be refused, not resolved to the
+// retry's file (#1056). Both callers forget the job's cache entries after
+// their arm, so a write queued behind the arm can miss the cache; a miss for
+// an owner that is held and un-admitted is the plain lookup error, which
+// openTargetFile reports as a resolve fault.
 //
 // resolveFileInfo stays the plain lookup for the completion paths
 // (directunpack_orchestrator, archive_peek), which resolve a finished file
 // of an admitted job.
 func (p *pipeline) resolveForWrite(owner assembler.Owner, fileIdx int) (assembler.FileInfo, error) {
-	jobID := owner.ID()
-	entry, lookupErr := p.lookupFile(jobID, fileIdx)
-	j := entry.j
-	if lookupErr != nil {
-		cur, ok := p.dispatcher.Job(jobID)
-		if !ok {
-			return assembler.FileInfo{}, fmt.Errorf("resolve %s[%d]: job left the dispatcher: %w", jobID, fileIdx, assembler.ErrJobClosed)
-		}
-		j = cur
-	} else if !p.holds(j) {
-		return assembler.FileInfo{}, fmt.Errorf("resolve %s[%d]: instance left the dispatcher: %w", jobID, fileIdx, assembler.ErrJobClosed)
+	j, ok := owner.(*job.Job)
+	if !ok {
+		return assembler.FileInfo{}, fmt.Errorf("resolve %s[%d]: owner %T is not a job instance", owner.ID(), fileIdx, owner)
+	}
+	if !p.holds(j) {
+		return assembler.FileInfo{}, fmt.Errorf("resolve %s[%d]: instance left the dispatcher: %w", j.ID(), fileIdx, assembler.ErrJobClosed)
 	}
 	if p.handedOff != nil && p.handedOff(j) {
-		return assembler.FileInfo{}, fmt.Errorf("resolve %s[%d]: job handed to post-processing: %w", jobID, fileIdx, assembler.ErrJobClosed)
+		return assembler.FileInfo{}, fmt.Errorf("resolve %s[%d]: job handed to post-processing: %w", j.ID(), fileIdx, assembler.ErrJobClosed)
 	}
-	if lookupErr != nil {
-		return assembler.FileInfo{}, lookupErr
+	entry, err := p.lookupFile(j.ID(), fileIdx)
+	if err != nil {
+		return assembler.FileInfo{}, err
 	}
 	return entry.info, nil
 }

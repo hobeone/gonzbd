@@ -152,7 +152,7 @@ type WriteRequest struct {
 }
 
 // FileInfo describes a target file. The assembler requests it from the caller's
-// resolver the first time it encounters a (JobID, FileIdx) pair.
+// resolver the first time an owner writes to a (JobID, FileIdx) pair.
 type FileInfo struct {
 	// Dir is the job directory the file belongs in, and Name the file's
 	// name inside it. openTargetFile creates Dir and then opens Name with

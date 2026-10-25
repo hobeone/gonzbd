@@ -192,7 +192,13 @@ func TestRegisterFile_ReplacesAnEarlierInstancesEntry(t *testing.T) {
 	if err := p.registerFile(second, 0); err != nil {
 		t.Fatalf("registerFile for the retry = %v", err)
 	}
+	p.mu.RLock()
+	entry := p.fileInfo[fileKey{jobID: second.ID(), fileIdx: 0}]
+	p.mu.RUnlock()
+	if entry.j != second {
+		t.Fatalf("the cache entry under the key belongs to %q, want the retry's instance: the earlier attempt's entry still answers for the key", entry.j.Name())
+	}
 	if _, err := p.resolveForWrite(second, 0); err != nil {
-		t.Fatalf("resolveForWrite for the retry after it registered = %v, want nil: the earlier attempt's entry still answers for the key", err)
+		t.Fatalf("resolveForWrite for the retry after it registered = %v, want nil", err)
 	}
 }
