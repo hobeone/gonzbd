@@ -573,6 +573,13 @@ func TestArchiveMemberNames(t *testing.T) {
 	}{
 		{"rar5 members by magic, not by name", write("noext", unpackFixture(t, "single_rar5.rar")), "rar",
 			[]string{"file1.txt", "file2.txt", "nested.txt"}, false},
+		{"rar 1.5-4.x members, compressed ones included", write("old.rar", unpackFixture(t, "rar4_stored_then_lz.rar")), "rar",
+			[]string{"a.bin", "b.txt"}, false},
+		{"rar 1.5-4.x later volume declares only the members it starts", write("old.r00", unpackFixture(t, "rar4_store_multi.r00")), "rar",
+			nil, false},
+		{"rar 1.5-4.x encrypted members with plain headers are listed", write("enc.rar", unpackFixture(t, "rar4_encrypted.rar")), "rar",
+			[]string{"hello.txt"}, false},
+		{"rar 1.5-4.x encrypted headers are an error", write("hp.rar", unpackFixture(t, "rar4_encrypted_header.rar")), "rar", nil, true},
 		{"par2 declared names", write("x.bin", par2Declaring("a.exe")), "par2", []string{"a.exe"}, false},
 		{"neither archive kind", write("plain", []byte("hello world, not an archive")), "", nil, false},
 		{"corrupt rar is an error", write("bad.rar", unpackFixture(t, "corrupt.rar")), "rar", nil, true},

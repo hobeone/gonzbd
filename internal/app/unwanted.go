@@ -11,7 +11,7 @@ import (
 )
 
 // ErrUnwantedRefused reports a retry refused because the job names a file with
-// an unwanted extension (in the NZB, in a downloaded RAR5 volume, or in a par2
+// an unwanted extension (in the NZB, in a downloaded RAR volume, or in a par2
 // file), the configured action is fail, and the job has not been approved.
 // Retrying with allow_unwanted approves it.
 var ErrUnwantedRefused = errors.New("refused: the job names a file with an unwanted extension")

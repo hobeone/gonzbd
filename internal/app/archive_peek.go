@@ -1,7 +1,6 @@
 package app
 
 import (
-	"errors"
 	"fmt"
 
 	"github.com/hobeone/gonzbd/internal/cmdutil"
@@ -12,40 +11,34 @@ import (
 	"github.com/hobeone/gonzbd/internal/unwanted"
 )
 
-// errRAR3Skipped marks a RAR 1.5-4.x volume the peek does not list, although
-// rarheader.InspectNative lists most of them: the peek's scope is RAR5.
-var errRAR3Skipped = errors.New("rar3 volume: the early check lists RAR5 only")
-
 // archiveMemberNames returns the filenames the file at path declares: the
-// members a RAR5 volume lists, or the files a par2 file protects. The kind is
-// read from the file's magic bytes, never its name, so an obfuscated name
-// does not hide an archive. A file that is neither returns no names and no
-// error.
+// members a RAR volume (RAR5 or RAR 1.5-4.x) lists, or the files a par2 file
+// protects. The kind is read from the file's magic bytes, never its name, so
+// an obfuscated name does not hide an archive. A file that is neither returns
+// no names and no error.
 //
 // RAR names come from rarheader.InspectNative, the pure-Go route, which guards
-// the engine against panics itself. A RAR 1.5-4.x volume is skipped by scope
-// (errRAR3Skipped). A RAR5 volume the engine cannot list is an error and is
-// skipped: rarheader.Inspect would fall back to forking `unrar vt`, which has
-// no timeout and would run on the single completion goroutine. The par2 parse is guarded by cmdutil.SafeEngineRun. RAR
-// members are returned as declared. The names a par2 file declares are
-// returned except those unpack.Classify recognises as archive volumes and
-// those par2.IsPar2Name accepts (the test FindPar2Files uses), which the
-// pipeline consumes before the post-unpack check. Rules.Find judges what is
-// returned, so a declared name that is neither, such as "evil.par2.exe", is
-// judged here as the backstop would judge it.
+// the engine against panics itself. A volume the engine cannot list, such as
+// a header-encrypted one, is an error and is skipped: rarheader.Inspect would
+// fall back to forking `unrar vt`, which has no timeout and would run on the
+// single completion goroutine. The par2 parse is guarded by
+// cmdutil.SafeEngineRun. RAR members are returned as declared. The names a
+// par2 file declares are returned except those unpack.Classify recognises as
+// archive volumes and those par2.IsPar2Name accepts (the test FindPar2Files
+// uses), which the pipeline consumes before the post-unpack check. Rules.Find
+// judges what is returned, so a declared name that is neither, such as
+// "evil.par2.exe", is judged here as the backstop would judge it.
 func archiveMemberNames(path string, par2Opts par2.ParseOptions) (names []string, kind string, err error) {
-	ver, err := rarheader.Version(path)
-	switch {
-	case err == nil && ver == 5:
+	isRAR, err := rarheader.IsRAR(path)
+	if err != nil {
+		return nil, "", fmt.Errorf("read signature: %w", err)
+	}
+	if isRAR {
 		info, err := rarheader.InspectNative(path)
 		if err != nil {
 			return nil, "rar", fmt.Errorf("list rar members: %w", err)
 		}
 		return info.Filenames, "rar", nil
-	case err == nil:
-		return nil, "rar", errRAR3Skipped
-	case !errors.Is(err, rarheader.ErrNotRAR):
-		return nil, "", fmt.Errorf("read signature: %w", err)
 	}
 	isPar2, err := par2.HasMagic(path)
 	if err != nil {
@@ -80,7 +73,7 @@ func archiveMemberNames(path string, par2Opts par2.ParseOptions) (names []string
 // and, when they name a file with an unwanted extension, blocks the job while
 // its download is still running. It is an accelerator for the post-unpack
 // removal in internal/postproc, which stays the backstop: it sees only what a
-// completed RAR5 volume or par2 file declares, and no RAR3, 7z, zip, nested or
+// completed RAR volume or par2 file declares, and no 7z, zip, nested or
 // header-encrypted archive.
 //
 // It runs from completeFinalizedFile, ahead of the DirectUnpack feed and of

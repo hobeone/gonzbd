@@ -26,17 +26,19 @@ Re-run that script to regenerate. **Do not edit these files by hand.**
 | `rar4_store_multi.rar`, `.r00`, `.r01` | RAR 1.5-4.x multi-volume, stored, legacy naming | `large.bin`, 8 KiB of random data in 4 KiB volumes (copied from rarengine testdata) |
 | `rar4_lz.rar` | RAR 1.5-4.x (`-m3`) | `text.txt`, compressed, which rarengine refuses (copied from rarengine testdata) |
 | `rar4_encrypted.rar` | RAR 1.5-4.x, stored, encrypted | `hello.txt`, password `test`, which rarengine refuses (copied from rarengine testdata) |
+| `rar4_encrypted_header.rar` | RAR 1.5-4.x, stored, header-encrypted | `hello.txt`, password `test`; rarengine cannot list it |
 | `rar4_stored_then_lz.rar` | RAR 1.5-4.x, mixed | `a.bin` (3000 random bytes, `-m0`) then `b.txt` (80 text lines, `-m3`), so a stored member is extracted before the refusal |
 
 ## Limitations
 
 RAR 7.x removed `-ma4` so RAR4 (v3 compression) archives cannot be generated.
 The `rar4_*` fixtures need a rar 6.x binary, and are left in place by the
-clean step here. All but one come from the `generate_rar4.sh` script in
-rarengine's own testdata. `rar4_stored_then_lz.rar` was made with rar 6.24
-as two appends to one archive:
+clean step here. All but two come from the `generate_rar4.sh` script in
+rarengine's own testdata. These two were made with rar 6.24,
+`rar4_stored_then_lz.rar` as two appends to one archive:
 
 ```bash
 rar a -ma4 -m0 -ep -tsm- rar4_stored_then_lz.rar a.bin
 rar a -ma4 -m3 -ep -tsm- rar4_stored_then_lz.rar b.txt
+rar a -ma4 -m0 -ep -tsm- -hptest rar4_encrypted_header.rar hello.txt   # hello.txt holds "hello\n"
 ```

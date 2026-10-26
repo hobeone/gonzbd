@@ -970,14 +970,15 @@ reads the live settings on every run.
 
 **The archive peek is a second, earlier detector, not a replacement.** While a
 job downloads, `app.peekArchiveForUnwanted` reads the names a just-completed
-file declares: a RAR5 volume's members (`rarheader.InspectNative`, pure Go) or the files a par2
+file declares: a RAR volume's members, RAR5 or RAR 1.5-4.x (`rarheader.InspectNative`, pure Go), or the files a par2
 file protects (`par2.ParseFileDescriptionsWithOptions`), each identified by its
 magic bytes and not its name, and judges them with the same `Rules.Find`. A
 par2 file's declared archive volumes and par2 files are not judged, since the
 pipeline consumes them before `unwanted_cleanup` and the two must judge one
-population. The peek lists RAR5 only and never forks `unrar`: a RAR 1.5-4.x
-volume (by scope), or a RAR5 volume the engine cannot list, is skipped (its
-content is caught by `unwanted_cleanup` after unpack), while the par2 hint does not depend on the archive version. It
+population. The peek never forks `unrar`: a RAR volume the engine cannot list,
+such as a header-encrypted one, is skipped (its content is caught by
+`unwanted_cleanup` after unpack), while the par2 hint does not depend on the
+archive version. It
 runs from `completeFinalizedFile` for a live completion, before the
 DirectUnpack feed and before `MarkFileComplete`
 (`git grep -n 'app\.completeFinalizedFile(' -- 'internal/app/*.go'
