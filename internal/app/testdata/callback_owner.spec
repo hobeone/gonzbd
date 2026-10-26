@@ -1,7 +1,7 @@
 pkg ./internal/app/
 run Test(HandleArticleWritten_RecordsOnTheWritingInstance|HandleArticleRejected_FailsOnTheWritingInstance|HandleFileUntrusted_LeavesADepartedInstancesRowsAlone|CompleteFinalizedFile_RefusesADepartedInstance)$
 
-# Every assembler callback names the instance it reports on, and each handler
+# Each per-job assembler callback names the instance it reports on, and each handler
 # acts on that instance (#1056). Each mutation here puts the by-ID lookup back
 # in one handler, so a report for an attempt that has left the queue lands on
 # the retry registered under its ID; the two registered guards are neutered

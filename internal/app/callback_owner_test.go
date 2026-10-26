@@ -7,8 +7,8 @@ import (
 	"github.com/hobeone/gonzbd/internal/durability"
 )
 
-// The assembler reports on the instance whose request it processed, and each
-// handler acts on that instance. An attempt that has left the queue reports
+// Each per-job assembler callback reports on the instance whose request it
+// processed, and each handler acts on that instance. An attempt that has left the queue reports
 // against itself, never against the retry registered under its ID (#1056).
 // The fixture is retriedUnderOneID: "first" has left, "second" holds the ID.
 

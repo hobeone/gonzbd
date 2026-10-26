@@ -230,10 +230,13 @@ type Options struct {
 	// The callback should be cheap; expensive work should be dispatched
 	// asynchronously.
 	//
-	// Every On* callback below names the Owner whose request the worker is
-	// reporting on: the one the article's ref carried, or the one that opened
-	// the handle for a report made on a handle. A caller acts on that
-	// instance, not on whatever holds the ID when the report arrives.
+	// Each of the six per-job callbacks (OnFileComplete, OnFileUntrusted,
+	// OnWriteFault, OnArticlesUnwritten, OnArticleRejected, OnArticleWritten)
+	// names the Owner whose request the worker is reporting on: the one the
+	// article's ref carried, or the one that opened the handle for a report
+	// made on a handle. A caller acts on that instance, not on whatever holds
+	// the ID when the report arrives. OnLowDisk is per directory and names
+	// none.
 	OnFileComplete func(owner Owner, fileIdx int)
 
 	// OnFileUntrusted, if non-nil, is called on the worker goroutine for a

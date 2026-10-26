@@ -561,8 +561,8 @@ func (app *Application) queuedJobs() []*job.Job {
 // handleArticleWritten is the assembler's Options.OnArticleWritten: the
 // article's bytes reached pwrite, so its row is buffered and it is Done, on
 // the instance that wrote. An instance that has left the queue buffers under
-// itself, which the next flush discards (takeRowsLocked), and its mark is
-// refused as non-resident.
+// itself, which the next flush discards (takeRowsLocked), and its mark lands
+// on that instance alone (refused as non-resident once it is evicted).
 func (app *Application) handleArticleWritten(owner assembler.Owner, fileIdx int, artIdx int32, off, n int64, crc uint32) {
 	j := instanceOf(owner)
 	app.recorder.noteWritten(j, durability.WrittenRow{

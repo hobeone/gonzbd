@@ -1626,7 +1626,8 @@ func (app *Application) logQueueWriteFailure(op, jobID string, fileIdx int, err 
 // by the assembler, or by path by the verifier.
 func (app *Application) handleFileComplete(_ context.Context, fc FileComplete) {
 	if err := app.completeFinalizedFile(fc); err != nil {
-		// A job that left the queue has nothing to mark. A Resumed completion
+		// An instance no longer registered under its ID (removed, or replaced
+		// by a retry) has nothing to mark. A Resumed completion
 		// needs no manifest: the hydration that finished the file settled and
 		// marked it. An assembler completion that finds the job evicted is not
 		// marked in this process; its rows are in the record, so the next

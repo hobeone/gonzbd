@@ -171,10 +171,14 @@ deletes `job_files` rows (§6, `internal/durability/reclaim.go`).
 The recorder has two ways in:
 
 - **`noteWritten`**, the body of the assembler's `OnArticleWritten`, called on
-  the worker once an article's `pwrite` returned nil. It appends the row to the
-  pending buffer **first** and only then calls `Job.MarkArticleWritten`, so
-  nothing persisted depends on the Done bit. `ErrNotResident` from it is
-  expected for a job evicted mid-write and is logged at Debug.
+  the worker once an article's `pwrite` returned nil, with the job instance
+  the write was for (the `assembler.Owner` of its request). It appends the row
+  to the pending buffer **first**, under that instance, and only then calls
+  `Job.MarkArticleWritten`, so nothing persisted depends on the Done bit.
+  `ErrNotResident` from it is expected for a job evicted mid-write and is
+  logged at Debug. Rows buffered under an instance no longer registered under
+  its ID are dropped at the next flush (`takeRowsLocked`), never written under
+  the ID a retry now holds.
 - **`markDirty`**, called with a file's current `complete`, `filename` and
   `fetch_policy` read from the job's progress (`Application.markFileDirty`), so
   `complete` reads true only once the file was finished (§2). `flush` also
@@ -311,10 +315,13 @@ came from a `pwrite` — and only while the file is at its preallocated size,
 since by the next start post-processing may have replaced the file (§3
 *What*).
 
-`OnFileComplete` reaches `Application.completeFinalizedFile`, which settles the
-whole-file CRC, peeks the archive, feeds DirectUnpack, calls
-`Job.MarkFileComplete`, marks the file dirty for the recorder, and reports the
-download complete when it was the job's last file. `complete=1` therefore
+`OnFileComplete` reaches `Application.completeFinalizedFile` with the instance
+the file was finished for (`FileComplete.Job`); only while that instance is
+the one registered under its ID does it settle the whole-file CRC, peek the
+archive, feed DirectUnpack, call `Job.MarkFileComplete`, mark the file dirty
+for the recorder, and report the download complete when it was the job's last
+file. A completion of an attempt a retry has replaced is refused as
+`ErrNotResident` and touches nothing of the retry's. `complete=1` therefore
 reaches SQLite at the next flush; a crash before it costs one verification read
 of the file at the next start, which finishes it by path unless the file has a
 permanently failed article (see the `reportDownloadComplete` flush site in §1's
@@ -687,7 +694,10 @@ A failed fsync means none of the file's written bytes can be vouched for, and
 a second fsync on any descriptor may return nil over the lost pages. So the
 **file** is the unit: it is untrusted and refetched whole. Untrusting is
 `OnFileUntrusted` → `Application.handleFileUntrusted`, synchronously on the
-worker, in this order:
+worker, for the instance the handle was opened for and only while it is still
+registered under its ID (the rows below and the pipeline's cache are keyed by
+ID, so an untrust reported for a replaced attempt would purge the retry's), in
+this order:
 
 1. The file's rows and `complete` are removed from SQLite through
    `recorder.untrust` (a `DeleteAll` + `ClearComplete` verdict), which first
@@ -857,12 +867,13 @@ on disk, over an `EACCES` on a mount that has not finished coming up.
 
 `OnWriteFault` routes on another goroutine (`handleWriteFault`): run inline on
 the worker, `Fail` → `CloseJobHandles` would wait for the very worker calling
-it. The job instance is resolved on the worker before the hand-off, and `Stall`
+it. The fault carries the job instance it belongs to (the `assembler.Owner`
+of the request that faulted, or of the handle whose finish failed), and `Stall`
 and `Fail` act on that instance alone, through the dispatcher's instance doors
 (`PauseInstance`, `SetFailReason`, `ResumeInstance`): an instance no longer
 registered under its ID is neither parked nor failed, so a retry registered
-under the ID before the goroutine runs is left alone
-(`TestHandleWriteFault_ActsOnTheAttemptRegisteredOnTheWorker`,
+under the ID, before the fault was raised or before the goroutine runs, is
+left alone (`TestHandleWriteFault_ActsOnTheWritingAttempt`,
 `TestStallAndFail_LeaveALaterInstanceAlone`).
 
 The one thing that must **not** go through fault routing is a bookkeeping
@@ -1512,6 +1523,14 @@ are bounded by the flush cadence and by file size, as below.
 
 ## Failure & degradation rules
 
+- **Each of the six per-job callbacks names the job instance it reports on**
+  (`OnFileComplete`, `OnFileUntrusted`, `OnWriteFault`, `OnArticlesUnwritten`,
+  `OnArticleRejected`, `OnArticleWritten`; `OnLowDisk` is per directory) — the
+  `assembler.Owner` of the request, or of the handle for a report made on a
+  handle — and each handler acts on that instance, never on whatever the
+  dispatcher holds under its ID when the report arrives: an attempt and its
+  retry share the ID, and a report of the earlier attempt must not land on
+  the retry (`callback_owner.spec`).
 - **Write error (`pwrite` failure)** — the article is *not* Done and *not*
   failed. Two things then have to happen, and they travel on **separate**
   callbacks:

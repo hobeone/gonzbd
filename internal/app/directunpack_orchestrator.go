@@ -151,7 +151,7 @@ func (o *directUnpackOrchestrator) maybeStart(fc FileComplete) {
 	// o.mu, so an unpacker created above either predates that abortJob, which
 	// removes it, or was created after it, when the state is already visible
 	// here. The read is outside o.mu: it takes the dispatcher's lock, and the
-	// Job and Row calls at the top of this function take it before o.mu.
+	// registered and Row calls at the top of this function take it before o.mu.
 	if st, _ := app.dispatcher.UnwantedState(jobID); st.Blocked() {
 		o.abortJob(jobID)
 		app.log.Debug("directunpack: not feeding a job blocked for unwanted extensions",
