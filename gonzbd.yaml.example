@@ -372,17 +372,19 @@ postproc:
   # any subdirectory structure inside the archive.
   flat_unpack: false
 
-  # Use the pure-Go rarengine library for RAR5 extraction instead of
+  # Use the pure-Go rarengine library for RAR extraction instead of
   # shelling out to the unrar binary. No external binary required.
-  # Falls back to subprocess unrar on extraction error or for RAR3/4.
+  # Extracts RAR5, and RAR 1.5-4.x archives whose members are stored
+  # (-m0); falls back to subprocess unrar on extraction error, which
+  # includes a compressed or encrypted RAR 1.5-4.x member.
   # Default true.
   use_go_rar: true
 
   # Begin extracting files while the download is still in progress.
-  # Completed volumes of each RAR5 set are fed to the in-process pure-Go
+  # Completed volumes of each RAR set are fed to the in-process pure-Go
   # extractor as they arrive, overlapping download and extraction I/O. A
-  # set that is not RAR5, or that fails, is left to the standard unpack
-  # stage. Requires enable_unrar=true.
+  # set it cannot decode (a compressed or encrypted RAR 1.5-4.x member),
+  # or that fails, is left to the standard unpack stage. Requires enable_unrar=true.
   direct_unpack: false
 
   # Limit the number of concurrent DirectUnpack workers across all jobs.

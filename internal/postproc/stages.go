@@ -303,9 +303,10 @@ type Job struct {
 	// be retried by the normal unpack stage.
 	DirectUnpackFailures map[string]directunpack.FailedSet
 
-	// DirectUnpackSkipped holds sets that DirectUnpack did not attempt
-	// because they are not RAR5. The unpack stage extracts these sets
-	// normally; this is expected, not an error.
+	// DirectUnpackSkipped holds sets that DirectUnpack left without
+	// publishing anything: not RAR, or a RAR 1.5-4.x set rarengine does not
+	// decode. The unpack stage extracts these sets normally; this is
+	// expected, not an error.
 	DirectUnpackSkipped map[string]directunpack.SkippedSet
 
 	// pendingDeletions lists paths relative to DownloadDir of extracted

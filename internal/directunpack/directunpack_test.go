@@ -932,55 +932,140 @@ func TestDirectUnpack_SkipsNonRAR(t *testing.T) {
 	if !ok {
 		t.Fatalf("expected 'notrar' to be recorded as skipped, got: %+v", skipped)
 	}
-	if !strings.Contains(s.Reason, "RAR5") {
-		t.Errorf("expected skip reason to mention RAR5, got: %q", s.Reason)
+	if !strings.Contains(s.Reason, "not a RAR archive") {
+		t.Errorf("expected skip reason to say it is not a RAR archive, got: %q", s.Reason)
 	}
 }
 
-// TestDirectUnpack_SkipsRAR3 verifies that DirectUnpack rejects RAR3 archives
-// before streaming, skipping them so they fall back to the normal unpack stage's
-// external unrar.
-func TestDirectUnpack_SkipsRAR3(t *testing.T) {
+// TestDirectUnpack_RAR4StoredLegacySet extracts a stored RAR 1.5-4.x set with
+// legacy .rar/.r00/.r01 naming while it downloads, fed out of order.
+func TestDirectUnpack_RAR4StoredLegacySet(t *testing.T) {
+	srcDir := testdataDir(t)
 	workDir := t.TempDir()
 	extractDir := t.TempDir()
 
-	// RAR3 signature: Rar!\x1a\x07\x00\x00
-	signature := []byte{0x52, 0x61, 0x72, 0x21, 0x1a, 0x07, 0x00, 0x00}
-	volPath := filepath.Join(workDir, "archive_rar3.rar")
-	if err := os.WriteFile(volPath, signature, 0o644); err != nil {
-		t.Fatalf("write archive_rar3.rar: %v", err)
+	names := []string{"rar4_store_multi.rar", "rar4_store_multi.r00", "rar4_store_multi.r01"}
+	for _, name := range names {
+		copyRAR(t, srcDir, workDir, name)
 	}
 
-	du := New(
-		testLogger(t),
-		"test-job",
-		workDir,
-		extractDir,
-		Options{},
-	)
-
-	du.SetAllFilenames([]string{"archive_rar3.rar"})
+	du := New(testLogger(t), "test-job", workDir, extractDir, Options{})
+	du.SetAllFilenames(names)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	du.Add(ctx, "archive_rar3.rar", volPath)
+	for _, name := range []string{"rar4_store_multi.r01", "rar4_store_multi.rar", "rar4_store_multi.r00"} {
+		du.Add(ctx, name, filepath.Join(workDir, name))
+	}
 	du.Wait()
 
-	if results := du.Results(); len(results) != 0 {
-		t.Fatalf("expected no successful sets, got: %+v", results)
-	}
 	if failures := du.Failures(); len(failures) != 0 {
-		t.Fatalf("expected no failed sets, got: %+v", failures)
+		t.Fatalf("expected no failures, got: %+v", failures)
+	}
+	if skipped := du.Skipped(); len(skipped) != 0 {
+		t.Fatalf("expected no skipped sets, got: %+v", skipped)
+	}
+	want := []string{filepath.Join(extractDir, "large.bin")}
+	if got := du.Results()["rar4_store_multi"].ExtractedFiles; !slices.Equal(got, want) {
+		t.Errorf("ExtractedFiles = %q, want %q", got, want)
+	}
+	info, err := os.Stat(filepath.Join(extractDir, "large.bin"))
+	if err != nil {
+		t.Fatalf("large.bin not extracted: %v", err)
+	}
+	if info.Size() != 8192 {
+		t.Errorf("large.bin size = %d, want 8192", info.Size())
+	}
+}
+
+// TestDirectUnpack_RAR5RefusalIsAFailure verifies that rarengine's
+// ErrUnsupportedFormat from a RAR5 set -- here a later volume that does not
+// start with a RAR signature -- is recorded as a failure, not as a skip: only a
+// RAR 1.5-4.x set is skipped for it.
+func TestDirectUnpack_RAR5RefusalIsAFailure(t *testing.T) {
+	srcDir := testdataDir(t)
+	workDir := t.TempDir()
+	extractDir := t.TempDir()
+
+	var names []string
+	for i := 1; i <= 10; i++ {
+		name := fmt.Sprintf("multi_new.part%02d.rar", i)
+		copyRAR(t, srcDir, workDir, name)
+		names = append(names, name)
+	}
+	if err := os.WriteFile(filepath.Join(workDir, "multi_new.part02.rar"), []byte("PK\x03\x04 not a RAR volume"), 0o644); err != nil {
+		t.Fatal(err)
 	}
 
-	skipped := du.Skipped()
-	s, ok := skipped["archive_rar3"]
-	if !ok {
-		t.Fatalf("expected 'archive_rar3' to be recorded as skipped, got: %+v", skipped)
+	du := New(testLogger(t), "test-job", workDir, extractDir, Options{})
+	du.SetAllFilenames(names)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	for _, name := range names {
+		du.Add(ctx, name, filepath.Join(workDir, name))
 	}
-	if !strings.Contains(s.Reason, "RAR5") {
-		t.Errorf("expected skip reason to mention RAR5, got: %q", s.Reason)
+	du.Wait()
+
+	if skipped := du.Skipped(); len(skipped) != 0 {
+		t.Fatalf("expected no skipped sets, got: %+v", skipped)
+	}
+	f, ok := du.Failures()["multi_new"]
+	if !ok {
+		t.Fatalf("expected 'multi_new' to be recorded as failed, got: %+v", du.Failures())
+	}
+	if !strings.Contains(f.Reason, "unsupported archive format") {
+		t.Errorf("failure reason = %q, want rarengine's ErrUnsupportedFormat", f.Reason)
+	}
+}
+
+// TestDirectUnpack_SkipsCompressedRAR4 verifies that a RAR 1.5-4.x set
+// rarengine refuses as a format it does not decode is recorded as skipped, not
+// failed, and publishes nothing -- including the stored member a mixed set
+// extracts before the refusal. The normal unpack stage's external unrar
+// extracts such a set.
+func TestDirectUnpack_SkipsCompressedRAR4(t *testing.T) {
+	for _, tc := range []struct {
+		name, file, password, wantReason string
+	}{
+		{"compressed", "rar4_lz.rar", "", "method 3"},
+		{"encrypted, password given", "rar4_encrypted.rar", "test", "RAR 1.5-4.x encryption"},
+		{"stored then compressed", "rar4_stored_then_lz.rar", "", "method 3"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			workDir := t.TempDir()
+			extractDir := t.TempDir()
+			volPath := copyRAR(t, testdataDir(t), workDir, tc.file)
+			setname := strings.TrimSuffix(tc.file, ".rar")
+
+			du := New(testLogger(t), "test-job", workDir, extractDir, Options{Password: tc.password})
+			du.SetAllFilenames([]string{tc.file})
+
+			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			defer cancel()
+
+			du.Add(ctx, tc.file, volPath)
+			du.Wait()
+
+			if results := du.Results(); len(results) != 0 {
+				t.Fatalf("expected no successful sets, got: %+v", results)
+			}
+			if failures := du.Failures(); len(failures) != 0 {
+				t.Fatalf("expected no failed sets, got: %+v", failures)
+			}
+			s, ok := du.Skipped()[setname]
+			if !ok {
+				t.Fatalf("expected %q to be recorded as skipped, got: %+v", setname, du.Skipped())
+			}
+			if !strings.Contains(s.Reason, tc.wantReason) {
+				t.Errorf("skip reason = %q, want it to contain %q", s.Reason, tc.wantReason)
+			}
+			if got := dirNames(t, extractDir); len(got) != 0 {
+				t.Errorf("extract dir = %q, want empty", got)
+			}
+		})
 	}
 }
 

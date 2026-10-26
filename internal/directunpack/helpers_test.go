@@ -3,6 +3,7 @@ package directunpack
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -10,6 +11,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/hobeone/rarengine"
 )
 
 // The helpers below were untested when this file was added. They are
@@ -126,7 +129,18 @@ func TestSettleLocked(t *testing.T) {
 	}{
 		{"a published set", false, nil, true, "", ""},
 		{"a published set after Abort", true, nil, true, "", ""},
-		{"not RAR5", false, errNotRAR, false, "not RAR5; handled by normal unpack", ""},
+		{"not a RAR archive", false, errNotRAR, false, "not a RAR archive; handled by normal unpack", ""},
+		{
+			"a RAR 1.5-4.x set rarengine refuses", false,
+			fmt.Errorf("%w: %w", errRAR4Undecodable, rarengine.ErrUnsupportedFormat), false,
+			"rarengine does not decode this RAR 1.5-4.x set: rarengine: unsupported archive format; handled by normal unpack", "",
+		},
+		{
+			"the same refusal from a RAR5 set", false,
+			fmt.Errorf("read: %w", rarengine.ErrUnsupportedFormat), false,
+			"", "read: rarengine: unsupported archive format",
+		},
+		{"a skip after Abort", true, errNotRAR, false, "", "aborted"},
 		{"a queued set at Abort", true, errNotStarted, false, "", "aborted (not started)"},
 		{"an error after Abort", true, errors.New("killed"), false, "", "aborted"},
 		{"an error", false, errors.New("bad CRC"), false, "", "bad CRC"},

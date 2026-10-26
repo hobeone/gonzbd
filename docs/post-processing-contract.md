@@ -434,7 +434,7 @@ column (`internal/dispatch/store/store.go`, alongside the resolved
 
 `gonzbd` executes verification, repair, and archive decompression using native Go libraries by default:
 - **`go_par2`**: Native Reed-Solomon verification and repair engine (`UseGoPar2`).
-- **`go_rar`**: Pure-Go RAR5 extraction engine (`UseGoRAR`; falls back to external `unrar` for RAR3 and unsupported formats).
+- **`go_rar`**: Pure-Go RAR extraction engine for RAR5 and the stored members of RAR 1.5-4.x (`UseGoRAR`; a compressed or encrypted RAR 1.5-4.x member is refused as `ErrUnsupportedFormat` and falls back to external `unrar`, as other unsupported formats do).
 - **`go_7z`**: Pure-Go 7-Zip extraction engine (`UseGo7z`).
 - **`go_tar` / `filejoin`**: Native TAR extraction and split file joining.
 
@@ -653,9 +653,9 @@ Both par2 engines are handed one candidate list, which `RepairStage.repairSets` 
    It is also the backstop for the archive peek (`app.peekArchiveForUnwanted`),
    which blocks a job early, while it downloads, from the member names in RAR5
    volume headers and the names a par2 file declares. The peek is an
-   accelerator and lists RAR5 only, in pure Go: it never forks `unrar`, so a
-   RAR3 volume (or a RAR5 volume the engine cannot list) is skipped and its
-   content is caught by this stage after unpack, while the par2 hint does not
+   accelerator and lists RAR5 only, in pure Go, and never forks `unrar`: a
+   RAR 1.5-4.x volume (by scope) or a RAR5 volume the engine cannot list is
+   skipped and its content is caught by this stage after unpack, while the par2 hint does not
    depend on the archive version. It reads no 7z, zip, nested or
    header-encrypted archive, skips a file with a failed article, and skips a job that is approved or
    whose action is `off`, so this stage still runs for every one of those.

@@ -89,8 +89,9 @@ type PostProcConfig struct {
 	// OverwriteFiles allows extraction to clobber existing files in
 	// the destination.
 	OverwriteFiles bool `yaml:"overwrite_files" json:"overwrite_files"`
-	// UseGoRAR uses the pure-Go rarengine library for RAR5 extraction
-	// instead of shelling out to unrar. No external binary required.
+	// UseGoRAR uses the pure-Go rarengine library for RAR5 extraction, and
+	// for the stored members of RAR 1.5-4.x archives, instead of shelling
+	// out to unrar. No external binary required.
 	// When false, falls back to subprocess unrar.
 	// Default true.
 	UseGoRAR bool `yaml:"use_go_rar" json:"use_go_rar"`

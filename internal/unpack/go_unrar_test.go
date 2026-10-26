@@ -970,31 +970,64 @@ func TestClassifyRarEngineError(t *testing.T) {
 	}
 }
 
-func TestGoUnRAR_RAR3Unsupported(t *testing.T) {
-	dir := t.TempDir()
-	path := filepath.Join(dir, "rar3.rar")
-	// RAR3 signature: Rar!\x1a\x07\x00\x00
-	signature := []byte{0x52, 0x61, 0x72, 0x21, 0x1a, 0x07, 0x00, 0x00}
-	if err := os.WriteFile(path, signature, 0o644); err != nil {
-		t.Fatalf("write file: %v", err)
+// TestGoUnRAR_RAR4StoredMultiVolume extracts a stored RAR 1.5-4.x set with
+// legacy .rar/.r00/.r01 naming in-process: the shape scene releases are posted
+// in, which needs no external unrar.
+func TestGoUnRAR_RAR4StoredMultiVolume(t *testing.T) {
+	archiveDir := t.TempDir()
+	for _, name := range []string{"rar4_store_multi.rar", "rar4_store_multi.r00", "rar4_store_multi.r01"} {
+		copyInto(t, filepath.Join("testdata", name), archiveDir)
 	}
-
-	archive := Archive{
-		Type:     RarArchive,
-		Name:     "rar3",
-		MainFile: path,
+	archives, err := Scan(archiveDir)
+	if err != nil {
+		t.Fatalf("Scan() error: %v", err)
+	}
+	if len(archives) != 1 {
+		t.Fatalf("Scan() found %d archives, want 1", len(archives))
 	}
 
 	outDir := t.TempDir()
-	res, err := GoUnRAR(context.Background(), slog.Default(), archive, outDir, "", Options{})
-	if err == nil {
-		t.Fatal("GoUnRAR() expected error for RAR3 archive")
+	res, err := GoUnRAR(context.Background(), slog.Default(), archives[0], outDir, "", Options{})
+	if err != nil {
+		t.Fatalf("GoUnRAR() error: %v", err)
 	}
-	if !errors.Is(err, rarengine.ErrUnsupportedFormat) {
-		t.Errorf("err = %v, want ErrUnsupportedFormat", err)
+	if !slices.Equal(res.ExtractedFiles, []string{"large.bin"}) {
+		t.Errorf("ExtractedFiles = %q, want [large.bin]", res.ExtractedFiles)
 	}
-	if res.Reason != FailUnknown {
-		t.Errorf("res.Reason = %v, want FailUnknown", res.Reason)
+	info, err := os.Stat(filepath.Join(outDir, "large.bin"))
+	if err != nil {
+		t.Fatalf("large.bin not extracted: %v", err)
+	}
+	if info.Size() != 8192 {
+		t.Errorf("large.bin size = %d, want 8192", info.Size())
+	}
+}
+
+// TestGoUnRAR_RAR4CompressedUnsupported pins that a compressed RAR 1.5-4.x
+// member fails the extraction as ErrUnsupportedFormat, the error the
+// post-processing stage's GoRarFallback retry follows, and that nothing is
+// published -- including the stored member a mixed archive extracts first.
+func TestGoUnRAR_RAR4CompressedUnsupported(t *testing.T) {
+	for _, file := range []string{"rar4_lz.rar", "rar4_stored_then_lz.rar"} {
+		t.Run(file, func(t *testing.T) {
+			archive := Archive{
+				Type:     RarArchive,
+				Name:     file,
+				MainFile: filepath.Join("testdata", file),
+			}
+
+			outDir := t.TempDir()
+			res, err := GoUnRAR(context.Background(), slog.Default(), archive, outDir, "", Options{})
+			if !errors.Is(err, rarengine.ErrUnsupportedFormat) {
+				t.Fatalf("err = %v, want ErrUnsupportedFormat", err)
+			}
+			if res.Reason != FailUnknown {
+				t.Errorf("res.Reason = %v, want FailUnknown", res.Reason)
+			}
+			if got := dirTree(t, outDir); len(got) != 0 {
+				t.Errorf("outDir = %q, want empty", got)
+			}
+		})
 	}
 }
 

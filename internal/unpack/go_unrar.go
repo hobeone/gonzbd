@@ -45,11 +45,10 @@ func goUnRAR(ctx context.Context, log *slog.Logger, archive Archive, outDir, pas
 		return Result{Reason: reason}, fmt.Errorf("go_unrar: %w", detectErr)
 	}
 
-	if ver == 3 {
-		log.Info("go_unrar: RAR3 is not supported by pure-Go rarengine", "archive", archive.MainFile)
-		return Result{Reason: FailUnknown}, rarengine.ErrUnsupportedFormat
-	}
-
+	// A RAR 1.5-4.x archive (ver 3) goes to rarengine too: it extracts stored
+	// members and refuses a compressed or encrypted one as
+	// ErrUnsupportedFormat. The caller retries a failed go_unrar with the
+	// external unrar when GoRarFallback is set and a binary is found.
 	log.Info("go_unrar: detected RAR archive version, using rarengine", "rar_version", ver)
 	res, err := extractInStage(ctx, log, archive, outDir, password, opts, func(stageDir string) (Result, error) {
 		return goUnRAREngine(ctx, log, archive, stageDir, password, opts)

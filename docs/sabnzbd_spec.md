@@ -699,7 +699,7 @@ Key design: Configuration parameters are typed Go structs with validators. Confi
 | `propagation_delay` | int | `0` | Minutes to wait before downloading |
 | `unwanted_extensions` | list | `exe, com, scr, pif, bat, cmd, msi, vbs` | Extensions a job must not deliver (no dot, case-insensitive, glob patterns allowed; an entry containing `.` or `,` is rejected) |
 | `unwanted_extensions_mode` | string | `blacklist` | `blacklist` (listed are unwanted) or `whitelist` (unlisted are unwanted); a name with no extension is never unwanted |
-| `action_on_unwanted_extensions` | string | `pause` | `off`, `pause` (add paused, or pause on a hit found in a downloaded RAR5 volume or par2 file; labelled UNWANTED; resume approves) or `fail` (file as Failed at add with nothing downloaded, or when a downloaded RAR5 volume or par2 file names one). SABnzbd also inspects RAR members while downloading (`assembler.py`, `check_encrypted_and_unwanted`, RAR3 too via rarfile); gonzbd reads RAR5 only, since its RAR3 listing forks `unrar`; reading par2 declared names is gonzbd's own addition. Under `fail` SABnzbd aborts even a job whose `unwanted_ext` is already approved, whereas gonzbd does not check an approved job (deliberate); unless `off`, unwanted files are also removed after unpack from a job not approved. SABnzbd stores the mode and action as integers |
+| `action_on_unwanted_extensions` | string | `pause` | `off`, `pause` (add paused, or pause on a hit found in a downloaded RAR5 volume or par2 file; labelled UNWANTED; resume approves) or `fail` (file as Failed at add with nothing downloaded, or when a downloaded RAR5 volume or par2 file names one). SABnzbd also inspects RAR members while downloading (`assembler.py`, `check_encrypted_and_unwanted`, RAR3 too via rarfile); gonzbd's early check reads RAR5 only; reading par2 declared names is gonzbd's own addition. Under `fail` SABnzbd aborts even a job whose `unwanted_ext` is already approved, whereas gonzbd does not check an approved job (deliberate); unless `off`, unwanted files are also removed after unpack from a job not approved. SABnzbd stores the mode and action as integers |
 
 ### 9.4 Post-Processing Settings
 
@@ -726,7 +726,7 @@ Key design: Configuration parameters are typed Go structs with validators. Confi
 | `ignore_unrar_dates` | bool | false | Ignore timestamps in archives |
 | `overwrite_files` | bool | false | Overwrite existing extracted files |
 | `flat_unpack` | bool | false | Extract all to single folder |
-| `use_go_rar` | bool | true | Use pure-Go rarengine for RAR5 extraction (falls back to external unrar for RAR3 and unsupported formats) |
+| `use_go_rar` | bool | true | Use pure-Go rarengine for RAR5 extraction and stored RAR 1.5-4.x members (falls back to external unrar for compressed or encrypted RAR 1.5-4.x members and other unsupported formats) |
 | `go_rar_fallback` | bool | true | When pure-Go RAR extraction fails, retry with the external unrar binary; only relevant when `use_go_rar` is true, and when false a go_unrar failure is final |
 | `rar_decode_workers` | int | 0 | Goroutines the pure-Go RAR5 extractor uses to decode one compressed member; 0 = auto (min(CPU count, 4)), 1 = serial, above 8 clamped, negative treated as 0 |
 | `extra_unrar_params` | string | `` | Extra unrar flags (allowlist: -mlp, -om*, -ri*) |

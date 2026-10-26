@@ -3,6 +3,7 @@ package rarheader
 import (
 	"bytes"
 	"errors"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -253,20 +254,20 @@ func TestIsRAR_FileNotFound_CheckBool(t *testing.T) {
 	}
 }
 
-func TestInspectRar5_FileNotFound(t *testing.T) {
-	_, err := InspectRar5("/nonexistent/path/to/file.rar")
+func TestInspectNative_FileNotFound(t *testing.T) {
+	_, err := InspectNative("/nonexistent/path/to/file.rar")
 	if err == nil {
-		t.Error("InspectRar5 returned nil error for nonexistent file")
+		t.Error("InspectNative returned nil error for nonexistent file")
 	}
 }
 
-func TestInspectRar5_Corrupted(t *testing.T) {
+func TestInspectNative_Corrupted(t *testing.T) {
 	data := append([]byte{}, rar5Sig...)
 	data = append(data, bytes.Repeat([]byte{0xFF}, 1000)...)
 	path := writeTemp(t, "corrupt.rar", data)
-	_, err := InspectRar5(path)
+	_, err := InspectNative(path)
 	if err == nil {
-		t.Error("expected error for corrupted RAR5 file in InspectRar5")
+		t.Error("expected error for corrupted RAR5 file in InspectNative")
 	}
 }
 
@@ -311,20 +312,49 @@ func TestInspect_ValidRAR_Fixtures(t *testing.T) {
 			t.Errorf("expected filenames in du_test.part1.rar, got none")
 		}
 
-		// Directly test InspectRar5 to bypass Inspect fallback and kill mutants
-		infoRar5, err := InspectRar5(pathPart)
+		// Directly test InspectNative to bypass Inspect fallback and kill mutants
+		infoRar5, err := InspectNative(pathPart)
 		if err != nil {
-			t.Fatalf("InspectRar5(%s) error: %v", pathPart, err)
+			t.Fatalf("InspectNative(%s) error: %v", pathPart, err)
 		}
 		if len(infoRar5.Filenames) == 0 {
-			t.Errorf("expected filenames in InspectRar5(du_test.part1.rar), got none")
+			t.Errorf("expected filenames in InspectNative(du_test.part1.rar), got none")
 		}
 	}
 }
 
-// TestInspect_RAR3_RoutesToUnrar proves Inspect() routes RAR3 archives to
-// inspectViaUnrar without calling the real external unrar binary in unit tests.
-func TestInspect_RAR3_RoutesToUnrar(t *testing.T) {
+// TestInspect_RAR4_ListsWithoutUnrar proves Inspect() reads a RAR 1.5-4.x
+// archive's names through rarengine, compressed members included, and starts
+// no unrar process.
+func TestInspect_RAR4_ListsWithoutUnrar(t *testing.T) {
+	oldExecCommand := execCommand
+	defer func() { execCommand = oldExecCommand }()
+	forked := false
+	execCommand = func(name string, args ...string) *exec.Cmd {
+		forked = true
+		return oldExecCommand(name, args...)
+	}
+
+	rar3Path := filepath.Join("testdata", "rar3-comment-plain.rar")
+	info, err := Inspect(rar3Path)
+	if err != nil {
+		t.Fatalf("Inspect(%s) error: %v", rar3Path, err)
+	}
+	if forked {
+		t.Error("Inspect started unrar for a RAR 1.5-4.x archive rarengine can list")
+	}
+	if info.Version != 3 {
+		t.Errorf("Version = %d, want 3", info.Version)
+	}
+	if want := []string{"file1.txt", "file2.txt"}; !slices.Equal(info.Filenames, want) {
+		t.Errorf("Filenames = %q, want %q", info.Filenames, want)
+	}
+}
+
+// TestInspect_RAR4_EngineFailureRoutesToUnrar proves a RAR 1.5-4.x archive
+// rarengine cannot list -- an encrypted-header one, or here a corrupt one --
+// still goes to inspectViaUnrar, without calling the real unrar binary.
+func TestInspect_RAR4_EngineFailureRoutesToUnrar(t *testing.T) {
 	oldExecCommand := execCommand
 	defer func() { execCommand = oldExecCommand }()
 
@@ -338,7 +368,9 @@ func TestInspect_RAR3_RoutesToUnrar(t *testing.T) {
 		return cmd
 	}
 
-	rar3Path := filepath.Join("testdata", "rar3-comment-plain.rar")
+	data := append([]byte{}, rar3Sig...)
+	data = append(data, bytes.Repeat([]byte{0xFF}, 64)...)
+	rar3Path := writeTemp(t, "corrupt3.rar", data)
 	info, err := Inspect(rar3Path)
 	if err != nil {
 		t.Fatalf("Inspect(%s) error: %v", rar3Path, err)
@@ -377,6 +409,68 @@ func TestInspectViaUnrar_Success(t *testing.T) {
 	}
 	if len(info.Filenames) != 1 || info.Filenames[0] != "movie.mkv" {
 		t.Errorf("unexpected filenames: %v", info.Filenames)
+	}
+}
+
+// TestInspectNativeHelper covers inspectNative's contract with Inspect: it
+// lists with the version it is given, skips directory members, reports a
+// member's encryption, and keeps that version on an engine error.
+func TestInspectNativeHelper(t *testing.T) {
+	t.Run("lists files, not directories", func(t *testing.T) {
+		info, err := inspectNative(filepath.Join("testdata", "rar3-subdirs.rar"), 3)
+		if err != nil {
+			t.Fatalf("inspectNative: %v", err)
+		}
+		if info.Version != 3 || info.Encrypted {
+			t.Errorf("Version = %d, Encrypted = %v; want 3, false", info.Version, info.Encrypted)
+		}
+		want := []string{"file2.txt", "long fn.txt", "file.txt", "file1.txt"}
+		if !slices.Equal(info.Filenames, want) {
+			t.Errorf("Filenames = %q, want %q", info.Filenames, want)
+		}
+	})
+	t.Run("encrypted member", func(t *testing.T) {
+		info, err := inspectNative(filepath.Join("..", "unpack", "testdata", "rar4_encrypted.rar"), 3)
+		if err != nil {
+			t.Fatalf("inspectNative: %v", err)
+		}
+		if !info.Encrypted || !slices.Equal(info.Filenames, []string{"hello.txt"}) {
+			t.Errorf("info = %+v, want hello.txt, Encrypted", info)
+		}
+	})
+	t.Run("engine error keeps the version", func(t *testing.T) {
+		data := append([]byte{}, rar3Sig...)
+		data = append(data, bytes.Repeat([]byte{0xFF}, 64)...)
+		info, err := inspectNative(writeTemp(t, "corrupt3.rar", data), 3)
+		if err == nil {
+			t.Fatal("inspectNative: want an error for a corrupt archive")
+		}
+		if info.Version != 3 {
+			t.Errorf("Version = %d, want 3", info.Version)
+		}
+	})
+}
+
+// TestInspect_BothRoutesFail_KeepsTheEngineError proves that when the unrar
+// fallback fails too, Inspect returns the engine's error with unrar's, so a host
+// without unrar still learns what is wrong with the archive.
+func TestInspect_BothRoutesFail_KeepsTheEngineError(t *testing.T) {
+	oldExecCommand := execCommand
+	defer func() { execCommand = oldExecCommand }()
+	execCommand = func(name string, args ...string) *exec.Cmd {
+		cmd := exec.Command(os.Args[0], "-test.run=TestHelperProcess_UnrarFailure")
+		cmd.Env = append(os.Environ(), "GO_WANT_HELPER_PROCESS=1")
+		return cmd
+	}
+
+	data := append([]byte{}, rar3Sig...)
+	data = append(data, bytes.Repeat([]byte{0xFF}, 64)...)
+	_, err := Inspect(writeTemp(t, "corrupt3.rar", data))
+	if !errors.Is(err, io.ErrUnexpectedEOF) {
+		t.Errorf("err = %v, want the engine's io.ErrUnexpectedEOF in it", err)
+	}
+	if err == nil || !strings.Contains(err.Error(), "unrar vt failed") {
+		t.Errorf("err = %v, want unrar's failure in it", err)
 	}
 }
 

@@ -102,24 +102,39 @@ func Inspect(p string) (Info, error) {
 	if err != nil {
 		return Info{}, err
 	}
-
-	if ver == 5 {
-		if info, err := InspectRar5(p); err == nil {
-			return info, nil
-		}
-		// If InspectRar5 fails (e.g. encrypted header or corrupt block),
-		// fall back to unrar vt.
+	info, nativeErr := inspectNative(p, ver)
+	if nativeErr == nil {
+		return info, nil
 	}
-
-	// inspectViaUnrar handles RAR3 (unsupported by pure-Go rarengine) and
-	// RAR5 archives where InspectRar5 failed.
-	return inspectViaUnrar(p, ver)
+	// A RAR archive rarengine cannot list -- encrypted headers, a RAR 2.x
+	// block, a corrupt block -- falls back to unrar vt. When that fails too,
+	// both errors are returned: with no unrar installed, the engine's is the
+	// one that says what is wrong with the archive.
+	info, err = inspectViaUnrar(p, ver)
+	if err != nil {
+		return info, errors.Join(nativeErr, err)
+	}
+	return info, nil
 }
 
-// InspectRar5 opens the file at path and inspects it as a RAR5 archive
-// using the pure Go rarengine library.
-func InspectRar5(p string) (info Info, err error) {
-	info.Version = 5
+// InspectNative opens the file at path and lists it with the pure Go
+// rarengine library, which lists the members of RAR5 and RAR 1.5-4.x archives,
+// compressed or encrypted members included. It fails on an archive whose
+// headers are encrypted, and on a RAR 1.5-4.x archive carrying a RAR 2.x
+// block or comment (rarengine.ErrUnsupportedFormat). Returns ErrNotRAR if the
+// file is not a valid RAR archive.
+func InspectNative(p string) (Info, error) {
+	ver, err := readMagic(p)
+	if err != nil {
+		return Info{}, err
+	}
+	return inspectNative(p, ver)
+}
+
+// inspectNative is InspectNative for a file whose signature readMagic has
+// already read as RAR version ver.
+func inspectNative(p string, ver int) (info Info, err error) {
+	info.Version = ver
 	err = cmdutil.SafeEngineRun("rarheader: rarengine panic", func() error {
 		//nolint:gosec // p is trusted input from internal caller
 		f, openErr := os.Open(p)

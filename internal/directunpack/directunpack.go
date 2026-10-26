@@ -21,13 +21,27 @@ import (
 	"github.com/hobeone/gonzbd/internal/unpack"
 )
 
-// errNotRAR is returned by extractSet when the first volume of a set isn't
-// a RAR archive rarengine can read (RAR5 only). It is handled specially
-// by run(): the set is recorded as skipped (not failed) and logged at Info
-// level, and the set is left to the post-processing unpack stage. That stage
-// can extract RAR3 only through an external unrar binary it finds; its
-// pure-Go path is rarengine too.
-var errNotRAR = errors.New("not a RAR5 archive")
+// errNotRAR is returned by extractSet when the first volume of a set does not
+// start with a RAR signature, or cannot be read to find out (the read error is
+// wrapped with it). It is one of the two errors leftToUnpack reports.
+var errNotRAR = errors.New("not a RAR archive")
+
+// errRAR4Undecodable wraps the rarengine.ErrUnsupportedFormat extractSet gets
+// from the reader for a RAR 1.5-4.x set: a compressed or encrypted member, or
+// archive headers rarengine does not read. The same sentinel from a RAR5 set
+// -- a RAR 7.0 member, a later volume with a bad signature -- is not wrapped,
+// and stays a failure.
+var errRAR4Undecodable = errors.New("rarengine does not decode this RAR 1.5-4.x set")
+
+// leftToUnpack reports whether extractSet's err means the set is skipped
+// rather than failed: errNotRAR or errRAR4Undecodable. The post-processing
+// unpack stage extracts a skipped set again, as it does a failed one; for a
+// RAR 1.5-4.x set that takes the external unrar, which it runs when
+// go_rar_fallback is on and finds a binary. The set was extracted into a
+// staging directory, so a refusal part way through publishes nothing of it.
+func leftToUnpack(err error) bool {
+	return errors.Is(err, errNotRAR) || errors.Is(err, errRAR4Undecodable)
+}
 
 // errNotStarted is the outcome Abort settles for a set still queued: one that
 // never became current, so nothing of it was extracted.
@@ -60,12 +74,10 @@ type FailedSet struct {
 	Kind unpack.FailReason
 }
 
-// SkippedSet records a set that DirectUnpack did not attempt because it
-// isn't a RAR5 archive. rarengine (the pure-Go decompressor used by
-// DirectUnpack) only supports RAR5; other formats (e.g. RAR3, legacy RAR2,
-// or non-RAR archives misidentified by filename) are left to the
-// post-processing unpack stage, which extracts RAR3 only when it finds an
-// external unrar binary. This is expected, not an error.
+// SkippedSet records a set DirectUnpack left to the post-processing unpack
+// stage without publishing anything of it: one that is not a RAR archive, or a
+// RAR 1.5-4.x set rarengine does not decode (see leftToUnpack). This is
+// expected, not an error.
 type SkippedSet struct {
 	// Reason is a human-readable description of why the set was skipped.
 	Reason string
@@ -117,7 +129,7 @@ type DirectUnpacker struct {
 	completedVols map[string]map[int]string // setname → vol → absolute filepath
 	successSets   map[string]SuccessSet     // completed extractions
 	failedSets    map[string]FailedSet      // sets that failed
-	skippedSets   map[string]SkippedSet     // sets skipped (not RAR5)
+	skippedSets   map[string]SkippedSet     // sets left to normal unpack (leftToUnpack)
 	corruptSets   map[string]string         // setname → reason; volumes assembled from a failed/incomplete download
 	nextSets      []string                  // archive sets waiting to start
 
@@ -517,9 +529,9 @@ func (d *DirectUnpacker) Failures() map[string]FailedSet {
 	return out
 }
 
-// Skipped returns a copy of the sets that were not attempted because they
-// aren't RAR5. The caller should check this after Wait() returns alongside
-// Results() and Failures().
+// Skipped returns a copy of the sets left to the post-processing unpack stage
+// with nothing published (see leftToUnpack). The caller should check this
+// after Wait() returns alongside Results() and Failures().
 func (d *DirectUnpacker) Skipped() map[string]SkippedSet {
 	d.mu.Lock()
 	defer d.mu.Unlock()
@@ -529,8 +541,8 @@ func (d *DirectUnpacker) Skipped() map[string]SkippedSet {
 }
 
 // settleLocked records setname's outcome from what extracting it returned: a
-// success when err is nil, a skip for errNotRAR, and otherwise a failure, whose
-// reason is "aborted" once Abort has set killed. It is the one writer of
+// success when err is nil, an "aborted" failure once Abort has set killed, a
+// skip when leftToUnpack(err), and otherwise a failure. It is the one writer of
 // successSets, failedSets and skippedSets after New makes them — `git grep -nE
 // '(successSets|failedSets|skippedSets)\[[a-z]+\] =' -- internal/directunpack/directunpack.go`
 // returns 5 lines, all in this function. A published set is a success
@@ -540,12 +552,12 @@ func (d *DirectUnpacker) settleLocked(setname string, res SuccessSet, err error)
 	switch {
 	case err == nil:
 		d.successSets[setname] = res
-	case errors.Is(err, errNotRAR):
-		d.skippedSets[setname] = SkippedSet{Reason: "not RAR5; handled by normal unpack"}
 	case errors.Is(err, errNotStarted):
 		d.failedSets[setname] = FailedSet{Reason: "aborted (not started)"}
 	case d.killed:
 		d.failedSets[setname] = FailedSet{Reason: "aborted"}
+	case leftToUnpack(err):
+		d.skippedSets[setname] = SkippedSet{Reason: err.Error() + "; handled by normal unpack"}
 	default:
 		kind := unpack.FailUnknown
 		if unpack.IsDiskFull(err) {
@@ -580,10 +592,10 @@ func (d *DirectUnpacker) run(ctx context.Context) {
 		case err == nil:
 			d.log.Info("set extraction complete", "set", setname,
 				"parts", len(res.RarParts), "files", len(res.ExtractedFiles))
-		case errors.Is(err, errNotRAR):
-			d.log.Info("skipping set, not a RAR5 archive", "set", setname)
 		case killed:
 			d.log.Info("set extraction aborted", "set", setname, "err", err)
+		case leftToUnpack(err):
+			d.log.Info("skipping set, left to normal unpack", "set", setname, "reason", err)
 		default:
 			d.log.Error("extraction failed", "set", setname, "err", err)
 		}
@@ -661,12 +673,16 @@ func (d *DirectUnpacker) extractSet(ctx context.Context, setname string) (res Su
 			maxVol = 100 // fallback safe bound
 		}
 
-		// rarengine only supports RAR5 archives. Check the first volume's magic
-		// bytes before streaming so non-RAR5 formats (including RAR3) are
-		// skipped immediately and left to stage_unpack.
+		// Check the first volume's magic bytes before streaming so a set that is
+		// not RAR at all is skipped immediately and left to stage_unpack. Both
+		// RAR5 and RAR 1.5-4.x (ver 3) go on to rarengine; a RAR 1.5-4.x member
+		// it does not decode is a skip too (leftToUnpack).
 		ver, err := rarheader.Version(vol1Path)
-		if err != nil || ver != 5 {
+		if errors.Is(err, rarheader.ErrNotRAR) {
 			return errNotRAR
+		}
+		if err != nil {
+			return fmt.Errorf("%w: %w", errNotRAR, err)
 		}
 		d.log.Info("starting extraction", "set", setname, "rar_version", ver)
 
@@ -706,6 +722,9 @@ func (d *DirectUnpacker) extractSet(ctx context.Context, setname string) (res Su
 			default:
 			}
 			if extractErr != nil {
+				if ver == 3 && errors.Is(extractErr, rarengine.ErrUnsupportedFormat) {
+					return fmt.Errorf("%w: %w", errRAR4Undecodable, extractErr)
+				}
 				return extractErr
 			}
 

@@ -1,11 +1,12 @@
 // Package directunpack implements streaming RAR extraction during download.
 //
-// When enabled, each RAR5 set is extracted in-process by rarengine while the
+// When enabled, each RAR set is extracted in-process by rarengine while the
 // job downloads: completed volumes are handed to its reader in order as they
 // arrive, and it blocks at a volume boundary until the next volume is fed.
 // This overlaps download I/O with extraction I/O, reducing total pipeline
-// wall-clock time. A set that is not RAR5 is skipped and left to the
-// post-processing unpack stage.
+// wall-clock time. A set that is not RAR, or a RAR 1.5-4.x set rarengine
+// does not decode (a compressed or encrypted member), is skipped and left to
+// the post-processing unpack stage.
 //
 // Each set is extracted into its own .gonzbd-tmp-unpack-* staging directory
 // inside the job directory (unpack.ExtractStaged). Its members are published

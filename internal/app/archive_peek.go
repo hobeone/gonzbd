@@ -12,8 +12,8 @@ import (
 	"github.com/hobeone/gonzbd/internal/unwanted"
 )
 
-// errRAR3Skipped marks a RAR3 volume the peek does not list: RAR3 names come
-// only from the external unrar, which the completion path never forks.
+// errRAR3Skipped marks a RAR 1.5-4.x volume the peek does not list, although
+// rarheader.InspectNative lists most of them: the peek's scope is RAR5.
 var errRAR3Skipped = errors.New("rar3 volume: the early check lists RAR5 only")
 
 // archiveMemberNames returns the filenames the file at path declares: the
@@ -22,11 +22,11 @@ var errRAR3Skipped = errors.New("rar3 volume: the early check lists RAR5 only")
 // does not hide an archive. A file that is neither returns no names and no
 // error.
 //
-// RAR names come from rarheader.InspectRar5, the pure-Go route, which guards
-// the engine against panics itself. A RAR3 volume, or a RAR5 volume the engine
-// cannot list, is an error and is skipped: rarheader.Inspect would fall back to
-// forking `unrar vt`, which has no timeout and would run on the single
-// completion goroutine. The par2 parse is guarded by cmdutil.SafeEngineRun. RAR
+// RAR names come from rarheader.InspectNative, the pure-Go route, which guards
+// the engine against panics itself. A RAR 1.5-4.x volume is skipped by scope
+// (errRAR3Skipped). A RAR5 volume the engine cannot list is an error and is
+// skipped: rarheader.Inspect would fall back to forking `unrar vt`, which has
+// no timeout and would run on the single completion goroutine. The par2 parse is guarded by cmdutil.SafeEngineRun. RAR
 // members are returned as declared. The names a par2 file declares are
 // returned except those unpack.Classify recognises as archive volumes and
 // those par2.IsPar2Name accepts (the test FindPar2Files uses), which the
@@ -37,7 +37,7 @@ func archiveMemberNames(path string, par2Opts par2.ParseOptions) (names []string
 	ver, err := rarheader.Version(path)
 	switch {
 	case err == nil && ver == 5:
-		info, err := rarheader.InspectRar5(path)
+		info, err := rarheader.InspectNative(path)
 		if err != nil {
 			return nil, "rar", fmt.Errorf("list rar members: %w", err)
 		}
