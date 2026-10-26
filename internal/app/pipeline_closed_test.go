@@ -30,7 +30,7 @@ func TestResolveFileInfo_RefusesAJobThatLeftTheDispatcher(t *testing.T) {
 	if err := disp.RemoveJob(context.Background(), j); err != nil {
 		t.Fatalf("RemoveJob: %v", err)
 	}
-	_, err := p.resolveForWrite(j.ID(), 0)
+	_, err := p.resolveForWrite(j, 0)
 	if !errors.Is(err, assembler.ErrJobClosed) {
 		t.Fatalf("resolveForWrite after RemoveJob = %v, want ErrJobClosed: the assembler would open a file for a job in history", err)
 	}
@@ -46,20 +46,20 @@ func TestResolveFileInfo_RefusesAHandedOffJob(t *testing.T) {
 	if err := p.registerFile(j, 0); err != nil {
 		t.Fatalf("registerFile: %v", err)
 	}
-	if _, err := p.resolveForWrite(j.ID(), 0); err != nil {
+	if _, err := p.resolveForWrite(j, 0); err != nil {
 		t.Fatalf("resolveForWrite before the hand-over = %v, want nil", err)
 	}
 	handed.Store(true)
-	_, err := p.resolveForWrite(j.ID(), 0)
+	_, err := p.resolveForWrite(j, 0)
 	if !errors.Is(err, assembler.ErrJobClosed) {
 		t.Fatalf("resolveForWrite after the hand-over = %v, want ErrJobClosed", err)
 	}
 }
 
-// TestResolveFileInfo_RefusesAnEarlierInstance: the entry carries the
-// instance that registered it, so a stale write from attempt 1 arriving after
-// attempt 2 registered under the same ID is refused rather than landing in
-// attempt 2's file.
+// TestResolveFileInfo_RefusesAnEarlierInstance: the owner the write carries
+// is checked against the dispatcher, so a stale write from attempt 1 arriving
+// after attempt 2 registered under the same ID is refused rather than landing
+// in attempt 2's file, whatever the cache holds under the key.
 func TestResolveFileInfo_RefusesAnEarlierInstance(t *testing.T) {
 	t.Parallel()
 	application := newTestApplication(t)
@@ -70,9 +70,25 @@ func TestResolveFileInfo_RefusesAnEarlierInstance(t *testing.T) {
 		info: assembler.FileInfo{Dir: t.TempDir(), Name: "f0", TotalParts: 1}, j: first,
 	}
 	p.mu.Unlock()
-	_, err := p.resolveForWrite(first.ID(), 0)
+	_, err := p.resolveForWrite(first, 0)
 	if !errors.Is(err, assembler.ErrJobClosed) {
 		t.Fatalf("resolveForWrite for an earlier instance = %v, want ErrJobClosed: attempt 1's write would land in attempt 2's file", err)
+	}
+}
+
+// TestResolveForWrite_RefusesANilOwnerAsAnError: the owner the write carries
+// is an interface, and a nil one must come back as the plain error the
+// non-job branch promises, not a nil dereference on the worker goroutine.
+func TestResolveForWrite_RefusesANilOwnerAsAnError(t *testing.T) {
+	t.Parallel()
+	application := newTestApplication(t)
+	p := helperPipeline(t, application.Dispatcher())
+	_, err := p.resolveForWrite(nil, 0)
+	if err == nil {
+		t.Fatal("resolveForWrite(nil, 0) = nil error, want the non-job owner error")
+	}
+	if errors.Is(err, assembler.ErrJobClosed) {
+		t.Fatalf("resolveForWrite(nil, 0) = %v, want a plain error: ErrJobClosed would drop the article silently", err)
 	}
 }
 
@@ -121,7 +137,7 @@ func TestHandleSuccessResult_DropsAClosedJobsArticleWithoutReturningIt(t *testin
 	var logs bytes.Buffer
 	p.log = slog.New(slog.NewTextHandler(&logs, &slog.HandlerOptions{Level: slog.LevelDebug}))
 	p.assembler = assembler.New(assembler.Options{
-		FileInfo: func(string, int) (assembler.FileInfo, error) {
+		FileInfo: func(assembler.Owner, int) (assembler.FileInfo, error) {
 			t.Error("WriteArticle reached the assembler for a closed job")
 			return assembler.FileInfo{}, assembler.ErrJobClosed
 		},
@@ -164,13 +180,13 @@ func TestNew_WiresTheHandOverIntoTheResolver(t *testing.T) {
 	if err := p.registerFile(j, 0); err != nil {
 		t.Fatalf("registerFile: %v", err)
 	}
-	if _, err := p.resolveForWrite(j.ID(), 0); err != nil {
+	if _, err := p.resolveForWrite(j, 0); err != nil {
 		t.Fatalf("resolveForWrite before the hand-over = %v, want nil", err)
 	}
 	if out := application.postProcAdmissions.admit(j, ""); out != admitted {
 		t.Fatalf("admit = %v, want admitted", out)
 	}
-	_, err := p.resolveForWrite(j.ID(), 0)
+	_, err := p.resolveForWrite(j, 0)
 	if !errors.Is(err, assembler.ErrJobClosed) {
 		t.Fatalf("resolveForWrite after the hand-over = %v, want ErrJobClosed: New did not wire postProcAdmissions.has into the pipeline", err)
 	}
@@ -192,7 +208,13 @@ func TestRegisterFile_ReplacesAnEarlierInstancesEntry(t *testing.T) {
 	if err := p.registerFile(second, 0); err != nil {
 		t.Fatalf("registerFile for the retry = %v", err)
 	}
-	if _, err := p.resolveForWrite(second.ID(), 0); err != nil {
-		t.Fatalf("resolveForWrite for the retry after it registered = %v, want nil: the earlier attempt's entry still answers for the key", err)
+	p.mu.RLock()
+	entry := p.fileInfo[fileKey{jobID: second.ID(), fileIdx: 0}]
+	p.mu.RUnlock()
+	if entry.j != second {
+		t.Fatalf("the cache entry under the key belongs to %q, want the retry's instance: the earlier attempt's entry still answers for the key", entry.j.Name())
+	}
+	if _, err := p.resolveForWrite(second, 0); err != nil {
+		t.Fatalf("resolveForWrite for the retry after it registered = %v, want nil", err)
 	}
 }

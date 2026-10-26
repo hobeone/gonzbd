@@ -466,8 +466,9 @@ reasons (§5.F); it is not a prerequisite for F1.
 
 **The owner has landed** (#403): the signature is
 `WriteArticle(ctx, ref ArticleRef, req WriteRequest)`, and `ArticleRef` carries
-`JobID`, `FileIdx`, `ArtIdx` and `MessageID`. Omitting the identity is a compile
-error at both `internal/app` call sites. The identity fields stay on
+`Owner` (the job instance; the job ID is derived from it), `FileIdx`, `ArtIdx`
+and `MessageID`. Omitting the identity is a compile error at both
+`internal/app` call sites, and a nil `Owner` is refused with `ErrNoOwner`. The identity fields stay on
 `WriteRequest` — the control-message convention builds `WriteRequest` values
 carrying `FileIdx` sentinels, and removing them is F4's job, not this one's.
 

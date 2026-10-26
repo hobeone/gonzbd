@@ -26,7 +26,7 @@ func TestFaultedIncumbent_TakenOverThenRedeliveryRefused(t *testing.T) {
 	a := newHelperAssembler()
 	path := filepath.Join(t.TempDir(), "takeover.dat")
 	key := fileKey{jobID: "job", fileIdx: 0}
-	a.opts.FileInfo = func(string, int) (FileInfo, error) {
+	a.opts.FileInfo = func(Owner, int) (FileInfo, error) {
 		return FileInfo{Dir: filepath.Dir(path), Name: filepath.Base(path), TotalParts: 3}, nil
 	}
 

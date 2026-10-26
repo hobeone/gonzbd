@@ -23,8 +23,8 @@ func TestCancelJob_ClosesOpenFileHandles(t *testing.T) {
 	// know the worker has opened the files before we send the cancel.
 	var fileInfoCalls atomic.Int32
 	opts := Options{
-		FileInfo: func(jobID string, fileIdx int) (FileInfo, error) {
-			key := fmt.Sprintf("%s:%d", jobID, fileIdx)
+		FileInfo: func(owner Owner, fileIdx int) (FileInfo, error) {
+			key := fmt.Sprintf("%s:%d", owner.ID(), fileIdx)
 			fi, ok := files[key]
 			if !ok {
 				return FileInfo{}, fmt.Errorf("no FileInfo for %s", key)
@@ -93,11 +93,11 @@ func TestCancelJob_RejectsLateArticles(t *testing.T) {
 	opts := makeOpts(dir, files)
 	opts.OnFileComplete = func(_ string, _ int) { completions.Add(1) }
 	resolve := opts.FileInfo
-	opts.FileInfo = func(jobID string, fileIdx int) (FileInfo, error) {
+	opts.FileInfo = func(owner Owner, fileIdx int) (FileInfo, error) {
 		if closed.Load() {
-			return FileInfo{}, fmt.Errorf("resolve %s: %w", jobID, ErrJobClosed)
+			return FileInfo{}, fmt.Errorf("resolve %s: %w", owner.ID(), ErrJobClosed)
 		}
-		return resolve(jobID, fileIdx)
+		return resolve(owner, fileIdx)
 	}
 
 	a := startAssembler(t, opts)
@@ -255,7 +255,7 @@ func TestCancelJob_KeepFilesLeavesThemOnDisk(t *testing.T) {
 
 func TestCancelJob_BeforeStartReturnsError(t *testing.T) {
 	a := New(Options{
-		FileInfo: func(_ string, _ int) (FileInfo, error) { return FileInfo{}, nil },
+		FileInfo: func(_ Owner, _ int) (FileInfo, error) { return FileInfo{}, nil },
 	}, nil)
 	err := a.CancelJob(t.Context(), "job1", DeleteFiles)
 	if !errors.Is(err, ErrNotStarted) {
@@ -265,7 +265,7 @@ func TestCancelJob_BeforeStartReturnsError(t *testing.T) {
 
 func TestCancelJob_AfterStopReturnsError(t *testing.T) {
 	a := New(Options{
-		FileInfo: func(_ string, _ int) (FileInfo, error) { return FileInfo{}, nil },
+		FileInfo: func(_ Owner, _ int) (FileInfo, error) { return FileInfo{}, nil },
 	}, nil)
 	_ = a.Start(t.Context())
 	_ = a.Stop()
@@ -281,7 +281,7 @@ func TestCancelJob_ContextCancel(t *testing.T) {
 	entered := make(chan struct{}, 1)
 	opts := Options{
 		QueueSize: 1,
-		FileInfo: func(_ string, _ int) (FileInfo, error) {
+		FileInfo: func(_ Owner, _ int) (FileInfo, error) {
 			select {
 			case entered <- struct{}{}:
 			default:
@@ -441,7 +441,7 @@ func TestLateDuplicateForCompletedFile(t *testing.T) {
 
 func TestDoubleStartReturnsError(t *testing.T) {
 	a := New(Options{
-		FileInfo: func(_ string, _ int) (FileInfo, error) { return FileInfo{}, nil },
+		FileInfo: func(_ Owner, _ int) (FileInfo, error) { return FileInfo{}, nil },
 	}, nil)
 	if err := a.Start(t.Context()); err != nil {
 		t.Fatalf("first Start: %v", err)

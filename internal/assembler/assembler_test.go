@@ -39,8 +39,8 @@ func waitUntil(t *testing.T, cond func() bool, deadline time.Duration, msg strin
 // helper: build Options with a simple in-memory FileInfo resolver.
 func makeOpts(dir string, files map[string]FileInfo) Options {
 	return Options{
-		FileInfo: func(jobID string, fileIdx int) (FileInfo, error) {
-			key := fmt.Sprintf("%s:%d", jobID, fileIdx)
+		FileInfo: func(owner Owner, fileIdx int) (FileInfo, error) {
+			key := fmt.Sprintf("%s:%d", owner.ID(), fileIdx)
 			fi, ok := files[key]
 			if !ok {
 				return FileInfo{}, fmt.Errorf("no FileInfo for %s", key)
@@ -205,7 +205,7 @@ func TestFileInfoError(t *testing.T) {
 	// write without panicking and without firing OnFileComplete.
 	var completions atomic.Int32
 	opts := Options{
-		FileInfo: func(_ string, _ int) (FileInfo, error) {
+		FileInfo: func(_ Owner, _ int) (FileInfo, error) {
 			return FileInfo{}, fmt.Errorf("no such file")
 		},
 		OnFileComplete: func(_ string, _ int) { completions.Add(1) },
@@ -326,7 +326,7 @@ func TestStopDrainsChannel(t *testing.T) {
 
 func TestStopBeforeStartIsSafe(t *testing.T) {
 	a := New(Options{
-		FileInfo: func(_ string, _ int) (FileInfo, error) { return FileInfo{}, nil },
+		FileInfo: func(_ Owner, _ int) (FileInfo, error) { return FileInfo{}, nil },
 	}, nil)
 	if err := a.Stop(); err != nil {
 		t.Errorf("Stop before Start returned error: %v", err)
@@ -335,7 +335,7 @@ func TestStopBeforeStartIsSafe(t *testing.T) {
 
 func TestStopCalledTwiceIsSafe(t *testing.T) {
 	a := New(Options{
-		FileInfo: func(_ string, _ int) (FileInfo, error) { return FileInfo{}, nil },
+		FileInfo: func(_ Owner, _ int) (FileInfo, error) { return FileInfo{}, nil },
 	}, nil)
 	if err := a.Start(t.Context()); err != nil {
 		t.Fatalf("Start: %v", err)
@@ -350,7 +350,7 @@ func TestStopCalledTwiceIsSafe(t *testing.T) {
 
 func TestWriteArticleAfterStopReturnsErrStopped(t *testing.T) {
 	a := New(Options{
-		FileInfo: func(_ string, _ int) (FileInfo, error) { return FileInfo{}, nil },
+		FileInfo: func(_ Owner, _ int) (FileInfo, error) { return FileInfo{}, nil },
 	}, nil)
 	if err := a.Start(t.Context()); err != nil {
 		t.Fatalf("Start: %v", err)
@@ -366,7 +366,7 @@ func TestWriteArticleAfterStopReturnsErrStopped(t *testing.T) {
 
 func TestWriteArticleBeforeStartReturnsErrNotStarted(t *testing.T) {
 	a := New(Options{
-		FileInfo: func(_ string, _ int) (FileInfo, error) { return FileInfo{}, nil },
+		FileInfo: func(_ Owner, _ int) (FileInfo, error) { return FileInfo{}, nil },
 	}, nil)
 	err := writeArticle(t.Context(), a, WriteRequest{})
 	if !errors.Is(err, ErrNotStarted) {
@@ -406,7 +406,7 @@ func TestContextCancelDuringWriteArticleSend(t *testing.T) {
 	entered := make(chan struct{}, 1)
 	opts2 := Options{
 		QueueSize: 1,
-		FileInfo: func(_ string, _ int) (FileInfo, error) {
+		FileInfo: func(_ Owner, _ int) (FileInfo, error) {
 			// Signal that the worker has dequeued the request and entered
 			// FileInfo (queue now drained), then block until released.
 			select {
@@ -827,7 +827,7 @@ func TestAssembler_HelperMethods(t *testing.T) {
 		var callbackFired, untrusted int
 
 		opts := Options{
-			FileInfo: func(jobID string, fileIdx int) (FileInfo, error) {
+			FileInfo: func(Owner, int) (FileInfo, error) {
 				return FileInfo{Name: "test"}, nil
 			},
 			OnFileComplete: func(jobID string, fileIdx int) {
@@ -877,7 +877,7 @@ func TestAssembler_HelperMethods(t *testing.T) {
 		var completes, untrusted int
 		var fault *storagefault.Fault
 		opts := Options{
-			FileInfo: func(jobID string, fileIdx int) (FileInfo, error) {
+			FileInfo: func(Owner, int) (FileInfo, error) {
 				return FileInfo{Name: "test"}, nil
 			},
 			OnFileComplete:  func(string, int) { completes++ },
@@ -962,7 +962,7 @@ func TestAssembler_HelperMethods(t *testing.T) {
 
 func TestNew_QueueSizeDefault(t *testing.T) {
 	a := New(Options{
-		FileInfo:  func(_ string, _ int) (FileInfo, error) { return FileInfo{}, nil },
+		FileInfo:  func(Owner, int) (FileInfo, error) { return FileInfo{}, nil },
 		QueueSize: 0,
 	}, nil)
 	if cap(a.reqs) != defaultQueueSize {
@@ -990,13 +990,13 @@ func TestDiskCheckInterval(t *testing.T) {
 
 	// Wrap FileInfo to block on the first call.
 	origFileInfo := opts.FileInfo
-	opts.FileInfo = func(jobID string, fileIdx int) (FileInfo, error) {
+	opts.FileInfo = func(owner Owner, fileIdx int) (FileInfo, error) {
 		select {
 		case entered <- struct{}{}:
 		default:
 		}
 		<-blockCh
-		return origFileInfo(jobID, fileIdx)
+		return origFileInfo(owner, fileIdx)
 	}
 
 	a := New(opts, nil)
@@ -1122,8 +1122,8 @@ func TestCancelJob_BlocksUntilFileClosedAndRemoved(t *testing.T) {
 	defer release()
 
 	opts := Options{
-		FileInfo: func(jobID string, _ int) (FileInfo, error) {
-			switch jobID {
+		FileInfo: func(owner Owner, _ int) (FileInfo, error) {
+			switch owner.ID() {
 			case "target":
 				// TotalParts is never reached, so the file stays open.
 				return FileInfo{Dir: filepath.Dir(targetPath), Name: filepath.Base(targetPath), TotalParts: 100}, nil
@@ -1132,7 +1132,7 @@ func TestCancelJob_BlocksUntilFileClosedAndRemoved(t *testing.T) {
 				<-resolverRelease
 				return FileInfo{Dir: filepath.Dir(blockerPath), Name: filepath.Base(blockerPath), TotalParts: 1}, nil
 			default:
-				return FileInfo{}, fmt.Errorf("unexpected job %q", jobID)
+				return FileInfo{}, fmt.Errorf("unexpected job %q", owner.ID())
 			}
 		},
 	}
@@ -1424,7 +1424,7 @@ func TestWriteArticle_RefOverridesTheRequestsOwnIdentity(t *testing.T) {
 	write := func(artIdx int32, msgID string, off int64, data string) {
 		t.Helper()
 		err := a.WriteArticle(t.Context(), ArticleRef{
-			JobID: "real-job", FileIdx: 0, ArtIdx: artIdx, MessageID: msgID,
+			Owner: ownerFor("real-job"), FileIdx: 0, ArtIdx: artIdx, MessageID: msgID,
 		}, WriteRequest{
 			JobID: "ghost-job", FileIdx: 9, ArtIdx: 99, MessageID: "ghost@id",
 			Offset: off, Data: []byte(data),
@@ -1500,7 +1500,7 @@ func TestWriteArticle_TheRefsMessageIDIsWhatTheWorkerReports(t *testing.T) {
 		{1, "arrival@id"},
 	} {
 		if err := a.WriteArticle(t.Context(), ArticleRef{
-			JobID: "real-job", FileIdx: 0, ArtIdx: art.artIdx, MessageID: art.msgID,
+			Owner: ownerFor("real-job"), FileIdx: 0, ArtIdx: art.artIdx, MessageID: art.msgID,
 		}, WriteRequest{
 			JobID: "ghost-job", FileIdx: 9, ArtIdx: 99, MessageID: "ghost@id",
 			Offset: 0, Data: []byte("AAAA"),
@@ -1571,7 +1571,7 @@ func TestWriteArticle_CannotForgeAControlMessage(t *testing.T) {
 			real := func(artIdx int32, msgID string, off int64, data string) {
 				t.Helper()
 				if err := a.WriteArticle(t.Context(), ArticleRef{
-					JobID: "real-job", FileIdx: 0, ArtIdx: artIdx, MessageID: msgID,
+					Owner: ownerFor("real-job"), FileIdx: 0, ArtIdx: artIdx, MessageID: msgID,
 				}, WriteRequest{Offset: off, Data: []byte(data)}); err != nil {
 					t.Fatalf("WriteArticle %s: %v", msgID, err)
 				}
@@ -1579,11 +1579,11 @@ func TestWriteArticle_CannotForgeAControlMessage(t *testing.T) {
 
 			real(0, "real-a@id", 0, "AAAA")
 
-			// An empty JobID and a sentinel FileIdx, with the job to attack
-			// named in MessageID exactly as a real control message names it:
-			// this is precisely what the worker used to accept as proof.
+			// An owner with an empty ID and a sentinel FileIdx, with the job to
+			// attack named in MessageID exactly as a real control message names
+			// it: this is precisely what the worker used to accept as proof.
 			if err := a.WriteArticle(t.Context(), ArticleRef{
-				JobID: "", FileIdx: tc.fileIdx, ArtIdx: 0, MessageID: "real-job",
+				Owner: ownerFor(""), FileIdx: tc.fileIdx, ArtIdx: 0, MessageID: "real-job",
 			}, WriteRequest{Offset: 0, Data: []byte("XXXX")}); err != nil {
 				t.Fatalf("forged WriteArticle: %v", err)
 			}

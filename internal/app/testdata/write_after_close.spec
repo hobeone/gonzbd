@@ -3,33 +3,18 @@ run TestWriteArticle_AfterTheJobClosedCreatesNoFile$
 
 # #1053's acceptance: a write that reaches the assembler worker after the job
 # left the dispatcher or was handed off creates no file. The resolver's two
-# checks are what stand in its way, on a cache hit and on the miss that
-# follows a RemoveJob's or enqueuePostProc's forgetJob.
-
-[a miss for a job the dispatcher no longer holds is a plain miss]
-file internal/app/pipeline.go
---- anchor
-		cur, ok := p.dispatcher.Job(jobID)
-		if !ok {
---- replace
-		cur, _ := p.dispatcher.Job(jobID)
-		if false {
---- end
-
-[a miss is judged without the held instance]
-file internal/app/pipeline.go
---- anchor
-		j = cur
---- replace
-		_ = cur
---- end
+# questions, asked of the owner the write carries, are what stand in its way,
+# whether or not the cache still holds the file (a RemoveJob's or
+# enqueuePostProc's forgetJob may have dropped it).
 
 [the resolver ignores the dispatcher]
 file internal/app/pipeline.go
 --- anchor
-	} else if !p.holds(j) {
+	if !p.holds(j) {
+		return assembler.FileInfo{}, fmt.Errorf("resolve %s[%d]: instance left the dispatcher: %w", j.ID(), fileIdx, assembler.ErrJobClosed)
 --- replace
-	} else if false {
+	if false {
+		return assembler.FileInfo{}, fmt.Errorf("resolve %s[%d]: instance left the dispatcher: %w", j.ID(), fileIdx, assembler.ErrJobClosed)
 --- end
 
 [the resolver ignores the hand-over]

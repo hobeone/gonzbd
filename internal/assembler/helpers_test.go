@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"sync"
 	"testing"
 )
 
@@ -42,11 +43,28 @@ import (
 // subject is the assembler's behaviour, not its parameter list.
 func writeArticle(ctx context.Context, a *Assembler, req WriteRequest) error {
 	return a.WriteArticle(ctx, ArticleRef{
-		JobID:     req.JobID,
+		Owner:     ownerFor(req.JobID),
 		FileIdx:   req.FileIdx,
 		ArtIdx:    req.ArtIdx,
 		MessageID: req.MessageID,
 	}, req)
+}
+
+// testOwner is the Owner the package's fixtures write under. Two values with
+// the same ID are two instances, as an attempt and its retry are.
+type testOwner struct{ id string }
+
+func (o *testOwner) ID() string { return o.id }
+
+// owners memoises one testOwner per ID for writeArticle, so a fixture that
+// names its job by string writes every article under one instance. A test
+// about two instances of one ID builds its own *testOwner values and passes
+// them to WriteArticle directly.
+var owners sync.Map
+
+func ownerFor(jobID string) *testOwner {
+	o, _ := owners.LoadOrStore(jobID, &testOwner{id: jobID})
+	return o.(*testOwner)
 }
 
 // testArtIdx narrows a loop counter to the ArtIdx field's type.
@@ -369,7 +387,7 @@ func TestReleaseBuffer_FallsBackToTheDecoderPool(t *testing.T) {
 	// non-nil hook, so the nil path above is reachable only from tests that
 	// construct the struct directly. Without this, New() could stop setting
 	// putBuffer and nothing would notice.
-	prod := New(Options{FileInfo: func(string, int) (FileInfo, error) { return FileInfo{}, nil }}, nil)
+	prod := New(Options{FileInfo: func(Owner, int) (FileInfo, error) { return FileInfo{}, nil }}, nil)
 	if prod.putBuffer == nil {
 		t.Error("New() left putBuffer nil; production would take the fallback path, " +
 			"which no test can observe")

@@ -21,11 +21,11 @@ func TestOpenTargetFile_ClosedJobDropsTheArticle(t *testing.T) {
 	var closed atomic.Bool
 	opts := makeOpts(dir, files)
 	inner := opts.FileInfo
-	opts.FileInfo = func(jobID string, fileIdx int) (FileInfo, error) {
+	opts.FileInfo = func(owner Owner, fileIdx int) (FileInfo, error) {
 		if closed.Load() {
-			return FileInfo{}, fmt.Errorf("resolve %s: %w", jobID, ErrJobClosed)
+			return FileInfo{}, fmt.Errorf("resolve %s: %w", owner.ID(), ErrJobClosed)
 		}
-		return inner(jobID, fileIdx)
+		return inner(owner, fileIdx)
 	}
 	var faults, unwritten atomic.Int32
 	opts.OnWriteFault = func(string, int, *storagefault.Fault) { faults.Add(1) }

@@ -145,10 +145,10 @@ single worker goroutine (`run`).
   (`docs/nntp-downloader-contract.md` invariant 6/7) is what drops that one
   before any network I/O. An article already in flight (past that check,
   mid-fetch) at the hand-off is refused at the assembler's open: the
-  pipeline's resolver answers `assembler.ErrJobClosed` for an admitted
-  instance, and the admission precedes `CloseJobHandles`, so every write the
-  worker processes after the close arm sees it, including one that arrives
-  after `enqueuePostProc` forgot the job's cached file info.
+  pipeline's resolver answers `assembler.ErrJobClosed` when the instance the
+  write carries is admitted, and the admission precedes `CloseJobHandles`, so
+  every write the worker processes after the close arm sees it, including one
+  that arrives after `enqueuePostProc` forgot the job's cached file info.
   `TestFail_AJobInPostProcessingIsNotDispatched`,
   `TestWriteArticle_AfterTheJobClosedCreatesNoFile`, and (for the per-request
   check itself) `TestFetchArticle_HandedOffJobIsNotFetched` are the pins. A downloader

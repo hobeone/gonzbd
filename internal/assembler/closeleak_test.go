@@ -14,8 +14,8 @@ import (
 // work for a job that is going away. That holds under both dispositions —
 // keeping a removed job's bytes does not make its articles wanted again.
 //
-// "Already left the queue" rests on RemoveJob being the only production caller
-// of CancelJob; see closeCancelledFile.
+// "Already left the dispatcher" rests, for this arm, on RemoveJob being the
+// only production caller of CancelJob; see closeCancelledFile.
 
 func cancelWithoutRouting(t *testing.T, name string, disposition FileDisposition) (path string, open map[fileKey]*openFile, key fileKey) {
 	t.Helper()

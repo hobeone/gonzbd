@@ -974,17 +974,20 @@ an article the fault rolled back is never fetched again, and the run's
 **A job instance whose handles `CloseJobHandles` closed is not downloaded
 again.** The downloader skips an admitted job (`downloader.Options.HandedOff`),
 and an article still in flight is refused at the assembler's open: the
-pipeline's resolver (`resolveForWrite`) answers `assembler.ErrJobClosed` for an
-instance that is admitted or is no longer the dispatcher's, and the worker
-drops the article without opening a file. The admission precedes the close
-message and the dispatcher removal precedes the cancel message, so a write
-processed after either arm sees the flipped state; a write that arrives after
-the job's cache entries were also forgotten is judged the same way by the
-instance the dispatcher holds under the ID
+pipeline's resolver (`resolveForWrite`) answers `assembler.ErrJobClosed` when
+the instance the write carries (`assembler.ArticleRef.Owner`, the job the
+fetch was dispatched for) is admitted or is no longer the dispatcher's, and
+the worker drops the article without opening a file. The admission precedes
+the close message and the dispatcher removal precedes the cancel message, so
+a write processed after either arm sees the flipped state, whether or not the
+job's cache entries have since been forgotten
 (`TestWriteArticle_AfterTheJobClosedCreatesNoFile`). A retry under the same
-ID is a new instance, so its writes resolve, and a stale write of the earlier
-instance is refused because the cached entry names the instance that
-registered it (`TestResolveFileInfo_RefusesAnEarlierInstance`).
+ID is a new instance and a different owner, so its writes resolve, and a
+write of the earlier instance is refused by the same two questions even after
+the retry has registered and opened the same file: the worker's open handle
+records the owner that opened it and sends another owner's write back through
+the resolver (`TestResolveFileInfo_RefusesAnEarlierInstance`,
+`TestWriteArticle_OfAnEarlierAttemptNeverReachesTheRetrysFile`).
 `RetryHistoryJob`'s `ForgetJob` clears the per-file `completed` entries of an
 attempt whose close-handles message never reached the worker, and a retry
 whose `ForgetJob` fails is aborted.

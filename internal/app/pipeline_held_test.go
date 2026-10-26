@@ -53,7 +53,7 @@ func TestPipeline_GivesBackTheBudgetOnEveryPath(t *testing.T) {
 	}
 	unstarted := func() *assembler.Assembler {
 		return assembler.New(assembler.Options{
-			FileInfo: func(string, int) (assembler.FileInfo, error) { return assembler.FileInfo{}, nil },
+			FileInfo: func(assembler.Owner, int) (assembler.FileInfo, error) { return assembler.FileInfo{}, nil },
 		}, slog.New(slog.DiscardHandler))
 	}
 
@@ -105,7 +105,7 @@ func TestPipeline_GivesBackTheBudgetOnEveryPath(t *testing.T) {
 		budget := heldbytes.New(1 << 20)
 		dir := t.TempDir()
 		a := assembler.New(assembler.Options{
-			FileInfo: func(string, int) (assembler.FileInfo, error) {
+			FileInfo: func(assembler.Owner, int) (assembler.FileInfo, error) {
 				return assembler.FileInfo{Dir: dir, Name: "f.bin", TotalParts: 2}, nil
 			},
 		}, slog.New(slog.DiscardHandler))
@@ -137,7 +137,7 @@ func TestPipeline_GivesBackTheBudgetOfAResultDroppedAtShutdown(t *testing.T) {
 		dispatcher:  app.Dispatcher(),
 		downloadDir: t.TempDir(),
 		assembler: assembler.New(assembler.Options{
-			FileInfo: func(string, int) (assembler.FileInfo, error) { return assembler.FileInfo{}, nil },
+			FileInfo: func(assembler.Owner, int) (assembler.FileInfo, error) { return assembler.FileInfo{}, nil },
 		}, slog.New(slog.DiscardHandler)),
 		fileInfo:    make(map[fileKey]fileEntry),
 		numWorkers:  1,

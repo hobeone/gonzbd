@@ -23,7 +23,7 @@ func TestRenameJob_RefusedAfterAFailedFirstArticle(t *testing.T) {
 	disp, j := helperJob(t, a, "old", 2, 2)
 	p := helperPipeline(t, disp)
 	p.downloadDir = a.config.Snapshot().General.DownloadDir
-	p.assembler = assembler.New(assembler.Options{FileInfo: p.resolveFileInfo}, nil)
+	p.assembler = assembler.New(assembler.Options{FileInfo: p.resolveForWrite}, nil)
 	if err := p.assembler.Start(t.Context()); err != nil {
 		t.Fatalf("assembler.Start: %v", err)
 	}
