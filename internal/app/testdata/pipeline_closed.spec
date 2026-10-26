@@ -1,5 +1,5 @@
 pkg ./internal/app/
-run Test(ResolveFileInfo_RefusesAJobThatLeftTheDispatcher|RegisterFile_ReplacesAnEarlierInstancesEntry|ResolveFileInfo_RefusesAHandedOffJob|ResolveFileInfo_RefusesAnEarlierInstance|RegisterFile_RefusesOnceTheJobLeftTheDispatcher|HandleSuccessResult_DropsAClosedJobsArticleWithoutReturningIt|New_WiresTheHandOverIntoTheResolver)$
+run Test(ResolveFileInfo_RefusesAJobThatLeftTheDispatcher|RegisterFile_ReplacesAnEarlierInstancesEntry|ResolveFileInfo_RefusesAHandedOffJob|ResolveFileInfo_RefusesAnEarlierInstance|ResolveForWrite_RefusesANilOwnerAsAnError|RegisterFile_RefusesOnceTheJobLeftTheDispatcher|HandleSuccessResult_DropsAClosedJobsArticleWithoutReturningIt|New_WiresTheHandOverIntoTheResolver)$
 
 # resolveForWrite is the assembler's gate on a closed job (#1053); the
 # register guard keeps a late article from re-growing fileInfo; the handler
@@ -14,6 +14,14 @@ file internal/app/pipeline.go
 --- replace
 	if false {
 		return assembler.FileInfo{}, fmt.Errorf("resolve %s[%d]: instance left the dispatcher: %w", j.ID(), fileIdx, assembler.ErrJobClosed)
+--- end
+
+[the non-job branch dereferences the owner it is refusing]
+file internal/app/pipeline.go
+--- anchor
+		return assembler.FileInfo{}, fmt.Errorf("resolve file %d: owner %T is not a job instance", fileIdx, owner)
+--- replace
+		return assembler.FileInfo{}, fmt.Errorf("resolve %s[%d]: owner %T is not a job instance", owner.ID(), fileIdx, owner)
 --- end
 
 [the resolver ignores the hand-over]

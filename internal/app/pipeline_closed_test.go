@@ -76,6 +76,22 @@ func TestResolveFileInfo_RefusesAnEarlierInstance(t *testing.T) {
 	}
 }
 
+// TestResolveForWrite_RefusesANilOwnerAsAnError: the owner the write carries
+// is an interface, and a nil one must come back as the plain error the
+// non-job branch promises, not a nil dereference on the worker goroutine.
+func TestResolveForWrite_RefusesANilOwnerAsAnError(t *testing.T) {
+	t.Parallel()
+	application := newTestApplication(t)
+	p := helperPipeline(t, application.Dispatcher())
+	_, err := p.resolveForWrite(nil, 0)
+	if err == nil {
+		t.Fatal("resolveForWrite(nil, 0) = nil error, want the non-job owner error")
+	}
+	if errors.Is(err, assembler.ErrJobClosed) {
+		t.Fatalf("resolveForWrite(nil, 0) = %v, want a plain error: ErrJobClosed would drop the article silently", err)
+	}
+}
+
 // TestRegisterFile_RefusesOnceTheJobLeftTheDispatcher drives the window the
 // issue describes: the handler's instance check has passed and the file has
 // been counted, then the job leaves the dispatcher before the cache write.

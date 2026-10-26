@@ -726,10 +726,12 @@ func (p *pipeline) registerFileAttempt(j *job.Job, m *job.Manifest, fileIdx int)
 	return nil
 }
 
-// resolveFileInfo is the FileInfo resolver handed to the assembler. It
-// returns the cached entry for (jobID, fileIdx). The pipeline populates
-// the entry before enqueuing the corresponding WriteArticle, so the
-// assembler worker always sees it by the time it calls this.
+// resolveFileInfo is the plain cache lookup for (jobID, fileIdx). Its
+// production callers are the completion paths, which resolve a finished
+// file of an admitted job (`git grep -n 'pipeline\.resolveFileInfo(' --
+// '*.go' ':!*_test.go'` returns 2 lines, directunpack_orchestrator and
+// archive_peek). It asks nothing about the job; the resolver handed to the
+// assembler is resolveForWrite below.
 func (p *pipeline) resolveFileInfo(jobID string, fileIdx int) (assembler.FileInfo, error) {
 	entry, err := p.lookupFile(jobID, fileIdx)
 	return entry.info, err
@@ -752,8 +754,8 @@ func (p *pipeline) lookupFile(jobID string, fileIdx int) (fileEntry, error) {
 // assembler.ErrJobClosed, and the worker drops the article, when the
 // instance the write carries is no longer the dispatcher's (removed, or
 // replaced by a retry) or has been admitted to post-processing. An owner
-// that is not a *job.Job is a plain error, which the worker reports as a
-// resolve fault.
+// that is not a *job.Job, a nil one included, is a plain error, which the
+// worker reports as a resolve fault.
 //
 // This is the gate on a late article: dispatch stops at the hand-over, but a
 // fetch already in flight still reaches WriteArticle, and openTargetFile
@@ -785,7 +787,7 @@ func (p *pipeline) lookupFile(jobID string, fileIdx int) (fileEntry, error) {
 func (p *pipeline) resolveForWrite(owner assembler.Owner, fileIdx int) (assembler.FileInfo, error) {
 	j, ok := owner.(*job.Job)
 	if !ok {
-		return assembler.FileInfo{}, fmt.Errorf("resolve %s[%d]: owner %T is not a job instance", owner.ID(), fileIdx, owner)
+		return assembler.FileInfo{}, fmt.Errorf("resolve file %d: owner %T is not a job instance", fileIdx, owner)
 	}
 	if !p.holds(j) {
 		return assembler.FileInfo{}, fmt.Errorf("resolve %s[%d]: instance left the dispatcher: %w", j.ID(), fileIdx, assembler.ErrJobClosed)

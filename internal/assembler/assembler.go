@@ -1261,25 +1261,32 @@ func (a *Assembler) syncAndClose(f *openFile) error {
 	return first
 }
 
-// closeCancelledFile releases one open file of a cancelled job, and disposes
-// of its bytes according to disposition. Runs on the worker goroutine, which
-// owns every handle (X1).
+// closeCancelledFile releases one open file whose owner has left the
+// dispatcher, and disposes of its bytes according to disposition. Runs on the
+// worker goroutine, which owns every handle (X1). It has two production
+// callers (`git grep -n 'a\.closeCancelledFile(' -- '*.go' ':!*_test.go'`
+// returns 2 lines): the CancelJob arm, for every handle of the ID, and the
+// owner mismatch in processRequest, for a predecessor's handle found open
+// under a key the resolver has just answered for another owner.
 //
 // It is the cancel counterpart to syncAndClose, and deliberately not a call
 // to it. syncAndClose calls sync, which CloseJobHandles needs because par2 and
-// unrar are about to read the file. Nothing reads a removed job's files, and
-// an fsync here would stall ingest for every other job on the one worker
+// unrar are about to read the file. Nothing reads a departed owner's files,
+// and an fsync here would stall ingest for every other job on the one worker
 // goroutine in exchange for nothing.
 //
 // Nothing is routed: no OnFileUntrusted, no OnArticlesUnwritten, no
-// OnArticleRejected. The job has already left the
-// queue, so returning its articles to Outstanding would re-dispatch work for a
-// job that is going away, under either disposition (closeleak_test.go).
+// OnArticleRejected. The handle's owner has already left the dispatcher, so
+// returning its articles to Outstanding would re-dispatch work for an
+// instance that is going away, under either disposition (closeleak_test.go).
 //
-// "Already left the queue" is exact rather than hedging: RemoveJob is the only
-// production caller of this CancelJob — `git grep -n 'assembler\.CancelJob(' -- '*.go' ':!*_test.go'`
-// returns 1 line, in Application.RemoveJob — and since #376 it removes the job
-// from the queue BEFORE calling in, returning early if that fails.
+// "Already left the dispatcher" is exact rather than hedging. For the
+// CancelJob arm, RemoveJob is the only production caller of CancelJob —
+// `git grep -n 'assembler\.CancelJob(' -- '*.go' ':!*_test.go'` returns 1
+// line, in Application.RemoveJob — and since #376 it removes the job from
+// the queue BEFORE calling in, returning early if that fails. For the
+// eviction, Options.FileInfo accepted a different owner under the handle's
+// ID, and by its contract it accepts only an owner that still holds the ID.
 //
 // The caller keeps the bookkeeping: the open-map delete is unconditional, and
 // is not this function's business.
