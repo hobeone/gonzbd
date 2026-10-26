@@ -77,6 +77,22 @@ func TestHandleFileUntrusted_LeavesADepartedInstancesRowsAlone(t *testing.T) {
 	}
 }
 
+// stringOwner is an assembler.Owner no production path produces: refFor
+// supplies a *job.Job, so instanceOf refuses anything else loudly.
+type stringOwner string
+
+func (s stringOwner) ID() string { return string(s) }
+
+func TestInstanceOf_RefusesAnOwnerThatIsNotAJob(t *testing.T) {
+	t.Parallel()
+	defer func() {
+		if recover() == nil {
+			t.Fatal("instanceOf returned for an owner that is not a *job.Job, want a panic")
+		}
+	}()
+	instanceOf(stringOwner("not-a-job"))
+}
+
 func TestCompleteFinalizedFile_RefusesADepartedInstance(t *testing.T) {
 	t.Parallel()
 	application := newTestApplication(t)
