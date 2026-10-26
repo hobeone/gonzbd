@@ -90,6 +90,22 @@ func TestHandleFileUntrusted_LeavesADepartedInstancesRowsAlone(t *testing.T) {
 	}
 }
 
+func TestHandleArticlesUnwritten_ClearsOnTheWritingInstance(t *testing.T) {
+	t.Parallel()
+	application := newTestApplication(t)
+	first, second := retriedUnderOneID(t, application, "feedface00105607")
+	emit(t, first, second)
+
+	application.handleArticlesUnwritten(first, 0, []int32{0})
+
+	if articleInFlight(t, first, 0) {
+		t.Error("the attempt's rolled-back article is still Emitted")
+	}
+	if !articleInFlight(t, second, 0) {
+		t.Error("the retry's article was returned to Outstanding by the earlier attempt's roll-back")
+	}
+}
+
 // stringOwner is an assembler.Owner no production path produces: refFor
 // supplies a *job.Job, so instanceOf refuses anything else loudly.
 type stringOwner string

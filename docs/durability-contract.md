@@ -1530,7 +1530,8 @@ are bounded by the flush cadence and by file size, as below.
   handle — and each handler acts on that instance, never on whatever the
   dispatcher holds under its ID when the report arrives: an attempt and its
   retry share the ID, and a report of the earlier attempt must not land on
-  the retry (`callback_owner.spec`).
+  the retry (`callback_owner.spec`; `OnWriteFault` in
+  `writefault_instance.spec`).
 - **Write error (`pwrite` failure)** — the article is *not* Done and *not*
   failed. Two things then have to happen, and they travel on **separate**
   callbacks:

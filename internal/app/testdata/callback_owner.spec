@@ -1,5 +1,5 @@
 pkg ./internal/app/
-run Test(HandleArticleWritten_RecordsOnTheWritingInstance|HandleArticleRejected_FailsOnTheWritingInstance|HandleFileUntrusted_LeavesADepartedInstancesRowsAlone|CompleteFinalizedFile_RefusesADepartedInstance|MaybeStart_IneligibleJobsCreateNothing)$
+run Test(HandleArticleWritten_RecordsOnTheWritingInstance|HandleArticleRejected_FailsOnTheWritingInstance|HandleArticlesUnwritten_ClearsOnTheWritingInstance|HandleFileUntrusted_LeavesADepartedInstancesRowsAlone|CompleteFinalizedFile_RefusesADepartedInstance|MaybeStart_IneligibleJobsCreateNothing)$
 
 # Each per-job assembler callback names the instance it reports on, and each handler
 # acts on that instance (#1056). Each mutation here puts the by-ID lookup back
@@ -7,6 +7,16 @@ run Test(HandleArticleWritten_RecordsOnTheWritingInstance|HandleArticleRejected_
 # the retry registered under its ID; the two registered guards are neutered
 # separately, since each protects ID-keyed state the departed instance must
 # not touch, and maybeStart's RowJob is turned back into a Row read by ID.
+
+[handleArticlesUnwritten clears the bits of whatever holds the ID]
+file internal/app/durability.go
+--- anchor
+func (app *Application) handleArticlesUnwritten(owner assembler.Owner, fileIdx int, artIdxs []int32) {
+	j := instanceOf(owner)
+--- replace
+func (app *Application) handleArticlesUnwritten(owner assembler.Owner, fileIdx int, artIdxs []int32) {
+	j, _ := app.dispatcher.Job(owner.ID())
+--- end
 
 [maybeStart feeds the unpacker of whatever holds the ID]
 file internal/app/directunpack_orchestrator.go
