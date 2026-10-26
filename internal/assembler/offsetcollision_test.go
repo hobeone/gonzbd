@@ -40,10 +40,10 @@ type collisionFixture struct {
 func newCollisionFixture(t *testing.T) *collisionFixture {
 	t.Helper()
 	c := &collisionFixture{a: newHelperAssembler()}
-	c.a.opts.OnArticleRejected = func(_ string, _ int, artIdx int32, _ string, _ int64) {
+	c.a.opts.OnArticleRejected = func(_ Owner, _ int, artIdx int32, _ string, _ int64) {
 		c.rejected = append(c.rejected, artIdx)
 	}
-	c.a.opts.OnArticlesUnwritten = func(_ string, _ int, arts []int32) {
+	c.a.opts.OnArticlesUnwritten = func(_ Owner, _ int, arts []int32) {
 		c.unwritten = append(c.unwritten, arts...)
 	}
 	c.f = newHelperFile(t, t.TempDir(), "collide.dat", 1<<20)
@@ -56,7 +56,7 @@ func newCollisionFixture(t *testing.T) *collisionFixture {
 func (c *collisionFixture) accept(artIdx int32, msgID string, off int64, data []byte) bool {
 	before := c.f.w.parts()
 	c.a.handleSuccessArticle(c.f, WriteRequest{
-		JobID: "job", FileIdx: 0, ArtIdx: artIdx, MessageID: msgID,
+		Owner: ownerFor("job"), JobID: "job", FileIdx: 0, ArtIdx: artIdx, MessageID: msgID,
 		Offset: off, Data: data,
 	})
 	return c.f.w.parts() > before
@@ -194,10 +194,10 @@ func TestCollision_RetryAfterWriteFaultIsAccepted(t *testing.T) {
 func TestFileWriter_RangeOwnersStayAdmitted(t *testing.T) {
 	a := newHelperAssembler()
 	var rejected, unwritten []int32
-	a.opts.OnArticleRejected = func(_ string, _ int, artIdx int32, _ string, _ int64) {
+	a.opts.OnArticleRejected = func(_ Owner, _ int, artIdx int32, _ string, _ int64) {
 		rejected = append(rejected, artIdx)
 	}
-	a.opts.OnArticlesUnwritten = func(_ string, _ int, arts []int32) {
+	a.opts.OnArticlesUnwritten = func(_ Owner, _ int, arts []int32) {
 		unwritten = append(unwritten, arts...)
 	}
 	f := newHelperFile(t, t.TempDir(), "owners.dat", 1<<20)
@@ -211,7 +211,7 @@ func TestFileWriter_RangeOwnersStayAdmitted(t *testing.T) {
 			data = []byte(payload)
 		}
 		a.processRequest(WriteRequest{
-			JobID: "job", FileIdx: 0, ArtIdx: artIdx, MessageID: "m@x",
+			Owner: ownerFor("job"), JobID: "job", FileIdx: 0, ArtIdx: artIdx, MessageID: "m@x",
 			Offset: off, Data: data, FatalErr: fatal,
 		}, open, completed)
 	}

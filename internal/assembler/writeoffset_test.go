@@ -80,14 +80,14 @@ func TestWriteOffset_OutOfRangeRejected(t *testing.T) {
 
 			opts := makeOpts(dir, files)
 			var written []int32
-			opts.OnArticleWritten = func(_ string, _ int, artIdx int32, _, _ int64, _ uint32) {
+			opts.OnArticleWritten = func(_ Owner, _ int, artIdx int32, _, _ int64, _ uint32) {
 				written = append(written, artIdx)
 			}
 			a := startAssembler(t, opts)
 
 			const msgID = "under-test"
 			_ = writeArticle(t.Context(), a, WriteRequest{
-				JobID: "job1", FileIdx: 0, ArtIdx: 0,
+				Owner: ownerFor("job1"), JobID: "job1", FileIdx: 0, ArtIdx: 0,
 				Offset:    tc.offset,
 				Data:      tc.data,
 				MessageID: msgID,

@@ -42,10 +42,10 @@ func TestOpenTargetFile_ResolvesWithTheRefsOwner(t *testing.T) {
 			got = o
 			return FileInfo{Dir: dir, Name: "f", TotalParts: 1}, nil
 		},
-		OnArticleWritten: func(jobID string, _ int, _ int32, _, _ int64, _ uint32) {
-			gotJobID = jobID
+		OnArticleWritten: func(o Owner, _ int, _ int32, _, _ int64, _ uint32) {
+			gotJobID = o.ID()
 		},
-		OnFileComplete: func(string, int) { close(done) },
+		OnFileComplete: func(Owner, int) { close(done) },
 	})
 	if err := a.WriteArticle(t.Context(),
 		ArticleRef{Owner: owner, FileIdx: 0, ArtIdx: 0, MessageID: "m@x"},
@@ -79,8 +79,8 @@ func TestProcessRequest_RefusesAnotherOwnersWriteOnAnOpenHandle(t *testing.T) {
 			}
 			return FileInfo{Dir: dir, Name: "f", TotalParts: 2}, nil
 		},
-		OnArticleWritten: func(string, int, int32, int64, int64, uint32) { written.Add(1) },
-		OnFileComplete:   func(string, int) { close(done) },
+		OnArticleWritten: func(Owner, int, int32, int64, int64, uint32) { written.Add(1) },
+		OnFileComplete:   func(Owner, int) { close(done) },
 	})
 	write := func(o Owner, artIdx int32, off int64, data string) {
 		t.Helper()
@@ -107,6 +107,50 @@ func TestProcessRequest_RefusesAnotherOwnersWriteOnAnOpenHandle(t *testing.T) {
 	}
 }
 
+// Every report the worker makes names the owner whose request it is reporting
+// on, so a caller acts on the instance that wrote, not on whatever holds the
+// ID now: a1's write and completion carry a1, and a2's straggler for the
+// completed key is rejected under a2.
+func TestCallbacks_CarryTheWritingOwner(t *testing.T) {
+	dir := t.TempDir()
+	a1, a2 := &testOwner{id: "job-1"}, &testOwner{id: "job-1"}
+	var written, completed, rejected Owner
+	done, rejectedCh := make(chan struct{}), make(chan struct{})
+	a := startAssembler(t, Options{
+		FileInfo: func(Owner, int) (FileInfo, error) {
+			return FileInfo{Dir: dir, Name: "f", TotalParts: 1}, nil
+		},
+		OnArticleWritten:  func(o Owner, _ int, _ int32, _, _ int64, _ uint32) { written = o },
+		OnFileComplete:    func(o Owner, _ int) { completed = o; close(done) },
+		OnArticleRejected: func(o Owner, _ int, _ int32, _ string, _ int64) { rejected = o; close(rejectedCh) },
+	})
+	if err := a.WriteArticle(t.Context(),
+		ArticleRef{Owner: a1, FileIdx: 0, ArtIdx: 0, MessageID: "0@x"},
+		WriteRequest{Offset: 0, Data: []byte("AAAA")}); err != nil {
+		t.Fatalf("WriteArticle a1: %v", err)
+	}
+	<-done
+	if err := a.WriteArticle(t.Context(),
+		ArticleRef{Owner: a2, FileIdx: 0, ArtIdx: 0, MessageID: "0@y"},
+		WriteRequest{Offset: 0, Data: []byte("BBBB")}); err != nil {
+		t.Fatalf("WriteArticle a2: %v", err)
+	}
+	select {
+	case <-rejectedCh:
+	case <-time.After(5 * time.Second):
+		t.Fatal("a2's straggler for the completed file was never reported rejected")
+	}
+	if written != a1 {
+		t.Errorf("OnArticleWritten carried %v, want a1", written)
+	}
+	if completed != a1 {
+		t.Errorf("OnFileComplete carried %v, want a1", completed)
+	}
+	if rejected != a2 {
+		t.Errorf("OnArticleRejected carried %v, want a2, the instance whose straggler it was", rejected)
+	}
+}
+
 // When the resolver accepts the other owner, the handle under the key belongs
 // to an instance that has left (a CancelJob that timed out leaves handles
 // open): it is closed with its file kept, and the request opens its own.
@@ -123,7 +167,7 @@ func TestProcessRequest_EvictsADepartedOwnersHandle(t *testing.T) {
 			}
 			return FileInfo{Dir: dir, Name: "one", TotalParts: 2}, nil
 		},
-		OnFileComplete: func(string, int) { close(done) },
+		OnFileComplete: func(Owner, int) { close(done) },
 	})
 	if err := a.WriteArticle(t.Context(),
 		ArticleRef{Owner: a1, FileIdx: 0, ArtIdx: 0, MessageID: "0@x"},

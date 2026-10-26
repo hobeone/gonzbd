@@ -26,15 +26,15 @@ file internal/app/app.go
 	// still takes the mark, behind a settle, peek and feed that ran.
 	if !fc.Resumed {
 		if !j.Resident() {
-			err := fmt.Errorf("job %s: %w", fc.JobID, job.ErrNotResident)
-			app.logQueueWriteFailure("mark file complete", fc.JobID, fc.FileIdx, err)
+			err := fmt.Errorf("job %s: %w", fc.Job.ID(), job.ErrNotResident)
+			app.logQueueWriteFailure("mark file complete", fc.Job.ID(), fc.FileIdx, err)
 			return err
 		}
 		if app.residentCheckedHook != nil {
 			app.residentCheckedHook(j)
 		}
 		if err := j.MarkFileComplete(fc.FileIdx); err != nil {
-			app.logQueueWriteFailure("mark file complete", fc.JobID, fc.FileIdx, err)
+			app.logQueueWriteFailure("mark file complete", fc.Job.ID(), fc.FileIdx, err)
 			return err
 		}
 		app.markFileDirty(j, fc.FileIdx)
@@ -42,21 +42,21 @@ file internal/app/app.go
 --- replace
 	if !fc.Resumed {
 		if !j.Resident() {
-			err := fmt.Errorf("job %s: %w", fc.JobID, job.ErrNotResident)
-			app.logQueueWriteFailure("mark file complete", fc.JobID, fc.FileIdx, err)
+			err := fmt.Errorf("job %s: %w", fc.Job.ID(), job.ErrNotResident)
+			app.logQueueWriteFailure("mark file complete", fc.Job.ID(), fc.FileIdx, err)
 			return err
 		}
 		if app.residentCheckedHook != nil {
 			app.residentCheckedHook(j)
 		}
 		if err := j.MarkFileComplete(fc.FileIdx); err != nil {
-			app.logQueueWriteFailure("mark file complete", fc.JobID, fc.FileIdx, err)
+			app.logQueueWriteFailure("mark file complete", fc.Job.ID(), fc.FileIdx, err)
 			return err
 		}
 		app.markFileDirty(j, fc.FileIdx)
 	}
 	if reported, _ := app.reportDownloadComplete(j, app.dispatcher); reported && app.downloadReportedHook != nil {
-		app.downloadReportedHook(fc.JobID)
+		app.downloadReportedHook(fc.Job.ID())
 	}
 	if pp := app.config.GetPostProc(); pp.DirectUnpack && pp.EnableUnrar && !fc.Resumed {
 		app.duOrch.maybeStart(fc)

@@ -19,10 +19,10 @@ func TestOverlap_PartialRangeOverlapIsRefused(t *testing.T) {
 
 	var rejected []int32
 	var unwritten []int32
-	a.opts.OnArticleRejected = func(_ string, _ int, artIdx int32, _ string, _ int64) {
+	a.opts.OnArticleRejected = func(_ Owner, _ int, artIdx int32, _ string, _ int64) {
 		rejected = append(rejected, artIdx)
 	}
-	a.opts.OnArticlesUnwritten = func(_ string, _ int, artIdxs []int32) {
+	a.opts.OnArticlesUnwritten = func(_ Owner, _ int, artIdxs []int32) {
 		unwritten = append(unwritten, artIdxs...)
 	}
 
@@ -34,13 +34,13 @@ func TestOverlap_PartialRangeOverlapIsRefused(t *testing.T) {
 
 	// A first, fully written before B is submitted.
 	a.processRequest(WriteRequest{
-		JobID: "job", FileIdx: 0, ArtIdx: 0, MessageID: "a@example",
+		Owner: ownerFor("job"), JobID: "job", FileIdx: 0, ArtIdx: 0, MessageID: "a@example",
 		Offset: 0, Data: bytes.Repeat([]byte("A"), 1000),
 	}, open, completed)
 
 	// B starts 500 bytes into A's range.
 	a.processRequest(WriteRequest{
-		JobID: "job", FileIdx: 0, ArtIdx: 1, MessageID: "b@example",
+		Owner: ownerFor("job"), JobID: "job", FileIdx: 0, ArtIdx: 1, MessageID: "b@example",
 		Offset: 500, Data: bytes.Repeat([]byte("B"), 1000),
 	}, open, completed)
 
@@ -78,10 +78,10 @@ func TestOverlap_ContainedOverlapStillCompletesTheFile(t *testing.T) {
 
 	var rejected []int32
 	var completed int
-	a.opts.OnArticleRejected = func(_ string, _ int, artIdx int32, _ string, _ int64) {
+	a.opts.OnArticleRejected = func(_ Owner, _ int, artIdx int32, _ string, _ int64) {
 		rejected = append(rejected, artIdx)
 	}
-	a.opts.OnFileComplete = func(_ string, _ int) {
+	a.opts.OnFileComplete = func(_ Owner, _ int) {
 		completed++
 	}
 
@@ -93,7 +93,7 @@ func TestOverlap_ContainedOverlapStillCompletesTheFile(t *testing.T) {
 
 	submit := func(idx int32, msg string, off int64, b byte, n int) {
 		a.processRequest(WriteRequest{
-			JobID: "job", FileIdx: 0, ArtIdx: idx, MessageID: msg,
+			Owner: ownerFor("job"), JobID: "job", FileIdx: 0, ArtIdx: idx, MessageID: msg,
 			Offset: off, Data: bytes.Repeat([]byte{b}, n),
 		}, open, completedSet)
 	}
@@ -136,13 +136,13 @@ func TestOverlap_StraddlingArticleIsRefusedAndCountedAsFailed(t *testing.T) {
 	var rejected []int32
 	var unwritten []int32
 	var completed int
-	a.opts.OnArticleRejected = func(_ string, _ int, artIdx int32, _ string, _ int64) {
+	a.opts.OnArticleRejected = func(_ Owner, _ int, artIdx int32, _ string, _ int64) {
 		rejected = append(rejected, artIdx)
 	}
-	a.opts.OnArticlesUnwritten = func(_ string, _ int, artIdxs []int32) {
+	a.opts.OnArticlesUnwritten = func(_ Owner, _ int, artIdxs []int32) {
 		unwritten = append(unwritten, artIdxs...)
 	}
-	a.opts.OnFileComplete = func(_ string, _ int) {
+	a.opts.OnFileComplete = func(_ Owner, _ int) {
 		completed++
 	}
 
@@ -154,7 +154,7 @@ func TestOverlap_StraddlingArticleIsRefusedAndCountedAsFailed(t *testing.T) {
 
 	submit := func(idx int32, msg string, off int64, b byte, n int) {
 		a.processRequest(WriteRequest{
-			JobID: "job", FileIdx: 0, ArtIdx: idx, MessageID: msg,
+			Owner: ownerFor("job"), JobID: "job", FileIdx: 0, ArtIdx: idx, MessageID: msg,
 			Offset: off, Data: bytes.Repeat([]byte{b}, n),
 		}, open, completedSet)
 	}
@@ -201,7 +201,7 @@ func TestOverlap_BadArticleArrivingFirstRefusesItsNeighbours(t *testing.T) {
 	a := newHelperAssembler()
 
 	var rejected []int32
-	a.opts.OnArticleRejected = func(_ string, _ int, artIdx int32, _ string, _ int64) {
+	a.opts.OnArticleRejected = func(_ Owner, _ int, artIdx int32, _ string, _ int64) {
 		rejected = append(rejected, artIdx)
 	}
 
@@ -213,7 +213,7 @@ func TestOverlap_BadArticleArrivingFirstRefusesItsNeighbours(t *testing.T) {
 
 	submit := func(idx int32, msg string, off int64, b byte, n int) {
 		a.processRequest(WriteRequest{
-			JobID: "job", FileIdx: 0, ArtIdx: idx, MessageID: msg,
+			Owner: ownerFor("job"), JobID: "job", FileIdx: 0, ArtIdx: idx, MessageID: msg,
 			Offset: off, Data: bytes.Repeat([]byte{b}, n),
 		}, open, completedSet)
 	}
@@ -253,7 +253,7 @@ func TestOverlap_SameOffsetDifferentLengthIsRefused(t *testing.T) {
 			a := newHelperAssembler()
 
 			var rejected []int32
-			a.opts.OnArticleRejected = func(_ string, _ int, artIdx int32, _ string, _ int64) {
+			a.opts.OnArticleRejected = func(_ Owner, _ int, artIdx int32, _ string, _ int64) {
 				rejected = append(rejected, artIdx)
 			}
 
@@ -265,7 +265,7 @@ func TestOverlap_SameOffsetDifferentLengthIsRefused(t *testing.T) {
 
 			submit := func(idx int32, msg string, off int64, b byte, n int) {
 				a.processRequest(WriteRequest{
-					JobID: "job", FileIdx: 0, ArtIdx: idx, MessageID: msg,
+					Owner: ownerFor("job"), JobID: "job", FileIdx: 0, ArtIdx: idx, MessageID: msg,
 					Offset: off, Data: bytes.Repeat([]byte{b}, n),
 				}, open, completedSet)
 			}
@@ -306,7 +306,7 @@ func TestOverlap_ZeroLengthArticleDoesNotBlockCoveringNeighbour(t *testing.T) {
 	a := newHelperAssembler()
 
 	var rejected []int32
-	a.opts.OnArticleRejected = func(_ string, _ int, artIdx int32, _ string, _ int64) {
+	a.opts.OnArticleRejected = func(_ Owner, _ int, artIdx int32, _ string, _ int64) {
 		rejected = append(rejected, artIdx)
 	}
 
@@ -318,7 +318,7 @@ func TestOverlap_ZeroLengthArticleDoesNotBlockCoveringNeighbour(t *testing.T) {
 
 	submit := func(idx int32, msg string, off int64, data []byte) {
 		a.processRequest(WriteRequest{
-			JobID: "job", FileIdx: 0, ArtIdx: idx, MessageID: msg,
+			Owner: ownerFor("job"), JobID: "job", FileIdx: 0, ArtIdx: idx, MessageID: msg,
 			Offset: off, Data: data,
 		}, open, completedSet)
 	}
@@ -365,7 +365,7 @@ func TestOverlap_ArrivalStartingBeforeTheIncumbentIsRefused(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			a := newHelperAssembler()
 			var rejected []int32
-			a.opts.OnArticleRejected = func(_ string, _ int, artIdx int32, _ string, _ int64) {
+			a.opts.OnArticleRejected = func(_ Owner, _ int, artIdx int32, _ string, _ int64) {
 				rejected = append(rejected, artIdx)
 			}
 			f := newHelperFile(t, t.TempDir(), "before.dat", 4000)
@@ -380,7 +380,7 @@ func TestOverlap_ArrivalStartingBeforeTheIncumbentIsRefused(t *testing.T) {
 					}
 				}()
 				a.processRequest(WriteRequest{
-					JobID: "job", FileIdx: 0, ArtIdx: idx, MessageID: string('a'+idx) + "@example",
+					Owner: ownerFor("job"), JobID: "job", FileIdx: 0, ArtIdx: idx, MessageID: string('a'+idx) + "@example",
 					Offset: off, Data: bytes.Repeat([]byte{b}, n),
 				}, open, completedSet)
 			}
@@ -413,7 +413,7 @@ func TestOverlap_ArrivalStartingBeforeTheIncumbentIsRefused(t *testing.T) {
 func TestOverlap_ZeroLengthArrivalInsideOwnedRangeIsAccepted(t *testing.T) {
 	a := newHelperAssembler()
 	var rejected []int32
-	a.opts.OnArticleRejected = func(_ string, _ int, artIdx int32, _ string, _ int64) {
+	a.opts.OnArticleRejected = func(_ Owner, _ int, artIdx int32, _ string, _ int64) {
 		rejected = append(rejected, artIdx)
 	}
 	f := newHelperFile(t, t.TempDir(), "empty-inside.dat", 1000)
@@ -422,7 +422,7 @@ func TestOverlap_ZeroLengthArrivalInsideOwnedRangeIsAccepted(t *testing.T) {
 	completedSet := map[fileKey]struct{}{}
 
 	a.processRequest(WriteRequest{
-		JobID: "job", FileIdx: 0, ArtIdx: 0, MessageID: "a@example",
+		Owner: ownerFor("job"), JobID: "job", FileIdx: 0, ArtIdx: 0, MessageID: "a@example",
 		Offset: 0, Data: bytes.Repeat([]byte{'A'}, 1000),
 	}, open, completedSet)
 	func() {
@@ -432,7 +432,7 @@ func TestOverlap_ZeroLengthArrivalInsideOwnedRangeIsAccepted(t *testing.T) {
 			}
 		}()
 		a.processRequest(WriteRequest{
-			JobID: "job", FileIdx: 0, ArtIdx: 1, MessageID: "z@example", Offset: 500,
+			Owner: ownerFor("job"), JobID: "job", FileIdx: 0, ArtIdx: 1, MessageID: "z@example", Offset: 500,
 		}, open, completedSet)
 	}()
 

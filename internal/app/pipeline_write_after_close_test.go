@@ -72,7 +72,7 @@ func TestWriteArticle_AfterTheJobClosedCreatesNoFile(t *testing.T) {
 			var faults atomic.Int32
 			a := assembler.New(assembler.Options{
 				FileInfo:     p.resolveForWrite,
-				OnWriteFault: func(string, int, *storagefault.Fault) { faults.Add(1) },
+				OnWriteFault: func(assembler.Owner, int, *storagefault.Fault) { faults.Add(1) },
 			}, slog.New(slog.DiscardHandler))
 			if err := a.Start(t.Context()); err != nil {
 				t.Fatalf("Start: %v", err)
@@ -151,8 +151,8 @@ func TestWriteArticle_OfAnEarlierAttemptNeverReachesTheRetrysFile(t *testing.T) 
 			var written, completed atomic.Int32
 			a := assembler.New(assembler.Options{
 				FileInfo:         p.resolveForWrite,
-				OnArticleWritten: func(string, int, int32, int64, int64, uint32) { written.Add(1) },
-				OnFileComplete:   func(string, int) { completed.Add(1) },
+				OnArticleWritten: func(assembler.Owner, int, int32, int64, int64, uint32) { written.Add(1) },
+				OnFileComplete:   func(assembler.Owner, int) { completed.Add(1) },
 			}, slog.New(slog.DiscardHandler))
 			if err := a.Start(t.Context()); err != nil {
 				t.Fatalf("Start: %v", err)

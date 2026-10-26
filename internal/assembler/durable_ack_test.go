@@ -57,8 +57,9 @@ func TestFailedWrites_RetryIsWrittenNotDiscarded(t *testing.T) {
 	key := fileKey{jobID: "job", fileIdx: 0}
 	w := newFileWriter(fh, path, key)
 	f := &openFile{
-		w:    w,
-		info: FileInfo{Dir: filepath.Dir(path), Name: filepath.Base(path), ExpectedSize: artCount * artSize},
+		w:     w,
+		info:  FileInfo{Dir: filepath.Dir(path), Name: filepath.Base(path), ExpectedSize: artCount * artSize},
+		owner: ownerFor(key.jobID),
 	}
 
 	failWrites := true
@@ -80,7 +81,7 @@ func TestFailedWrites_RetryIsWrittenNotDiscarded(t *testing.T) {
 	}
 	send := func(i int) {
 		a.handleSuccessArticle(f, WriteRequest{
-			JobID:     "job",
+			Owner: ownerFor("job"), JobID: "job",
 			MessageID: fmt.Sprintf("msg%d", i),
 			ArtIdx:    testArtIdx(i),
 			Offset:    int64(i) * artSize,
@@ -89,7 +90,7 @@ func TestFailedWrites_RetryIsWrittenNotDiscarded(t *testing.T) {
 	}
 
 	var rolledBack []int32
-	a.opts.OnArticlesUnwritten = func(_ string, _ int, artIdxs []int32) {
+	a.opts.OnArticlesUnwritten = func(_ Owner, _ int, artIdxs []int32) {
 		rolledBack = append(rolledBack, artIdxs...)
 	}
 
@@ -153,7 +154,7 @@ func TestDuplicateSuccessIsNotReAcked(t *testing.T) {
 	f := newHelperFile(t, dir, "dup.dat", 0)
 	writes := countWrites(f.w)
 
-	req := WriteRequest{JobID: "job", MessageID: "msg0", ArtIdx: 0, Offset: 0, Data: []byte("first copy")}
+	req := WriteRequest{Owner: ownerFor("job"), JobID: "job", MessageID: "msg0", ArtIdx: 0, Offset: 0, Data: []byte("first copy")}
 	a.handleSuccessArticle(f, req)
 	if f.w.parts() != 1 {
 		t.Fatal("first copy was not accepted")
@@ -162,7 +163,7 @@ func TestDuplicateSuccessIsNotReAcked(t *testing.T) {
 		t.Fatalf("WriteAt called %d times for the first copy, want exactly 1", *writes)
 	}
 
-	dup := WriteRequest{JobID: "job", MessageID: "msg0", ArtIdx: 0, Offset: 0, Data: []byte("second copy")}
+	dup := WriteRequest{Owner: ownerFor("job"), JobID: "job", MessageID: "msg0", ArtIdx: 0, Offset: 0, Data: []byte("second copy")}
 	a.handleSuccessArticle(f, dup)
 	if f.w.parts() != 1 {
 		t.Error("a duplicate must not be counted toward TotalParts")
@@ -185,14 +186,14 @@ func TestDuplicateAtADifferentOffsetIsNotReAcked(t *testing.T) {
 	f := newHelperFile(t, dir, "dupoffset.dat", 0)
 	writes := countWrites(f.w)
 
-	req := WriteRequest{JobID: "job", MessageID: "msg0", ArtIdx: 0, Offset: 0, Data: []byte("first copy")}
+	req := WriteRequest{Owner: ownerFor("job"), JobID: "job", MessageID: "msg0", ArtIdx: 0, Offset: 0, Data: []byte("first copy")}
 	a.handleSuccessArticle(f, req)
 	if f.w.parts() != 1 {
 		t.Fatal("first copy was not accepted")
 	}
 
 	// Same Message-ID, different offset, after the first copy was written.
-	dup := WriteRequest{JobID: "job", MessageID: "msg0", ArtIdx: 0, Offset: 4096, Data: []byte("same article, other offset")}
+	dup := WriteRequest{Owner: ownerFor("job"), JobID: "job", MessageID: "msg0", ArtIdx: 0, Offset: 4096, Data: []byte("same article, other offset")}
 	a.handleSuccessArticle(f, dup)
 	if f.w.parts() != 1 {
 		t.Error("a duplicate must not be counted toward TotalParts")
@@ -217,7 +218,7 @@ func TestRetryAfterFailedWriteLandsOnDisk(t *testing.T) {
 
 	realWrite := f.w.writeAt
 	f.w.writeAt = func([]byte, int64) (int, error) { return 0, errors.New("injected write fault") }
-	req := WriteRequest{JobID: "job", MessageID: "msg0", ArtIdx: 0, Offset: 0, Data: []byte("first")}
+	req := WriteRequest{Owner: ownerFor("job"), JobID: "job", MessageID: "msg0", ArtIdx: 0, Offset: 0, Data: []byte("first")}
 	a.handleSuccessArticle(f, req)
 	f.w.writeAt = realWrite
 	if _, stillDone := f.w.seenDone[0]; stillDone {
@@ -236,7 +237,7 @@ func TestRetryAfterFailedWriteLandsOnDisk(t *testing.T) {
 	// resolve's RolledBack arm applies the give-back in the same statement
 	// pair that clears seenDone. Counting an article whose bytes are not on
 	// disk is what let a file reach TotalParts and finalize over them.
-	retry := WriteRequest{JobID: "job", MessageID: "msg0", ArtIdx: 0, Offset: 0, Data: []byte("retry")}
+	retry := WriteRequest{Owner: ownerFor("job"), JobID: "job", MessageID: "msg0", ArtIdx: 0, Offset: 0, Data: []byte("retry")}
 	a.handleSuccessArticle(f, retry)
 	if f.w.parts() != 1 {
 		t.Error("the retry was not counted toward TotalParts, so the file can never " +
@@ -268,7 +269,7 @@ func TestFatalAfterAWrittenArticleCannotRetractIt(t *testing.T) {
 
 	// The article's bytes land first.
 	if err := writeArticle(t.Context(), a, WriteRequest{
-		JobID: "job1", FileIdx: 0, ArtIdx: 0, MessageID: "dup@x",
+		Owner: ownerFor("job1"), JobID: "job1", FileIdx: 0, ArtIdx: 0, MessageID: "dup@x",
 		Offset: 0, Data: []byte("abcd"),
 	}); err != nil {
 		t.Fatal(err)
@@ -276,7 +277,7 @@ func TestFatalAfterAWrittenArticleCannotRetractIt(t *testing.T) {
 	// Then a permanent failure arrives for the SAME article — the order that
 	// used to let a Failed ack overwrite a Done one.
 	if err := writeArticle(t.Context(), a, WriteRequest{
-		JobID: "job1", FileIdx: 0, ArtIdx: 0, MessageID: "dup@x",
+		Owner: ownerFor("job1"), JobID: "job1", FileIdx: 0, ArtIdx: 0, MessageID: "dup@x",
 		FatalErr: errFatalProbe,
 	}); err != nil {
 		t.Fatal(err)

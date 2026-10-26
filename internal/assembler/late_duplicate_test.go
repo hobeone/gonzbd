@@ -27,7 +27,7 @@ import "testing"
 func TestLateDuplicate_ResolvesAnArticleTheWriterNeverAccepted(t *testing.T) {
 	a := newHelperAssembler()
 	var rejected []int32
-	a.opts.OnArticleRejected = func(_ string, _ int, artIdx int32, _ string, _ int64) {
+	a.opts.OnArticleRejected = func(_ Owner, _ int, artIdx int32, _ string, _ int64) {
 		rejected = append(rejected, artIdx)
 	}
 	key := fileKey{jobID: "job", fileIdx: 0}

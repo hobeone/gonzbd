@@ -216,8 +216,8 @@ func TestPipeline_HandleFailureResult_UnregisterableFileIsNotForwarded(t *testin
 	faults := make(chan string, 4)
 	a := assembler.New(assembler.Options{
 		FileInfo: p.resolveForWrite,
-		OnWriteFault: func(jobID string, fileIdx int, f *storagefault.Fault) {
-			faults <- fmt.Sprintf("job %s file %d: %v", jobID, fileIdx, f)
+		OnWriteFault: func(owner assembler.Owner, fileIdx int, f *storagefault.Fault) {
+			faults <- fmt.Sprintf("job %s file %d: %v", owner.ID(), fileIdx, f)
 		},
 	}, nil)
 	if err := a.Start(t.Context()); err != nil {

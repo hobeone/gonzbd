@@ -189,7 +189,7 @@ func TestAssemblyWithPreallocation(t *testing.T) {
 
 	var completed bool
 	opts := makeOpts(dir, files)
-	opts.OnFileComplete = func(_ string, _ int) { completed = true }
+	opts.OnFileComplete = func(_ Owner, _ int) { completed = true }
 
 	a := startAssembler(t, opts)
 
@@ -203,7 +203,7 @@ func TestAssemblyWithPreallocation(t *testing.T) {
 		{4, []byte("BBBB")},
 	}
 	for i, art := range articles {
-		req := WriteRequest{JobID: "job1", FileIdx: 0, ArtIdx: testArtIdx(i), Offset: art.offset, Data: art.data}
+		req := WriteRequest{Owner: ownerFor("job1"), JobID: "job1", FileIdx: 0, ArtIdx: testArtIdx(i), Offset: art.offset, Data: art.data}
 		if err := writeArticle(t.Context(), a, req); err != nil {
 			t.Fatalf("WriteArticle: %v", err)
 		}

@@ -205,7 +205,7 @@ func TestCheckDiskSpace_CountsOwnWritesBeforeTTL(t *testing.T) {
 	}
 
 	for i := range 2 * diskCheckInterval {
-		req := WriteRequest{JobID: "job1", FileIdx: 0, ArtIdx: testArtIdx(i), Offset: int64(i * 4), Data: []byte("XXXX")}
+		req := WriteRequest{Owner: ownerFor("job1"), JobID: "job1", FileIdx: 0, ArtIdx: testArtIdx(i), Offset: int64(i * 4), Data: []byte("XXXX")}
 		if err := writeArticle(t.Context(), a, req); err != nil {
 			t.Fatalf("WriteArticle %d: %v", i, err)
 		}

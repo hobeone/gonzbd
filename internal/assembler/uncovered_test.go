@@ -53,7 +53,7 @@ func TestOverlap_RefusalReportsTheUncoveredBytes(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			a := newHelperAssembler()
 			var reports []int64
-			a.opts.OnArticleRejected = func(_ string, _ int, artIdx int32, _ string, uncovered int64) {
+			a.opts.OnArticleRejected = func(_ Owner, _ int, artIdx int32, _ string, uncovered int64) {
 				if artIdx == 9 {
 					reports = append(reports, uncovered)
 				}
@@ -64,7 +64,7 @@ func TestOverlap_RefusalReportsTheUncoveredBytes(t *testing.T) {
 			completed := map[fileKey]struct{}{}
 			submit := func(idx int32, off, n int64) {
 				a.processRequest(WriteRequest{
-					JobID: "job", FileIdx: 0, ArtIdx: idx, MessageID: "m@x",
+					Owner: ownerFor("job"), JobID: "job", FileIdx: 0, ArtIdx: idx, MessageID: "m@x",
 					Offset: off, Data: bytes.Repeat([]byte{'x'}, int(n)),
 				}, open, completed)
 			}

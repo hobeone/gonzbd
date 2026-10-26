@@ -896,7 +896,7 @@ func TestLooseRecord_ResumedCompletionSurvivesEviction(t *testing.T) {
 	// the re-hydration below if it landed inside it.
 	var owed []int
 	a2 := env.newApp(t, func(a *Application) {
-		a.residency.finished = func(_ string, fi int, _ string) { owed = append(owed, fi) }
+		a.residency.finished = func(_ *job.Job, fi int, _ string) { owed = append(owed, fi) }
 	})
 	id := j.ID()
 	if err := a2.restoreProgress(t.Context()); err != nil {
@@ -916,7 +916,7 @@ func TestLooseRecord_ResumedCompletionSurvivesEviction(t *testing.T) {
 
 	// The consumer's own door, called directly: its error is what a completion
 	// that needed the manifest would return for an evicted job.
-	if err := a2.completeFinalizedFile(FileComplete{JobID: id, FileIdx: 0, Resumed: true}); err != nil {
+	if err := a2.completeFinalizedFile(FileComplete{Job: j2, FileIdx: 0, Resumed: true}); err != nil {
 		t.Fatalf("a resumed completion of an evicted job was not delivered: %v", err)
 	}
 	a2.recorder.mu.Lock()
@@ -1037,7 +1037,7 @@ func TestLooseRecord_ResumedCompletionIsNotFedToDirectUnpack(t *testing.T) {
 	}
 	a.InjectPipelineFileInfo(j.ID(), 0, filepath.Join(env.dl, j.Name(), "set.part01.rar"))
 
-	a.handleFileComplete(t.Context(), FileComplete{JobID: j.ID(), FileIdx: 0, Resumed: true})
+	a.handleFileComplete(t.Context(), FileComplete{Job: j, FileIdx: 0, Resumed: true})
 	if _, ok := a.DirectUnpackStatus(j.ID()); ok {
 		t.Error("a resumed completion started a DirectUnpacker")
 	}

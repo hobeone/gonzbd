@@ -87,7 +87,7 @@ func TestMaybeStart_CreatesOneUnpackerPerJobAndCountsIt(t *testing.T) {
 	t.Parallel()
 	o, _, j := duFixture(t, 0) // 0 = unlimited
 
-	o.maybeStart(FileComplete{JobID: j.ID(), FileIdx: 0})
+	o.maybeStart(FileComplete{Job: j, FileIdx: 0})
 	n, active := o.countsForTest()
 	if n != 1 || active != 1 {
 		t.Fatalf("after first call: unpackers=%d active=%d, want 1 and 1", n, active)
@@ -95,7 +95,7 @@ func TestMaybeStart_CreatesOneUnpackerPerJobAndCountsIt(t *testing.T) {
 
 	// A second completed file on the same job must feed the existing
 	// unpacker, not create a second one or double-count the slot.
-	o.maybeStart(FileComplete{JobID: j.ID(), FileIdx: 0})
+	o.maybeStart(FileComplete{Job: j, FileIdx: 0})
 	n, active = o.countsForTest()
 	if n != 1 || active != 1 {
 		t.Errorf("after second call: unpackers=%d active=%d, want 1 and 1 — the job was counted twice against the limit", n, active)
@@ -109,7 +109,7 @@ func TestMaybeStart_RefusesWhenConcurrencyLimitReached(t *testing.T) {
 	o, _, j := duFixture(t, 1)
 	o.setActive(1) // the one permitted slot is taken by another job
 
-	o.maybeStart(FileComplete{JobID: j.ID(), FileIdx: 0})
+	o.maybeStart(FileComplete{Job: j, FileIdx: 0})
 
 	n, active := o.countsForTest()
 	if n != 0 {
@@ -129,7 +129,7 @@ func TestMaybeStart_MarksSetCorruptWhenTheVolumeHasFailedArticles(t *testing.T) 
 
 	ackFailed(t, d, j.ID(), "v2a1@t")
 
-	o.maybeStart(FileComplete{JobID: j.ID(), FileIdx: 0})
+	o.maybeStart(FileComplete{Job: j, FileIdx: 0})
 
 	o.mu.Lock()
 	du := o.unpackers[j.ID()]
@@ -163,7 +163,7 @@ func TestMaybeStart_IneligibleJobsCreateNothing(t *testing.T) {
 			if tc.mutate != nil {
 				tc.mutate(t, d, j)
 			}
-			o.maybeStart(FileComplete{JobID: j.ID(), FileIdx: tc.fileIdx})
+			o.maybeStart(FileComplete{Job: j, FileIdx: tc.fileIdx})
 			if n, active := o.countsForTest(); n != 0 || active != 0 {
 				t.Errorf("unpackers=%d active=%d, want 0 and 0", n, active)
 			}
@@ -172,7 +172,7 @@ func TestMaybeStart_IneligibleJobsCreateNothing(t *testing.T) {
 
 	t.Run("unknown job", func(t *testing.T) {
 		o, _, _ := duFixture(t, 0)
-		o.maybeStart(FileComplete{JobID: "no-such-job", FileIdx: 0})
+		o.maybeStart(FileComplete{Job: job.New("no-such-job", "no-such-job", job.Policy{}), FileIdx: 0})
 		if n, active := o.countsForTest(); n != 0 || active != 0 {
 			t.Errorf("unpackers=%d active=%d, want 0 and 0", n, active)
 		}

@@ -41,7 +41,7 @@ func TestPeek_FailActionFilesTheJobAfterTheFileIsMarkedComplete(t *testing.T) {
 	// An error here is the job having been evicted before the mark
 	// (job.ErrNotResident); reported, not fatal, so the history check below
 	// still says what was recorded.
-	if err := a.completeFinalizedFile(FileComplete{JobID: a.j.ID(), FileIdx: 0}); err != nil {
+	if err := a.completeFinalizedFile(FileComplete{Job: a.j, FileIdx: 0}); err != nil {
 		t.Errorf("completeFinalizedFile: %v", err)
 	}
 
@@ -74,7 +74,7 @@ func TestPeek_FailActionFilingSurvivesAnEvictionBeforeTheMark(t *testing.T) {
 			a.j.Evict()
 		}
 	}
-	fc := FileComplete{JobID: a.j.ID(), FileIdx: 0}
+	fc := FileComplete{Job: a.j, FileIdx: 0}
 	if err := a.completeFinalizedFile(fc); !errors.Is(err, job.ErrNotResident) {
 		t.Fatalf("first completion = %v, want job.ErrNotResident", err)
 	}

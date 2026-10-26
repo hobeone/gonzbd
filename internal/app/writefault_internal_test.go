@@ -9,6 +9,7 @@ import (
 
 	"github.com/hobeone/gonzbd/internal/assembler"
 	"github.com/hobeone/gonzbd/internal/constants"
+	jobpkg "github.com/hobeone/gonzbd/internal/job"
 	"github.com/hobeone/gonzbd/internal/storagefault"
 )
 
@@ -41,7 +42,7 @@ func TestHandleArticlesUnwritten_ReturnsTheArticlesToOutstanding(t *testing.T) {
 		t.Fatal("fixture never emitted both articles, so it cannot observe the bits being cleared")
 	}
 
-	application.handleArticlesUnwritten(job.ID(), 0, []int32{0, 1})
+	application.handleArticlesUnwritten(job, 0, []int32{0, 1})
 
 	for _, idx := range []int32{0, 1} {
 		if articleInFlight(t, job, int(idx)) {
@@ -69,9 +70,9 @@ func TestHandleArticlesUnwritten_SurvivesAJobThatHasLeftTheQueue(t *testing.T) {
 	t.Parallel()
 	application, _ := newDurabilityTestApp(t, 1, 2)
 
-	// No job with this ID was ever added, which is the same state the queue
-	// presents after one is removed.
-	application.handleArticlesUnwritten("job-that-never-existed", 0, []int32{0, 1})
+	// An instance the dispatcher never held, which is the state a removed
+	// attempt presents; it has no manifest, so each clear is refused.
+	application.handleArticlesUnwritten(jobpkg.New("job-that-never-existed", "never", jobpkg.Policy{}), 0, []int32{0, 1})
 }
 
 // TestHandleWriteFault_RoutesOnPermanence pins the branch that decides whether
@@ -85,7 +86,7 @@ func TestHandleWriteFault_RoutesOnPermanence(t *testing.T) {
 			t.Fatalf("fixture error is permanent, so this subtest cannot observe the retryable branch")
 		}
 
-		application.handleWriteFault(job.ID(), 0, f)
+		application.handleWriteFault(job, 0, f)
 		// The routing runs on its own goroutine — see the handler's doc for
 		// why it must not run on the assembler's worker.
 		application.wg.Wait()
@@ -108,7 +109,7 @@ func TestHandleWriteFault_RoutesOnPermanence(t *testing.T) {
 			t.Fatalf("fixture error is retryable, so this subtest cannot observe the permanent branch")
 		}
 
-		application.handleWriteFault(job.ID(), 0, f)
+		application.handleWriteFault(job, 0, f)
 		// The routing runs on its own goroutine — see the handler's doc for
 		// why it must not run on the assembler's worker.
 		application.wg.Wait()
@@ -144,7 +145,7 @@ func TestHandleArticleRejected_AcksThePermanentFailure(t *testing.T) {
 	}
 	before := job.Progress().FailedBytes()
 
-	application.handleArticleRejected(job.ID(), 0, 1, "negative offset", assembler.WholeArticle)
+	application.handleArticleRejected(job, 0, 1, "negative offset", assembler.WholeArticle)
 
 	if !job.Progress().ArticleFailed(1) {
 		t.Error("the rejected article is not marked failed; its Emitted bit is still set, " +
@@ -173,7 +174,7 @@ func TestHandleArticleRejected_RecordsTheFailureOfAnEvictedJob(t *testing.T) {
 		t.Fatal("fixture: the job is still resident after Evict")
 	}
 
-	application.handleArticleRejected(j.ID(), 0, 1, "negative offset", assembler.WholeArticle)
+	application.handleArticleRejected(j, 0, 1, "negative offset", assembler.WholeArticle)
 
 	if !j.Progress().ArticleFailed(1) {
 		t.Fatal("the rejected article of an evicted job is not marked failed; " +
@@ -204,7 +205,7 @@ func TestHandleArticlesUnwritten_ClearsTheBitsOfAnEvictedJob(t *testing.T) {
 		t.Fatal("fixture: the job is still resident after Evict")
 	}
 
-	application.handleArticlesUnwritten(j.ID(), 0, []int32{0, 1})
+	application.handleArticlesUnwritten(j, 0, []int32{0, 1})
 
 	// Eviction keeps the bits, so the roll-back is only visible once the job is
 	// resident again (the fixture has no manifest on disk to Hydrate from) and
@@ -228,8 +229,8 @@ func TestArticleHandlers_LogARecordTheJobRefuses(t *testing.T) {
 	var logs syncBuffer
 	application.log = slog.New(slog.NewTextHandler(&logs, nil))
 
-	application.handleArticleRejected(j.ID(), 0, 99, "negative offset", assembler.WholeArticle)
-	application.handleArticlesUnwritten(j.ID(), 0, []int32{99})
+	application.handleArticleRejected(j, 0, 99, "negative offset", assembler.WholeArticle)
+	application.handleArticlesUnwritten(j, 0, []int32{99})
 
 	for _, msg := range []string{
 		"record rejected article as permanently failed",
@@ -254,9 +255,9 @@ func TestHandleArticleRejected_SurvivesAJobThatHasLeftTheQueue(t *testing.T) {
 	t.Parallel()
 	application, _ := newDurabilityTestApp(t, 1, 2)
 
-	// No job with this ID was ever added, which is the same state the queue
-	// presents after one is removed.
-	application.handleArticleRejected("job-that-never-existed", 0, 1, "negative offset", assembler.WholeArticle)
+	// An instance the dispatcher never held, which is the state a removed
+	// attempt presents; it has no manifest, so the mark is refused.
+	application.handleArticleRejected(jobpkg.New("job-that-never-existed", "never", jobpkg.Policy{}), 0, 1, "negative offset", assembler.WholeArticle)
 }
 
 // TestHandleWriteFault_DoesNotBlockTheAssemblerWorker pins the hand-off.
@@ -278,7 +279,7 @@ func TestHandleWriteFault_DoesNotBlockTheAssemblerWorker(t *testing.T) {
 	defer release()
 
 	start := time.Now()
-	application.handleWriteFault(job.ID(), 0, storagefault.Classify("write", "/d/a.bin", syscall.EROFS))
+	application.handleWriteFault(job, 0, storagefault.Classify("write", "/d/a.bin", syscall.EROFS))
 	elapsed := time.Since(start)
 
 	if elapsed > time.Second {

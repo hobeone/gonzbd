@@ -46,7 +46,7 @@ type appResidency struct {
 	// five are set by New before anything can hydrate.
 	locate   func(jobName, filename string) (jobFile, error)
 	commit   func(ctx context.Context, j *job.Job, v []durability.FileVerdict) error
-	finished func(jobID string, fileIdx int, failMsg string)
+	finished func(j *job.Job, fileIdx int, failMsg string)
 	peek     func(j *job.Job, fileIdx int) string
 	parked   func(j *job.Job, f *storagefault.Fault)
 
@@ -215,7 +215,7 @@ func (r *appResidency) verifyAndAttach(ctx context.Context, j *job.Job, m *job.M
 		}
 	}
 	for _, fi := range installVerification(j, files, rows, res, true, r.log, peek) {
-		r.finished(j.ID(), fi, failMsg)
+		r.finished(j, fi, failMsg)
 	}
 	return nil
 }

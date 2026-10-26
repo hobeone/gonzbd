@@ -34,14 +34,14 @@ func TestFaultedIncumbent_TakenOverThenRedeliveryRefused(t *testing.T) {
 	var faults int
 	var completeCalls int
 	var bytesAtComplete []byte
-	a.opts.OnArticlesUnwritten = func(_ string, _ int, arts []int32) {
+	a.opts.OnArticlesUnwritten = func(_ Owner, _ int, arts []int32) {
 		unwritten = append(unwritten, arts...)
 	}
-	a.opts.OnArticleRejected = func(_ string, _ int, artIdx int32, _ string, _ int64) {
+	a.opts.OnArticleRejected = func(_ Owner, _ int, artIdx int32, _ string, _ int64) {
 		rejected = append(rejected, artIdx)
 	}
-	a.opts.OnWriteFault = func(string, int, *storagefault.Fault) { faults++ }
-	a.opts.OnFileComplete = func(string, int) {
+	a.opts.OnWriteFault = func(Owner, int, *storagefault.Fault) { faults++ }
+	a.opts.OnFileComplete = func(Owner, int) {
 		completeCalls++
 		b, err := os.ReadFile(path)
 		if err != nil {
@@ -54,7 +54,7 @@ func TestFaultedIncumbent_TakenOverThenRedeliveryRefused(t *testing.T) {
 	completed := map[fileKey]struct{}{}
 	send := func(artIdx int32, off int64, payload string) {
 		a.processRequest(WriteRequest{
-			JobID: "job", FileIdx: 0, ArtIdx: artIdx,
+			Owner: ownerFor("job"), JobID: "job", FileIdx: 0, ArtIdx: artIdx,
 			MessageID: string('a'+artIdx) + "@example",
 			Offset:    off, Data: []byte(payload),
 		}, open, completed)

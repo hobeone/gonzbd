@@ -86,7 +86,7 @@ func TestCompleteFinalizedFile_ResumedCompletionIsNotPeeked(t *testing.T) {
 	peeks := 0
 	a.peekedHook = func() { peeks++ }
 
-	if err := a.completeFinalizedFile(FileComplete{JobID: a.j.ID(), FileIdx: 0, Resumed: true}); err != nil {
+	if err := a.completeFinalizedFile(FileComplete{Job: a.j, FileIdx: 0, Resumed: true}); err != nil {
 		t.Fatalf("completeFinalizedFile: %v", err)
 	}
 	if peeks != 0 {
@@ -96,7 +96,7 @@ func TestCompleteFinalizedFile_ResumedCompletionIsNotPeeked(t *testing.T) {
 		t.Errorf("Unwanted = %d, want none: the consumer peeked", got)
 	}
 
-	if err := a.completeFinalizedFile(FileComplete{JobID: a.j.ID(), FileIdx: 0}); err != nil {
+	if err := a.completeFinalizedFile(FileComplete{Job: a.j, FileIdx: 0}); err != nil {
 		t.Fatalf("completeFinalizedFile: %v", err)
 	}
 	if peeks != 1 || a.state(t) != unwanted.StateBlocked {

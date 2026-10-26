@@ -9,7 +9,7 @@ run TestLooseRecord_FailedCloseSyncReturnsArticlesToOutstanding|TestLooseRecord_
 file internal/assembler/assembler.go
 --- anchor
 				closeErr = errors.Join(closeErr, cerr)
-				a.noteFileUntrusted(k.jobID, k.fileIdx)
+				a.noteFileUntrusted(f.owner, k.fileIdx)
 --- replace
 				closeErr = errors.Join(closeErr, cerr)
 --- end
@@ -34,7 +34,7 @@ file internal/app/record.go
 file internal/assembler/assembler.go
 --- anchor
 		if err := a.syncAndClose(f); err != nil {
-			a.noteFileUntrusted(k.jobID, k.fileIdx)
+			a.noteFileUntrusted(f.owner, k.fileIdx)
 		}
 --- replace
 		if err := a.syncAndClose(f); err != nil {

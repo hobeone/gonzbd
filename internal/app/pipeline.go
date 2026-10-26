@@ -100,6 +100,19 @@ func refFor(res *downloader.ArticleResult) assembler.ArticleRef {
 	}
 }
 
+// instanceOf is the *job.Job behind the assembler.Owner a callback reports.
+// refFor above is the one producer of an Owner outside tests (its citation),
+// and it supplies res.Job, so the assertion cannot fail in production; a
+// failure is a fixture that built a ref by hand, and it panics rather than
+// letting a handler act on a nil instance.
+func instanceOf(o assembler.Owner) *job.Job {
+	j, ok := o.(*job.Job)
+	if !ok {
+		panic(fmt.Sprintf("app: assembler owner %T is not a *job.Job", o))
+	}
+	return j
+}
+
 // pipeline plumbs Downloader.Completions() → assembler; the downloader has
 // already decoded each body (internal/downloader's dispatch.go calls the
 // decoder). The reader goroutine (run) fans out ArticleResults to a pool of worker

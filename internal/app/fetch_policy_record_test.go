@@ -51,7 +51,7 @@ func TestPermanentArticleFailure_LeavesTheVolumeHeldUntilReleased(t *testing.T) 
 		fail func(t *testing.T, application *Application, j *job.Job)
 	}{
 		{"assembler rejection", func(_ *testing.T, application *Application, j *job.Job) {
-			application.handleArticleRejected(j.ID(), 0, 0, "negative offset", assembler.WholeArticle)
+			application.handleArticleRejected(j, 0, 0, "negative offset", assembler.WholeArticle)
 		}},
 		{"download failure", func(t *testing.T, application *Application, j *job.Job) {
 			application.pipeline.handleFailureResult(t.Context(), &downloader.ArticleResult{

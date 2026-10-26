@@ -18,10 +18,10 @@ type fsyncReleaseRecorder struct {
 }
 
 func (r *fsyncReleaseRecorder) install(a *Assembler) {
-	a.opts.OnFileUntrusted = func(jobID string, fileIdx int) {
-		r.untrusted = append(r.untrusted, fileKey{jobID: jobID, fileIdx: fileIdx})
+	a.opts.OnFileUntrusted = func(o Owner, fileIdx int) {
+		r.untrusted = append(r.untrusted, fileKey{jobID: o.ID(), fileIdx: fileIdx})
 	}
-	a.opts.OnArticlesUnwritten = func(_ string, _ int, arts []int32) {
+	a.opts.OnArticlesUnwritten = func(_ Owner, _ int, arts []int32) {
 		r.unwritten = append(r.unwritten, arts...)
 	}
 }
@@ -119,12 +119,12 @@ func TestQuiesce_ReturnsAfterEverythingQueuedAheadOfIt(t *testing.T) {
 	registerFile(t, dir, files, "job1", 0, n+1) // never completes
 	var written atomic.Int32
 	opts := makeOpts(dir, files)
-	opts.OnArticleWritten = func(string, int, int32, int64, int64, uint32) { written.Add(1) }
+	opts.OnArticleWritten = func(Owner, int, int32, int64, int64, uint32) { written.Add(1) }
 	a := startAssembler(t, opts)
 
 	for i := range n {
 		if err := writeArticle(t.Context(), a, WriteRequest{
-			JobID: "job1", FileIdx: 0, ArtIdx: int32(i), MessageID: "m",
+			Owner: ownerFor("job1"), JobID: "job1", FileIdx: 0, ArtIdx: int32(i), MessageID: "m",
 			Offset: int64(i) * 8, Data: make([]byte, 8),
 		}); err != nil {
 			t.Fatalf("writeArticle %d: %v", i, err)
@@ -148,14 +148,14 @@ func TestOptionsSyncFile_ReachesTheCompletionFsync(t *testing.T) {
 	registerFile(t, dir, files, "job1", 0, 1)
 	opts := makeOpts(dir, files)
 	opts.SyncFile = func(*os.File) error { return syscall.EIO }
-	opts.OnArticlesUnwritten = func(string, int, []int32) {}
+	opts.OnArticlesUnwritten = func(Owner, int, []int32) {}
 	var untrusted, completed atomic.Int32
-	opts.OnFileUntrusted = func(string, int) { untrusted.Add(1) }
-	opts.OnFileComplete = func(string, int) { completed.Add(1) }
+	opts.OnFileUntrusted = func(Owner, int) { untrusted.Add(1) }
+	opts.OnFileComplete = func(Owner, int) { completed.Add(1) }
 	a := startAssembler(t, opts)
 
 	if err := writeArticle(t.Context(), a, WriteRequest{
-		JobID: "job1", FileIdx: 0, ArtIdx: 0, MessageID: "m", Offset: 0, Data: make([]byte, 8),
+		Owner: ownerFor("job1"), JobID: "job1", FileIdx: 0, ArtIdx: 0, MessageID: "m", Offset: 0, Data: make([]byte, 8),
 	}); err != nil {
 		t.Fatalf("writeArticle: %v", err)
 	}
