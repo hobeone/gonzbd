@@ -27,18 +27,22 @@ func duFixture(t *testing.T, threads int) (*directUnpackOrchestrator, *dispatch.
 	return o, d, j
 }
 
-// duFixtureLogged is duFixture plus the captured log, for the one test that
-// asserts on a decision the orchestrator only reports by logging.
-func duFixtureLogged(t *testing.T, threads int) (*directUnpackOrchestrator, *dispatch.Dispatcher, *job.Job, *bytes.Buffer) {
-	t.Helper()
-	var logBuf bytes.Buffer
-
-	parsed := &nzb.NZB{Files: []nzb.File{
+// duNZB is the one-volume post duFixture builds its job from.
+func duNZB() *nzb.NZB {
+	return &nzb.NZB{Files: []nzb.File{
 		{Subject: "movie.part02.rar", Bytes: 200, Articles: []nzb.Article{
 			{ID: "v2a0@t", Bytes: 100, Number: 1},
 			{ID: "v2a1@t", Bytes: 100, Number: 2},
 		}},
 	}}
+}
+
+// duFixtureLogged is duFixture plus the captured log, for the one test that
+// asserts on a decision the orchestrator only reports by logging.
+func duFixtureLogged(t *testing.T, threads int) (*directUnpackOrchestrator, *dispatch.Dispatcher, *job.Job, *bytes.Buffer) {
+	t.Helper()
+	var logBuf bytes.Buffer
+	parsed := duNZB()
 
 	cfg, err := config.Default()
 	if err != nil {
@@ -175,6 +179,42 @@ func TestMaybeStart_IneligibleJobsCreateNothing(t *testing.T) {
 		o.maybeStart(FileComplete{Job: job.New("no-such-job", "no-such-job", job.Policy{}), FileIdx: 0})
 		if n, active := o.countsForTest(); n != 0 || active != 0 {
 			t.Errorf("unpackers=%d active=%d, want 0 and 0", n, active)
+		}
+	})
+
+	// A completion for an attempt a retry has replaced under its ID: the
+	// unpacker map is keyed by ID, so a row read by ID alone would start the
+	// retry's unpacker on the earlier attempt's file (#1056).
+	t.Run("replaced instance", func(t *testing.T) {
+		o, d, first := duFixture(t, 0)
+		m, err := first.Manifest()
+		if err != nil {
+			t.Fatalf("Manifest(first): %v", err)
+		}
+		if err := d.Remove(context.Background(), first.ID()); err != nil {
+			t.Fatalf("Remove(first): %v", err)
+		}
+		// Removal evicted the manifest; restored so the file lookup below
+		// the guard would succeed for first if the guard let it through.
+		if err := first.AttachArticles(m); err != nil {
+			t.Fatalf("AttachArticles(first): %v", err)
+		}
+		second, hdr, err := BuildIngestJob(o.app.config, duNZB(), "movie.nzb",
+			types.FetchOptions{NzbName: "movie", PP: 3, JobID: first.ID()}, nil)
+		if err != nil {
+			t.Fatalf("BuildIngestJob(second): %v", err)
+		}
+		if err := d.Add(context.Background(), second, hdr); err != nil {
+			t.Fatalf("Add(second): %v", err)
+		}
+		if _, ok := d.RowJob(second); !ok {
+			t.Fatal("fixture: the retry is not the instance registered under the ID")
+		}
+
+		o.maybeStart(FileComplete{Job: first, FileIdx: 0})
+
+		if n, active := o.countsForTest(); n != 0 || active != 0 {
+			t.Errorf("unpackers=%d active=%d, want 0 and 0: the earlier attempt's completion started the retry's unpacker", n, active)
 		}
 	})
 }

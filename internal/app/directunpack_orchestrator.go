@@ -48,15 +48,14 @@ func newDirectUnpackOrchestrator(app *Application) *directUnpackOrchestrator {
 // job is eligible for extraction-while-downloading.
 func (o *directUnpackOrchestrator) maybeStart(fc FileComplete) {
 	app := o.app
+	// RowJob rather than Row: the unpacker map below is keyed by ID, and an
+	// attempt a retry has replaced under that ID must not reach it (#1056).
 	j := fc.Job
-	if !app.registered(j) {
-		return
-	}
-	jobID := j.ID()
-	row, ok := app.dispatcher.Row(jobID)
+	row, ok := app.dispatcher.RowJob(j)
 	if !ok {
 		return
 	}
+	jobID := j.ID()
 	// Skip DU for jobs that don't want unpacking (PP < 2) or have a password
 	// (DU would fail on the password and fall back anyway).
 	if row.Header.PP.Int() < 2 || row.Header.Password != "" {
@@ -151,7 +150,7 @@ func (o *directUnpackOrchestrator) maybeStart(fc FileComplete) {
 	// o.mu, so an unpacker created above either predates that abortJob, which
 	// removes it, or was created after it, when the state is already visible
 	// here. The read is outside o.mu: it takes the dispatcher's lock, and the
-	// registered and Row calls at the top of this function take it before o.mu.
+	// RowJob call at the top of this function takes it before o.mu.
 	if st, _ := app.dispatcher.UnwantedState(jobID); st.Blocked() {
 		o.abortJob(jobID)
 		app.log.Debug("directunpack: not feeding a job blocked for unwanted extensions",

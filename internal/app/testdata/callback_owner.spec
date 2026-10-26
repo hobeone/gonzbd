@@ -1,12 +1,20 @@
 pkg ./internal/app/
-run Test(HandleArticleWritten_RecordsOnTheWritingInstance|HandleArticleRejected_FailsOnTheWritingInstance|HandleFileUntrusted_LeavesADepartedInstancesRowsAlone|CompleteFinalizedFile_RefusesADepartedInstance)$
+run Test(HandleArticleWritten_RecordsOnTheWritingInstance|HandleArticleRejected_FailsOnTheWritingInstance|HandleFileUntrusted_LeavesADepartedInstancesRowsAlone|CompleteFinalizedFile_RefusesADepartedInstance|MaybeStart_IneligibleJobsCreateNothing)$
 
 # Each per-job assembler callback names the instance it reports on, and each handler
 # acts on that instance (#1056). Each mutation here puts the by-ID lookup back
 # in one handler, so a report for an attempt that has left the queue lands on
 # the retry registered under its ID; the two registered guards are neutered
 # separately, since each protects ID-keyed state the departed instance must
-# not touch.
+# not touch, and maybeStart's RowJob is turned back into a Row read by ID.
+
+[maybeStart feeds the unpacker of whatever holds the ID]
+file internal/app/directunpack_orchestrator.go
+--- anchor
+	row, ok := app.dispatcher.RowJob(j)
+--- replace
+	row, ok := app.dispatcher.Row(j.ID())
+--- end
 
 [handleArticleWritten records on whatever holds the ID]
 file internal/app/record.go
