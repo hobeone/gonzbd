@@ -340,12 +340,14 @@ func TestCLI_Wait(t *testing.T) {
 		wantErr  string
 	}{
 		{"db ge holds", []string{"--db", dbPath, "--sql", "SELECT n FROM t", "--ge", "7"}, 0, "7\n", ""},
-		{"db gt times out", []string{"--timeout", "50ms", "--interval", "5ms", "--db", dbPath, "--sql", "SELECT n FROM t", "--gt", "7"}, 1, "", "last observed: 7"},
+		// The timing-out database cases need one query to complete before the
+		// deadline; a cold first query on a loaded runner has exceeded 50ms.
+		{"db gt times out", []string{"--timeout", "500ms", "--interval", "5ms", "--db", dbPath, "--sql", "SELECT n FROM t", "--gt", "7"}, 1, "", "last observed: 7"},
 		{"db eq holds", []string{"--db", dbPath, "--sql", "SELECT n FROM t", "--eq", "7"}, 0, "7\n", ""},
 		{"db eq empty string holds", []string{"--db", dbPath, "--sql", "SELECT ''", "--eq", ""}, 0, "\n", ""},
-		{"db eq empty is not satisfied by NULL", []string{"--timeout", "50ms", "--interval", "5ms", "--db", dbPath, "--sql", "SELECT NULL", "--eq", ""}, 1, "", "last observed: (NULL)"},
-		{"db missing times out", []string{"--timeout", "50ms", "--interval", "5ms", "--db", filepath.Join(dir, "no.db"), "--sql", "SELECT 1", "--ge", "1"}, 1, "", "(db not found)"},
-		{"db missing table keeps polling", []string{"--timeout", "50ms", "--interval", "5ms", "--db", dbPath, "--sql", "SELECT n FROM absent", "--ge", "1"}, 1, "", "no such table"},
+		{"db eq empty is not satisfied by NULL", []string{"--timeout", "500ms", "--interval", "5ms", "--db", dbPath, "--sql", "SELECT NULL", "--eq", ""}, 1, "", "last observed: (NULL)"},
+		{"db missing times out", []string{"--timeout", "500ms", "--interval", "5ms", "--db", filepath.Join(dir, "no.db"), "--sql", "SELECT 1", "--ge", "1"}, 1, "", "(db not found)"},
+		{"db missing table keeps polling", []string{"--timeout", "500ms", "--interval", "5ms", "--db", dbPath, "--sql", "SELECT n FROM absent", "--ge", "1"}, 1, "", "no such table"},
 		{"db syntax error exits at once", []string{"--timeout", "30s", "--db", dbPath, "--sql", "SELEC n FROM t", "--ge", "1"}, 2, "", "can never succeed"},
 		{"log holds", []string{"--log", logPath, "--regex", "^hello"}, 0, "hello world\n", ""},
 		{"log times out", []string{"--timeout", "50ms", "--interval", "5ms", "--log", logPath, "--regex", "nope"}, 1, "", "(no matching line)"},
