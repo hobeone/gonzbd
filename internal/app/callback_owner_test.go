@@ -49,8 +49,16 @@ func TestHandleArticleRejected_FailsOnTheWritingInstance(t *testing.T) {
 
 func TestHandleFileUntrusted_LeavesADepartedInstancesRowsAlone(t *testing.T) {
 	t.Parallel()
-	application := newTestApplication(t)
+	// The loose-record fixture: newTestApplication has no SQLite store, and
+	// the rows the untrust would purge live there.
+	a := newLREnv(t).newApp(t)
+	application := a.Application
 	first, second := retriedUnderOneID(t, application, "feedface00105605")
+	// The fixture registers through the dispatcher alone; AddJob would have
+	// seeded the job_files rows the written rows hang off.
+	if err := seedJobFiles(t.Context(), application.durable, second); err != nil {
+		t.Fatalf("seedJobFiles: %v", err)
+	}
 	emit(t, first, second)
 	p := application.pipeline
 	if err := p.registerFile(second, 0); err != nil {
@@ -60,20 +68,25 @@ func TestHandleFileUntrusted_LeavesADepartedInstancesRowsAlone(t *testing.T) {
 	if !second.Progress().ArticleDone(0) {
 		t.Fatal("fixture: the retry's article is not Done")
 	}
+	// Flushed, so the row is in SQLite under the ID the two attempts share:
+	// an untrust taken for the earlier attempt would delete it there.
+	if err := application.recorder.flush(t.Context()); err != nil {
+		t.Fatalf("flush: %v", err)
+	}
+	if got := rowsFor(t, a.repo.DB(), second.ID()); len(got) != 1 {
+		t.Fatalf("fixture: rows in SQLite under the ID = %d, want 1", len(got))
+	}
 
 	application.handleFileUntrusted(first, 0)
 
+	if got := rowsFor(t, a.repo.DB(), second.ID()); len(got) != 1 {
+		t.Errorf("rows in SQLite under the ID after the earlier attempt's untrust = %d, want 1: the retry's record was purged", len(got))
+	}
 	if !second.Progress().ArticleDone(0) {
 		t.Error("the retry's written article was returned to Outstanding by the earlier attempt's untrust")
 	}
 	if _, err := p.lookupFile(second.ID(), 0); err != nil {
 		t.Errorf("the retry's cached file info was forgotten by the earlier attempt's untrust: %v", err)
-	}
-	application.recorder.mu.Lock()
-	underSecond := len(application.recorder.pending[second])
-	application.recorder.mu.Unlock()
-	if underSecond != 1 {
-		t.Errorf("rows buffered under the retry = %d, want 1: the earlier attempt's untrust purged them", underSecond)
 	}
 }
 

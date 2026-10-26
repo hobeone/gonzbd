@@ -81,7 +81,7 @@ type fileKey struct {
 
 // refFor is the sole place a downloaded article's identity becomes an
 // assembler.ArticleRef, and so the one producer of an assembler.Owner outside
-// tests (`git grep -n -E '^\s+Owner:' -- 'internal/*.go' ':!*_test.go'`
+// tests (`git grep -n -E 'Owner:\s' -- 'internal/*.go' ':!*_test.go'`
 // returns 1 line): the owner is res.Job, the instance the fetch was
 // dispatched for, which is why resolveForWrite may assert it to a *job.Job.
 //
