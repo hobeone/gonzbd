@@ -30,34 +30,48 @@ func TestWriteArticle_RefusesARefWithoutAnOwner(t *testing.T) {
 }
 
 // The resolver is handed the owner the ref carried, and the ID the worker
-// keys and reports by is derived from it.
+// keys its handles by is derived from it: CloseJobHandles under the owner's
+// ID closes the handle the first write opened, so the second write resolves
+// again. Under a key not derived from the owner the handle survives the close
+// and the second write reuses it.
 func TestOpenTargetFile_ResolvesWithTheRefsOwner(t *testing.T) {
 	dir := t.TempDir()
 	owner := &testOwner{id: "job-1"}
 	var got Owner
-	var gotJobID string
-	done := make(chan struct{})
+	var resolved atomic.Int32
+	written := make(chan struct{}, 2)
 	a := startAssembler(t, Options{
 		FileInfo: func(o Owner, _ int) (FileInfo, error) {
 			got = o
-			return FileInfo{Dir: dir, Name: "f", TotalParts: 1}, nil
+			resolved.Add(1)
+			return FileInfo{Dir: dir, Name: "f", TotalParts: 2}, nil
 		},
-		OnArticleWritten: func(o Owner, _ int, _ int32, _, _ int64, _ uint32) {
-			gotJobID = o.ID()
-		},
-		OnFileComplete: func(Owner, int) { close(done) },
+		OnArticleWritten: func(Owner, int, int32, int64, int64, uint32) { written <- struct{}{} },
 	})
-	if err := a.WriteArticle(t.Context(),
-		ArticleRef{Owner: owner, FileIdx: 0, ArtIdx: 0, MessageID: "m@x"},
-		WriteRequest{Offset: 0, Data: []byte("abc")}); err != nil {
-		t.Fatalf("WriteArticle: %v", err)
+	write := func(artIdx int32, off int64) {
+		t.Helper()
+		if err := a.WriteArticle(t.Context(),
+			ArticleRef{Owner: owner, FileIdx: 0, ArtIdx: artIdx, MessageID: fmt.Sprintf("%d@x", artIdx)},
+			WriteRequest{Offset: off, Data: []byte("abc")}); err != nil {
+			t.Fatalf("WriteArticle: %v", err)
+		}
 	}
-	<-done
+	write(0, 0)
+	<-written
 	if got != owner {
 		t.Fatalf("the resolver received %v, want the ref's owner", got)
 	}
-	if gotJobID != "job-1" {
-		t.Fatalf("OnArticleWritten jobID = %q, want the owner's ID", gotJobID)
+	if err := a.CloseJobHandles(t.Context(), owner.ID()); err != nil {
+		t.Fatalf("CloseJobHandles: %v", err)
+	}
+	write(1, 3)
+	select {
+	case <-written:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the second write was never reported")
+	}
+	if n := resolved.Load(); n != 2 {
+		t.Fatalf("the resolver ran %d times, want 2: CloseJobHandles under the owner's ID did not close the handle, so the worker keyed it under another ID", n)
 	}
 }
 
