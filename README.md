@@ -21,7 +21,7 @@ A high-performance automated Usenet binary downloader written in Go.
 - **HTTPS** — Optional TLS listener with auto-generated self-signed certs.
 - **Single binary** — The UI is embedded via `//go:embed`; no external
   assets or runtime dependencies beyond optional `par2` and `7z`.
-- **Pure Go** — No CGO dependencies. RAR5 decoding via `hobeone/rarengine`.
+- **Pure Go** — No CGO dependencies. RAR decoding via `hobeone/rarengine` (RAR5, and stored RAR 1.5-4.x).
   SQLite via `modernc.org/sqlite`.
 
 ## Requirements
@@ -463,7 +463,7 @@ These checks must pass before pushing your changes to the repository.
 
 GoNZBD supports **zero-dependency execution** by utilizing native, pure-Go libraries for all core post-processing operations, eliminating the need to install or shell out to external system binaries:
 
-* **Pure-Go RAR Extraction** (`use_go_rar`): Powered by `hobeone/rarengine` (RAR5). Enabled by default; falls back to external `unrar` for RAR3/4 or unsupported features. Link members (symlinks, junctions, hard links and file references) are never created: gonzbd puts no links in a job, so each is skipped with a log line and the rest of the set is extracted. Compressed members decode on up to 4 goroutines by default (min of CPU count and 4), tunable with `postproc.rar_decode_workers` (1 = serial).
+* **Pure-Go RAR Extraction** (`use_go_rar`): Powered by `hobeone/rarengine`: RAR5, and RAR 1.5-4.x archives whose members are stored (`-m0`), legacy `.rar`/`.r00` volume naming included, so those need no `unrar` either, during DirectUnpack or after download. Enabled by default; falls back to external `unrar` for a compressed or encrypted RAR 1.5-4.x member or other unsupported features. Link members (symlinks, junctions, hard links and file references) are never created: gonzbd puts no links in a job, so each is skipped with a log line and the rest of the set is extracted. Compressed members decode on up to 4 goroutines by default (min of CPU count and 4), tunable with `postproc.rar_decode_workers` (1 = serial).
 * **Pure-Go 7-Zip Extraction** (`use_go_7z`): Powered by `bodgit/sevenzip`. Enabled by default; no `7z` binary required.
 * **Pure-Go PAR2 Verification & Repair** (`use_go_par2`): Powered by our high-performance native `github.com/hobeone/par2engine` module. Enabled by default; no `par2cmdline` binary required.
 

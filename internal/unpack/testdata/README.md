@@ -23,9 +23,20 @@ Re-run that script to regenerate. **Do not edit these files by hand.**
 | `rar5_link_filecopy.rar` | RAR5 | `orig.txt` and file reference `copy.txt` -> `orig.txt` (`rar a -ma5 -oi:1 -m0`, identical contents) |
 | `flat_collide.rar`, `flat_collide.7z` | RAR5, 7z | `a/f.txt`=`one` and `b/f.txt`=`two`, which flatten to one name |
 | `flat_dir_file.rar`, `flat_dir_file.7z` | RAR5, 7z | File `a/x`=`file` and directory `b/x` holding `b/x/y`=`y`; RAR stores the file before the directory, 7z the directories first |
+| `rar4_store_multi.rar`, `.r00`, `.r01` | RAR 1.5-4.x multi-volume, stored, legacy naming | `large.bin`, 8 KiB of random data in 4 KiB volumes (copied from rarengine testdata) |
+| `rar4_lz.rar` | RAR 1.5-4.x (`-m3`) | `text.txt`, compressed, which rarengine refuses (copied from rarengine testdata) |
+| `rar4_encrypted.rar` | RAR 1.5-4.x, stored, encrypted | `hello.txt`, password `test`, which rarengine refuses (copied from rarengine testdata) |
+| `rar4_stored_then_lz.rar` | RAR 1.5-4.x, mixed | `a.bin` (3000 random bytes, `-m0`) then `b.txt` (80 text lines, `-m3`), so a stored member is extracted before the refusal |
 
 ## Limitations
 
 RAR 7.x removed `-ma4` so RAR4 (v3 compression) archives cannot be generated.
-If RAR4 test fixtures are needed, generate them with an older `rar` binary and
-commit manually.
+The `rar4_*` fixtures need a rar 6.x binary, and are left in place by the
+clean step here. All but one come from the `generate_rar4.sh` script in
+rarengine's own testdata. `rar4_stored_then_lz.rar` was made with rar 6.24
+as two appends to one archive:
+
+```bash
+rar a -ma4 -m0 -ep -tsm- rar4_stored_then_lz.rar a.bin
+rar a -ma4 -m3 -ep -tsm- rar4_stored_then_lz.rar b.txt
+```

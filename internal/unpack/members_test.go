@@ -50,6 +50,23 @@ func TestRarMemberBaseNames_NestedMember(t *testing.T) {
 	}
 }
 
+// A RAR 1.5-4.x archive is listed too, its compressed members included,
+// although rarengine extracts only the stored ones: quickcheck counts a file
+// such an archive holds as held, and the unpack stage's unrar fallback
+// extracts it.
+func TestRarMemberBaseNames_RAR4CompressedMember(t *testing.T) {
+	t.Parallel()
+
+	found, err := rarMemberBaseNames(filepath.Join("testdata", "rar4_lz.rar"),
+		map[string]bool{"text.txt": true})
+	if err != nil {
+		t.Fatalf("rarMemberBaseNames: %v", err)
+	}
+	if !found["text.txt"] {
+		t.Errorf("found = %v, want text.txt", found)
+	}
+}
+
 func TestMemberBaseNames_Errors(t *testing.T) {
 	t.Parallel()
 

@@ -15,10 +15,11 @@ TMPDIR=$(mktemp -d)
 trap 'rm -rf "$TMPDIR"' EXIT
 
 # Clean previous output
-# rar5_link_symlink/hard/solid.rar are copied from rarengine's testdata, not
-# generated here, so the clean step leaves them alone.
+# rar5_link_symlink/hard/solid.rar and the rar4_* fixtures are copied from
+# rarengine's testdata, not generated here, so the clean step leaves them alone.
 find "$OUTDIR" -maxdepth 1 \( -name '*.rar' -o -name '*.r[0-9][0-9]' \) \
-	! -name 'rar5_link_symlink.rar' ! -name 'rar5_link_hard.rar' ! -name 'rar5_link_solid.rar' -delete
+	! -name 'rar5_link_symlink.rar' ! -name 'rar5_link_hard.rar' ! -name 'rar5_link_solid.rar' \
+	! -name 'rar4_*' -delete
 mkdir -p "$OUTDIR"
 
 # Create source content files

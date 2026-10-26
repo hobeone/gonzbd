@@ -68,9 +68,9 @@ type Options struct {
 	// compressed member's blocks on that many goroutines (see
 	// DecodeWorkers). The external unrar is not governed by this option.
 	DecodeWorkers int
-	// UseGoRAR uses the pure-Go rarengine library for RAR3/RAR5 extraction
-	// instead of shelling out to unrar. No external binary required.
-	// Default true.
+	// UseGoRAR uses the pure-Go rarengine library for RAR extraction instead
+	// of shelling out to unrar: RAR5, and the stored members of RAR 1.5-4.x.
+	// No external binary required. Default true.
 	UseGoRAR bool
 	// GoRarFallback allows a failed pure-Go RAR extraction to retry with
 	// the external unrar binary. Only relevant when UseGoRAR is true.

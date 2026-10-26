@@ -1404,12 +1404,22 @@ articles or sparse regions.
    detected.
 6. **Non-RAR handling**: `extractSet` calls `rarheader.Version()` on the first
    volume's magic bytes. Any error — including I/O errors, not just format
-   mismatches — yields `errNotRAR` and the set is recorded as `SkippedSet`, not
-   failed, and left to the normal unpack stage. That stage extracts RAR3 only
-   through an external `unrar` binary it finds; its pure-Go path is
-   `rarengine` too, and fails a RAR3 set.
-7. **Format support**: `rarengine` (pure Go RAR5). Other formats, legacy
-   RAR2/RAR3, and non-RAR files identified by filename go to post-processing.
+   mismatches — yields `errNotRAR`. That error, and `errRAR4Undecodable` —
+   `rarengine`'s `ErrUnsupportedFormat` from a RAR 1.5-4.x set, at any member
+   — are the two `leftToUnpack` reports: the set is recorded as `SkippedSet`,
+   not failed, publishes nothing (it was staged), and is left to the normal
+   unpack stage, unless `Abort` has set `killed`, which makes it "aborted".
+   `ErrUnsupportedFormat` from a RAR5 set (a RAR 7.0 member, a later volume
+   with a bad signature) stays a failure
+   (`TestDirectUnpack_RAR5RefusalIsAFailure`). The unpack stage retries what
+   `rarengine` refuses with the external `unrar` when `go_rar_fallback` is on
+   and a binary is found, and otherwise fails the set (`extractWithDriver`,
+   `TestUnpackStage_RAR4_GoFirstThenUnrar`).
+7. **Format support**: `rarengine` (pure Go): RAR5, and the stored members of
+   RAR 1.5-4.x, including legacy `.rar`/`.r00`/`.r01` sets
+   (`TestDirectUnpack_RAR4StoredLegacySet`). A compressed or encrypted
+   RAR 1.5-4.x member, other formats, and non-RAR files identified by
+   filename go to post-processing (`TestDirectUnpack_SkipsCompressedRAR4`).
 8. **Abort/kill**: `Abort()` sets `killed`, records each queued set as failed
    ("aborted (not started)"), signals the reader goroutine and waits for
    `run()` to exit. If `run()` was never started it closes `done` directly.

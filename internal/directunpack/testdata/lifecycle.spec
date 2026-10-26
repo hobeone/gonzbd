@@ -69,11 +69,6 @@ file internal/directunpack/directunpack.go
 			select {
 			case feedErr := <-feedErrChan:
 				return feedErr
-			default:
-			}
-			if extractErr != nil {
-				return extractErr
-			}
 --- replace
 			if extractErr != nil {
 				return extractErr
@@ -81,8 +76,6 @@ file internal/directunpack/directunpack.go
 			select {
 			case feedErr := <-feedErrChan:
 				return feedErr
-			default:
-			}
 --- end
 
 [Wait does not wake a run waiting for volume 1]

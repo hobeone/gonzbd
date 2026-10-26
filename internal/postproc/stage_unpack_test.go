@@ -16,6 +16,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/hobeone/rarengine"
+
 	"github.com/hobeone/gonzbd/internal/cmdutil"
 	"github.com/hobeone/gonzbd/internal/directunpack"
 	"github.com/hobeone/gonzbd/internal/testutil"
@@ -1176,6 +1178,69 @@ exit 0
 	}
 	if !sawSuccess {
 		t.Errorf("missing success log: %v", lines)
+	}
+}
+
+// TestUnpackStage_RAR4_GoFirstThenUnrar runs the real go_unrar on RAR 1.5-4.x
+// archives through the stage: a stored set is extracted in-process and never
+// reaches unrar; a compressed one is refused by rarengine and retried with the
+// external unrar only when go_rar_fallback is on.
+func TestUnpackStage_RAR4_GoFirstThenUnrar(t *testing.T) {
+	t.Parallel()
+
+	for _, tc := range []struct {
+		name          string
+		files         []string
+		fallback      bool
+		wantErr       bool
+		wantUnrar     bool
+		wantExtracted string
+	}{
+		{"stored set", []string{"rar4_store_multi.rar", "rar4_store_multi.r00", "rar4_store_multi.r01"}, true, false, false, "large.bin"},
+		{"compressed, fallback on", []string{"rar4_lz.rar"}, true, false, true, "mock_extracted_file.txt"},
+		{"compressed, fallback off", []string{"rar4_lz.rar"}, false, true, false, ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			binDir := t.TempDir()
+			called := filepath.Join(binDir, "called")
+			unrarPath := createDummyExecutable(t, binDir, "mock-unrar", `#!/bin/sh
+touch "`+called+`"
+for arg in "$@"; do outdir="$arg"; done
+outdir="${outdir%/}"
+[ -d "$outdir" ] && touch "$outdir/mock_extracted_file.txt"
+exit 0
+`)
+
+			job, dir := stageJob(t)
+			for _, f := range tc.files {
+				copyToDir(t, unpackFixture(f), dir)
+			}
+
+			s := appliedUnpackStage(UnpackConfig{Base: unpack.Options{
+				UseGoRAR:      true,
+				GoRarFallback: tc.fallback,
+				UnrarCommand:  unrarPath,
+			}, EnableUnrar: true, Enable7zip: true, Cleanup: false})
+			s.SetEnabled(true)
+
+			err := s.Run(t.Context(), job)
+			if (err != nil) != tc.wantErr {
+				t.Fatalf("Run err = %v, want error %v", err, tc.wantErr)
+			}
+			if tc.wantErr && !errors.Is(err, rarengine.ErrUnsupportedFormat) {
+				t.Errorf("Run err = %v, want rarengine.ErrUnsupportedFormat", err)
+			}
+			if _, statErr := os.Stat(called); (statErr == nil) != tc.wantUnrar {
+				t.Errorf("unrar invoked = %v, want %v", statErr == nil, tc.wantUnrar)
+			}
+			if tc.wantExtracted != "" {
+				if _, statErr := os.Stat(filepath.Join(dir, tc.wantExtracted)); statErr != nil {
+					t.Errorf("%s not extracted: %v", tc.wantExtracted, statErr)
+				}
+			}
+		})
 	}
 }
 
