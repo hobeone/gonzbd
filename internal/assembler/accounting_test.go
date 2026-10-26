@@ -282,7 +282,7 @@ func TestHandleSuccessArticle_RetryOfAFailedArticleIsNotCountedTwice(t *testing.
 	f := newHelperFile(t, t.TempDir(), "retry-count.dat", 0)
 
 	a.handleFatalArticle(f, WriteRequest{
-		JobID: "job", FileIdx: 0, ArtIdx: 0, MessageID: "m0", FatalErr: os.ErrClosed,
+		Owner: ownerFor("job"), JobID: "job", FileIdx: 0, ArtIdx: 0, MessageID: "m0", FatalErr: os.ErrClosed,
 	})
 	if f.w.parts() != 1 {
 		t.Fatalf("parts() = %d, want 1; the fixture did not reach the state under test",
@@ -291,7 +291,7 @@ func TestHandleSuccessArticle_RetryOfAFailedArticleIsNotCountedTwice(t *testing.
 
 	writes := countWrites(f.w)
 	a.handleSuccessArticle(f, WriteRequest{
-		JobID: "job", FileIdx: 0, ArtIdx: 0, MessageID: "m0",
+		Owner: ownerFor("job"), JobID: "job", FileIdx: 0, ArtIdx: 0, MessageID: "m0",
 		Offset: 0, Data: []byte("abcd"),
 	})
 

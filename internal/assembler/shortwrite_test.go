@@ -51,11 +51,11 @@ func TestFileWriter_ShortWriteLeavesNoClaimOverPartialBytes(t *testing.T) {
 	w := newTestFileWriter(t, withShortWrite(50))
 	a := newHelperAssembler()
 	var unwritten []int32
-	a.opts.OnArticlesUnwritten = func(_ string, _ int, arts []int32) { unwritten = append(unwritten, arts...) }
-	f := &openFile{w: w, info: FileInfo{Dir: filepath.Dir(w.path), Name: filepath.Base(w.path), ExpectedSize: 1000}}
+	a.opts.OnArticlesUnwritten = func(_ Owner, _ int, arts []int32) { unwritten = append(unwritten, arts...) }
+	f := &openFile{w: w, info: FileInfo{Dir: filepath.Dir(w.path), Name: filepath.Base(w.path), ExpectedSize: 1000}, owner: ownerFor("job")}
 
 	a.handleSuccessArticle(f, WriteRequest{
-		JobID: "job", FileIdx: 0, ArtIdx: 0, MessageID: "a0",
+		Owner: ownerFor("job"), JobID: "job", FileIdx: 0, ArtIdx: 0, MessageID: "a0",
 		Offset: 0, Data: bytes.Repeat([]byte{0xAA}, 100),
 	})
 

@@ -28,8 +28,8 @@ import (
 func TestTransientWriteFault_DoesNotPermanentlyUndercountTheFile(t *testing.T) {
 	dir := t.TempDir()
 	a := newHelperAssembler()
-	a.opts.OnArticlesUnwritten = func(string, int, []int32) {}
-	a.opts.OnWriteFault = func(string, int, *storagefault.Fault) {}
+	a.opts.OnArticlesUnwritten = func(Owner, int, []int32) {}
+	a.opts.OnWriteFault = func(Owner, int, *storagefault.Fault) {}
 
 	f := newHelperFile(t, dir, "count.dat", 0)
 	f.info.TotalParts = 3
@@ -39,7 +39,7 @@ func TestTransientWriteFault_DoesNotPermanentlyUndercountTheFile(t *testing.T) {
 
 	send := func(idx int32, msg string) {
 		a.processRequest(WriteRequest{
-			JobID: "job", FileIdx: 0, ArtIdx: idx, MessageID: msg,
+			Owner: ownerFor("job"), JobID: "job", FileIdx: 0, ArtIdx: idx, MessageID: msg,
 			Offset: int64(idx) * 4, Data: []byte("AAAA"),
 		}, open, completed)
 	}

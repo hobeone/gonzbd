@@ -5,14 +5,14 @@ run TestLooseRecord_ResumedCompletionSurvivesEviction
 file internal/app/app.go
 --- anchor
 		if err := j.MarkFileComplete(fc.FileIdx); err != nil {
-			app.logQueueWriteFailure("mark file complete", fc.JobID, fc.FileIdx, err)
+			app.logQueueWriteFailure("mark file complete", fc.Job.ID(), fc.FileIdx, err)
 			return err
 		}
 		app.markFileDirty(j, fc.FileIdx)
 	}
 --- replace
 		if err := j.MarkFileComplete(fc.FileIdx); err != nil {
-			app.logQueueWriteFailure("mark file complete", fc.JobID, fc.FileIdx, err)
+			app.logQueueWriteFailure("mark file complete", fc.Job.ID(), fc.FileIdx, err)
 			return err
 		}
 	}

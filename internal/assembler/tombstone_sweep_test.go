@@ -28,7 +28,7 @@ func TestJobTombstone_DropsTheJobsFileTombstones(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			a := newHelperAssembler()
-			a.opts.OnArticlesUnwritten = func(string, int, []int32) {}
+			a.opts.OnArticlesUnwritten = func(Owner, int, []int32) {}
 
 			finished := fileKey{jobID: "job", fileIdx: 0}
 			writing := fileKey{jobID: "job", fileIdx: 1}

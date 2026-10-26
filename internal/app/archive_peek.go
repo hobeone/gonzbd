@@ -112,7 +112,7 @@ func archiveMemberNames(path string, par2Opts par2.ParseOptions) (names []string
 // filing is owed by the job's state, so it does not depend on this return. No lock
 // is held across the header read or the file I/O.
 func (app *Application) peekArchiveForUnwanted(j *job.Job, fc FileComplete) string {
-	jobID := fc.JobID
+	jobID := j.ID()
 	if st, ok := app.dispatcher.UnwantedState(jobID); !ok || st != unwanted.StateNone {
 		return ""
 	}
@@ -169,7 +169,7 @@ func (app *Application) peekArchiveForUnwanted(j *job.Job, fc FileComplete) stri
 // (FileComplete.FailMsg) so the job the peek blocked under ActionFail is filed
 // naming the flagged files.
 func (app *Application) peekResumedFile(j *job.Job, fileIdx int) string {
-	return app.peekArchiveForUnwanted(j, FileComplete{JobID: j.ID(), FileIdx: fileIdx, Resumed: true})
+	return app.peekArchiveForUnwanted(j, FileComplete{Job: j, FileIdx: fileIdx, Resumed: true})
 }
 
 // blockForUnwanted is the acting half of the peek: it asks the dispatcher to

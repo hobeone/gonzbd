@@ -16,7 +16,7 @@ import (
 func TestCloseJobHandles_DropsTheHandleEvenWhenTheSyncFailed(t *testing.T) {
 	dir := t.TempDir()
 	a := newHelperAssembler()
-	a.opts.OnArticlesUnwritten = func(string, int, []int32) {}
+	a.opts.OnArticlesUnwritten = func(Owner, int, []int32) {}
 
 	f := newHelperFile(t, dir, "job_0.dat", 0)
 	key := fileKey{jobID: "job", fileIdx: 0}
@@ -51,7 +51,7 @@ func TestCloseJobHandles_DropsTheHandleEvenWhenTheSyncFailed(t *testing.T) {
 func TestCloseJobHandles_ArmSendsTheCloseTimeFaultOnTheAck(t *testing.T) {
 	dir := t.TempDir()
 	a := newHelperAssembler()
-	a.opts.OnArticlesUnwritten = func(string, int, []int32) {}
+	a.opts.OnArticlesUnwritten = func(Owner, int, []int32) {}
 
 	f := newHelperFile(t, dir, "job_0.dat", 0)
 	open := map[fileKey]*openFile{{jobID: "job", fileIdx: 0}: f}

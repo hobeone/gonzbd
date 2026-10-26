@@ -45,17 +45,12 @@ import (
 //
 // Thread-safe: clears the emitted bits under the job lock. It does NOT touch
 // the assembler.
-func (app *Application) handleArticlesUnwritten(jobID string, fileIdx int, artIdxs []int32) {
-	j, ok := app.dispatcher.Job(jobID)
-	if !ok {
-		app.log.Debug("unwritten articles not returned to Outstanding; the job has left the queue",
-			"job", jobID, "fileidx", fileIdx, "articles", len(artIdxs))
-		return
-	}
+func (app *Application) handleArticlesUnwritten(owner assembler.Owner, fileIdx int, artIdxs []int32) {
+	j := instanceOf(owner)
 	for _, artIdx := range artIdxs {
 		if err := j.ClearArticleEmitted(int(artIdx)); err != nil {
 			app.log.Warn("return unwritten article to Outstanding",
-				"job", jobID, "fileidx", fileIdx, "artidx", artIdx, "err", err)
+				"job", j.ID(), "fileidx", fileIdx, "artidx", artIdx, "err", err)
 		}
 	}
 }
@@ -106,25 +101,17 @@ func (app *Application) handleArticlesUnwritten(jobID string, fileIdx int, artId
 // it. Assembler.syncAndCloseAll declines to route faults at all for exactly
 // this reason.
 //
-// # The instance is resolved here, not in the goroutine
+// # The instance travels with the fault
 //
 // Stall and Fail act on the instance they are given, through the dispatcher's
-// instance doors. It is looked up on the worker, while the write that faulted
-// is being processed, so a retry registered under the same ID before the
-// goroutine runs is left alone (#914). A write of an earlier attempt that
-// reaches the worker after the retry registered never gets as far as a fault:
-// the resolver refuses the owner it carries, and an open handle refuses
-// another owner (TestWriteArticle_OfAnEarlierAttemptNeverReachesTheRetrysFile).
-// What the lookup here still decides is a fault on the earlier attempt's own
-// handle that the worker reports after the retry registered; that fault
-// reaches the retry until the callbacks carry the owner (#1056).
-func (app *Application) handleWriteFault(jobID string, _ int, f *storagefault.Fault) {
-	j, ok := app.dispatcher.Job(jobID)
-	if !ok {
-		app.log.Warn("storage fault for a job that has left the queue; nothing to stall or fail",
-			"job", jobID, "fault", f.Error())
-		return
-	}
+// instance doors, and the instance is the owner the assembler reports: the
+// one whose write faulted, or whose handle the finish failed on. Nothing is
+// looked up by ID, so a retry registered under the same ID, before the
+// goroutine runs or before the fault was raised, is left alone (#914, #1056);
+// an owner that has left the queue reaches Stall and Fail, which refuse an
+// unregistered instance (TestHandleWriteFault_ActsOnTheWritingAttempt).
+func (app *Application) handleWriteFault(owner assembler.Owner, _ int, f *storagefault.Fault) {
+	j := instanceOf(owner)
 	app.wg.Go(func() {
 		if app.writeFaultRoutedHook != nil {
 			app.writeFaultRoutedHook(j)
@@ -158,15 +145,11 @@ func (app *Application) handleWriteFault(jobID string, _ int, f *storagefault.Fa
 // This is the other side of the A1 split from handleWriteFault: that one
 // stalls the job and touches no article, this one fails the article and
 // touches no job state.
-func (app *Application) handleArticleRejected(jobID string, fileIdx int, artIdx int32, reason string, uncovered int64) {
+func (app *Application) handleArticleRejected(owner assembler.Owner, fileIdx int, artIdx int32, reason string, uncovered int64) {
+	j := instanceOf(owner)
+	jobID := j.ID()
 	app.log.Warn("article rejected by the assembler; recording it as permanently failed",
 		"job", jobID, "fileidx", fileIdx, "artidx", artIdx, "reason", reason, "uncovered", uncovered)
-	j, ok := app.dispatcher.Job(jobID)
-	if !ok {
-		app.log.Debug("rejected article not recorded; the job has left the queue",
-			"job", jobID, "artidx", artIdx)
-		return
-	}
 	charge := uncovered
 	if uncovered == assembler.WholeArticle {
 		charge = job.WholeArticle

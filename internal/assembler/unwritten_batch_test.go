@@ -13,15 +13,15 @@ import (
 func TestNoteArticlesUnwritten_IsSilentOnAnEmptySet(t *testing.T) {
 	a := newHelperAssembler()
 	var calls int
-	a.opts.OnArticlesUnwritten = func(string, int, []int32) { calls++ }
+	a.opts.OnArticlesUnwritten = func(Owner, int, []int32) { calls++ }
 
-	a.noteArticlesUnwritten("job", 0, nil)
-	a.noteArticlesUnwritten("job", 0, []int32{})
+	a.noteArticlesUnwritten(WriteRequest{Owner: ownerFor("job"), JobID: "job"}, nil)
+	a.noteArticlesUnwritten(WriteRequest{Owner: ownerFor("job"), JobID: "job"}, []int32{})
 	if calls != 0 {
 		t.Errorf("the callback ran %d times for an empty set", calls)
 	}
 
-	a.noteArticlesUnwritten("job", 0, []int32{4})
+	a.noteArticlesUnwritten(WriteRequest{Owner: ownerFor("job"), JobID: "job"}, []int32{4})
 	if calls != 1 {
 		t.Errorf("the callback ran %d times for one article, want 1", calls)
 	}

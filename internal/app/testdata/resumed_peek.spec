@@ -12,17 +12,17 @@ file internal/app/residency.go
 [the Resumed completion is enqueued without the message]
 file internal/app/record.go
 --- anchor
-	fc := FileComplete{JobID: jobID, FileIdx: fileIdx, Resumed: true, FailMsg: failMsg}
+	fc := FileComplete{Job: j, FileIdx: fileIdx, Resumed: true, FailMsg: failMsg}
 --- replace
-	fc := FileComplete{JobID: jobID, FileIdx: fileIdx, Resumed: true}
+	fc := FileComplete{Job: j, FileIdx: fileIdx, Resumed: true}
 --- end
 
 [the message reaches only the flagged file's completion, not the job's]
 file internal/app/residency.go
 --- anchor
-		r.finished(j.ID(), fi, failMsg)
+		r.finished(j, fi, failMsg)
 --- replace
-		r.finished(j.ID(), fi, func() string {
+		r.finished(j, fi, func() string {
 			if fi == 1 {
 				return failMsg
 			}

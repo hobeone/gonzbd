@@ -18,15 +18,15 @@ file internal/app/archive_peek.go
 [maybeStart feeds a Blocked job]
 file internal/app/directunpack_orchestrator.go
 --- anchor
-	if st, _ := app.dispatcher.UnwantedState(fc.JobID); st.Blocked() {
+	if st, _ := app.dispatcher.UnwantedState(jobID); st.Blocked() {
 --- replace
-	if st, _ := app.dispatcher.UnwantedState(fc.JobID); st.Blocked() && false {
+	if st, _ := app.dispatcher.UnwantedState(jobID); st.Blocked() && false {
 --- end
 
 [maybeStart feeds a job the fail action blocked]
 file internal/app/directunpack_orchestrator.go
 --- anchor
-	if st, _ := app.dispatcher.UnwantedState(fc.JobID); st.Blocked() {
+	if st, _ := app.dispatcher.UnwantedState(jobID); st.Blocked() {
 --- replace
-	if st, _ := app.dispatcher.UnwantedState(fc.JobID); st.Blocked() && st.ForHistory() == st {
+	if st, _ := app.dispatcher.UnwantedState(jobID); st.Blocked() && st.ForHistory() == st {
 --- end

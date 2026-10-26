@@ -8,7 +8,7 @@ run ^Test(CloseJobHandles_UntrustsAFileWhoseCloseTimeSyncFailed|SyncAndCloseAll_
 file internal/assembler/assembler.go
 --- anchor
 				closeErr = errors.Join(closeErr, cerr)
-				a.noteFileUntrusted(k.jobID, k.fileIdx)
+				a.noteFileUntrusted(f.owner, k.fileIdx)
 --- replace
 				closeErr = errors.Join(closeErr, cerr)
 --- end
@@ -17,18 +17,18 @@ file internal/assembler/assembler.go
 file internal/assembler/assembler.go
 --- anchor
 				closeErr = errors.Join(closeErr, cerr)
-				a.noteFileUntrusted(k.jobID, k.fileIdx)
+				a.noteFileUntrusted(f.owner, k.fileIdx)
 --- replace
 				closeErr = errors.Join(closeErr, cerr)
-				a.noteFileUntrusted(k.jobID, k.fileIdx)
-				a.noteFileUntrusted(k.jobID, k.fileIdx)
+				a.noteFileUntrusted(f.owner, k.fileIdx)
+				a.noteFileUntrusted(f.owner, k.fileIdx)
 --- end
 
 [worker exit does not untrust a file whose fsync failed]
 file internal/assembler/assembler.go
 --- anchor
 		if err := a.syncAndClose(f); err != nil {
-			a.noteFileUntrusted(k.jobID, k.fileIdx)
+			a.noteFileUntrusted(f.owner, k.fileIdx)
 		}
 --- replace
 		if err := a.syncAndClose(f); err != nil {
@@ -39,7 +39,7 @@ file internal/assembler/assembler.go
 [a failed completion finish does not untrust its file]
 file internal/assembler/assembler.go
 --- anchor
-		a.noteFileUntrusted(req.JobID, req.FileIdx)
+		a.noteFileUntrusted(req.Owner, req.FileIdx)
 --- replace
 		_ = req
 --- end
@@ -47,9 +47,9 @@ file internal/assembler/assembler.go
 [noteFileUntrusted does not reach its owner]
 file internal/assembler/assembler.go
 --- anchor
-		a.opts.OnFileUntrusted(jobID, fileIdx)
+		a.opts.OnFileUntrusted(owner, fileIdx)
 --- replace
-		_, _ = jobID, fileIdx
+		_, _ = owner, fileIdx
 --- end
 
 [sync swallows a failed fsync]

@@ -36,7 +36,7 @@ func TestPauseJob_FetchResultsLandingAfterThePauseAreRecorded(t *testing.T) {
 			"the write met a job whose manifest the pause evicted")
 	}
 
-	application.handleArticleRejected(j.ID(), 0, 1, "negative offset", assembler.WholeArticle)
+	application.handleArticleRejected(j, 0, 1, "negative offset", assembler.WholeArticle)
 	if got := j.Progress().ArticlesFailed(); got != 1 {
 		t.Errorf("ArticlesFailed = %d after a rejection landed on the paused job, want 1: "+
 			"the failure reached a job with no manifest to maintain its counters", got)

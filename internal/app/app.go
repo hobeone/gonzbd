@@ -156,7 +156,7 @@ type Application struct {
 	notifyDispatcher *notifier.Dispatcher
 
 	internalFileComplete chan FileComplete
-	onFileComplete       func(jobID string, fileIdx int)
+	onFileComplete       func(owner assembler.Owner, fileIdx int)
 	// resumedInFlight counts enqueueResumedCompletion's fallback senders that
 	// have not yet delivered or given up. Production code only writes it;
 	// `git grep -n 'resumedInFlight[.]Load' -- '*.go'` finds 2 lines, both in
@@ -547,8 +547,8 @@ func New(cfg *config.Config, repo *history.Repository, opts ...func(*Application
 	})
 	app.postProcessor = pp
 
-	onFileComplete := func(jobID string, fileIdx int) {
-		fc := FileComplete{JobID: jobID, FileIdx: fileIdx}
+	onFileComplete := func(owner assembler.Owner, fileIdx int) {
+		fc := FileComplete{Job: instanceOf(owner), FileIdx: fileIdx}
 		select {
 		case app.internalFileComplete <- fc:
 		default:
@@ -1626,7 +1626,8 @@ func (app *Application) logQueueWriteFailure(op, jobID string, fileIdx int, err 
 // by the assembler, or by path by the verifier.
 func (app *Application) handleFileComplete(_ context.Context, fc FileComplete) {
 	if err := app.completeFinalizedFile(fc); err != nil {
-		// A job that left the queue has nothing to mark. A Resumed completion
+		// An instance no longer registered under its ID (removed, or replaced
+		// by a retry) has nothing to mark. A Resumed completion
 		// needs no manifest: the hydration that finished the file settled and
 		// marked it. An assembler completion that finds the job evicted is not
 		// marked in this process; its rows are in the record, so the next
@@ -1637,7 +1638,7 @@ func (app *Application) handleFileComplete(_ context.Context, fc FileComplete) {
 		// was returned otherwise only after a cancel or a settle, which end
 		// the attempt, or the advance to Assessing, which requires every
 		// required file already marked.
-		app.log.Info("completion not delivered", "job", fc.JobID, "fileidx", fc.FileIdx, "err", err)
+		app.log.Info("completion not delivered", "job", fc.Job.ID(), "fileidx", fc.FileIdx, "err", err)
 	}
 }
 
@@ -1652,13 +1653,14 @@ func (app *Application) handleFileComplete(_ context.Context, fc FileComplete) {
 // attached, so a job evicted since still takes the rest, which reads only
 // progress.
 //
-// It returns an error when the job could not take the completion: it left the
-// queue, or, for an assembler completion, it was evicted before the mark.
+// It returns an error when the instance could not take the completion: it is
+// no longer the one registered under its ID (removed, or replaced by a retry),
+// or, for an assembler completion, it was evicted before the mark.
 func (app *Application) completeFinalizedFile(fc FileComplete) error {
-	j, ok := app.dispatcher.Job(fc.JobID)
-	if !ok {
+	j := fc.Job
+	if !app.registered(j) {
 		err := job.ErrNotResident
-		app.logQueueWriteFailure("mark file complete", fc.JobID, fc.FileIdx, err)
+		app.logQueueWriteFailure("mark file complete", j.ID(), fc.FileIdx, err)
 		return err
 	}
 	// Before MarkFileComplete, so the value is on the progress record by
@@ -1667,7 +1669,7 @@ func (app *Application) completeFinalizedFile(fc FileComplete) error {
 	// gaplessly gets zero, which par2 reads as NoCRC.
 	if !fc.Resumed {
 		if _, _, err := j.SettleFileCRC(fc.FileIdx); err != nil {
-			app.logQueueWriteFailure("settle file CRC", fc.JobID, fc.FileIdx, err)
+			app.logQueueWriteFailure("settle file CRC", fc.Job.ID(), fc.FileIdx, err)
 		}
 	}
 	// The volume's headers are read before anything consumes it, so a
@@ -1712,15 +1714,15 @@ func (app *Application) completeFinalizedFile(fc FileComplete) error {
 	// still takes the mark, behind a settle, peek and feed that ran.
 	if !fc.Resumed {
 		if !j.Resident() {
-			err := fmt.Errorf("job %s: %w", fc.JobID, job.ErrNotResident)
-			app.logQueueWriteFailure("mark file complete", fc.JobID, fc.FileIdx, err)
+			err := fmt.Errorf("job %s: %w", fc.Job.ID(), job.ErrNotResident)
+			app.logQueueWriteFailure("mark file complete", fc.Job.ID(), fc.FileIdx, err)
 			return err
 		}
 		if app.residentCheckedHook != nil {
 			app.residentCheckedHook(j)
 		}
 		if err := j.MarkFileComplete(fc.FileIdx); err != nil {
-			app.logQueueWriteFailure("mark file complete", fc.JobID, fc.FileIdx, err)
+			app.logQueueWriteFailure("mark file complete", fc.Job.ID(), fc.FileIdx, err)
 			return err
 		}
 		app.markFileDirty(j, fc.FileIdx)
@@ -1734,10 +1736,10 @@ func (app *Application) completeFinalizedFile(fc FileComplete) error {
 	// job that has already moved on, and must leave its next state alone.
 	if reported, err := app.reportDownloadComplete(j, app.dispatcher); reported {
 		if err != nil && !errors.Is(err, dispatch.ErrStaleReport) {
-			app.logQueueWriteFailure("report download complete", fc.JobID, fc.FileIdx, err)
+			app.logQueueWriteFailure("report download complete", fc.Job.ID(), fc.FileIdx, err)
 		}
 		if app.downloadReportedHook != nil {
-			app.downloadReportedHook(fc.JobID)
+			app.downloadReportedHook(fc.Job.ID())
 		}
 	}
 	app.emit(Event{Type: "queue_updated"})
@@ -2958,7 +2960,7 @@ func (app *Application) retryHistoryJob(ctx context.Context, jobID string, allow
 	admitted = true
 	restoreKept = true
 	for _, fi := range finished {
-		app.enqueueResumedCompletion(jobID, fi, "")
+		app.enqueueResumedCompletion(j, fi, "")
 	}
 
 	// Detached for the same reason Add is, and separately bounded so Add's

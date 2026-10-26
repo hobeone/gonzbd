@@ -94,7 +94,7 @@ func TestForgetJob_LetsAPreviouslyCompletedFileAcceptArticlesAgain(t *testing.T)
 	dir := t.TempDir()
 	a := newHelperAssembler()
 	var unwritten int
-	a.opts.OnArticlesUnwritten = func(string, int, []int32) { unwritten++ }
+	a.opts.OnArticlesUnwritten = func(Owner, int, []int32) { unwritten++ }
 
 	f := newHelperFile(t, dir, "job_0.dat", 0)
 	key := fileKey{jobID: "job", fileIdx: 0}
@@ -103,7 +103,7 @@ func TestForgetJob_LetsAPreviouslyCompletedFileAcceptArticlesAgain(t *testing.T)
 
 	req := func() WriteRequest {
 		return WriteRequest{
-			JobID: "job", FileIdx: 0, ArtIdx: 0, MessageID: "a",
+			Owner: ownerFor("job"), JobID: "job", FileIdx: 0, ArtIdx: 0, MessageID: "a",
 			Offset: 0, Data: []byte("AAAA"),
 		}
 	}
@@ -147,7 +147,7 @@ func TestAssembler_ForgetJob(t *testing.T) {
 	defer a.Stop()
 
 	// One article is the whole file, so writing it completes and tombstones it.
-	req := WriteRequest{JobID: "job1", FileIdx: 0, ArtIdx: testArtIdx(0), Offset: 0, Data: []byte("AAAA")}
+	req := WriteRequest{Owner: ownerFor("job1"), JobID: "job1", FileIdx: 0, ArtIdx: testArtIdx(0), Offset: 0, Data: []byte("AAAA")}
 	if err := writeArticle(t.Context(), a, req); err != nil {
 		t.Fatalf("WriteArticle: %v", err)
 	}
@@ -164,7 +164,7 @@ func TestAssembler_ForgetJob(t *testing.T) {
 	}
 
 	// A write that would previously have been refused as a late duplicate.
-	again := WriteRequest{JobID: "job1", FileIdx: 0, ArtIdx: testArtIdx(0), Offset: 0, Data: []byte("BBBB")}
+	again := WriteRequest{Owner: ownerFor("job1"), JobID: "job1", FileIdx: 0, ArtIdx: testArtIdx(0), Offset: 0, Data: []byte("BBBB")}
 	if err := writeArticle(t.Context(), a, again); err != nil {
 		t.Fatalf("WriteArticle after ForgetJob: %v", err)
 	}

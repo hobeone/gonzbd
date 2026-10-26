@@ -9,6 +9,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/hobeone/gonzbd/internal/assembler"
 	"github.com/hobeone/gonzbd/internal/durability"
 	"github.com/hobeone/gonzbd/internal/job"
 )
@@ -558,14 +559,12 @@ func (app *Application) queuedJobs() []*job.Job {
 }
 
 // handleArticleWritten is the assembler's Options.OnArticleWritten: the
-// article's bytes reached pwrite, so its row is buffered and it is Done.
-func (app *Application) handleArticleWritten(jobID string, fileIdx int, artIdx int32, off, n int64, crc uint32) {
-	j, ok := app.dispatcher.Job(jobID)
-	if !ok {
-		app.log.Debug("written article not recorded; the job has left the queue",
-			"job", jobID, "fileidx", fileIdx, "artidx", artIdx)
-		return
-	}
+// article's bytes reached pwrite, so its row is buffered and it is Done, on
+// the instance that wrote. An instance that has left the queue buffers under
+// itself, which a later flush discards (takeRowsLocked), and its mark lands
+// on that instance alone (refused as non-resident once it is evicted).
+func (app *Application) handleArticleWritten(owner assembler.Owner, fileIdx int, artIdx int32, off, n int64, crc uint32) {
+	j := instanceOf(owner)
 	app.recorder.noteWritten(j, durability.WrittenRow{
 		FileIdx: fileIdx, ArtIdx: artIdx, Offset: off, Length: n, CRC32: crc,
 	})
@@ -586,10 +585,15 @@ func (app *Application) handleArticleWritten(jobID string, fileIdx int, artIdx i
 //
 // It does not use app.wg: at worker exit, Shutdown may already be waiting on
 // it.
-func (app *Application) handleFileUntrusted(jobID string, fileIdx int) {
-	j, ok := app.dispatcher.Job(jobID)
-	if !ok {
-		app.log.Debug("untrusted file not recorded; the job has left the queue",
+//
+// It acts only for the instance registered under its ID: the SQLite rows and
+// the pipeline's cache are keyed by ID, so an untrust reported for an attempt
+// that has left would purge the retry's (#1056).
+func (app *Application) handleFileUntrusted(owner assembler.Owner, fileIdx int) {
+	j := instanceOf(owner)
+	jobID := j.ID()
+	if !app.registered(j) {
+		app.log.Debug("untrusted file not recorded; the instance has left the queue",
 			"job", jobID, "fileidx", fileIdx)
 		return
 	}
@@ -643,8 +647,8 @@ func (app *Application) handleFileUntrusted(jobID string, fileIdx int) {
 // app (joinAndStop) and on every failed Start, so the goroutine cannot
 // outlive the app; a completion it gives up is re-derived by the next start's
 // verification.
-func (app *Application) enqueueResumedCompletion(jobID string, fileIdx int, failMsg string) {
-	fc := FileComplete{JobID: jobID, FileIdx: fileIdx, Resumed: true, FailMsg: failMsg}
+func (app *Application) enqueueResumedCompletion(j *job.Job, fileIdx int, failMsg string) {
+	fc := FileComplete{Job: j, FileIdx: fileIdx, Resumed: true, FailMsg: failMsg}
 	select {
 	case app.internalFileComplete <- fc:
 		return
@@ -658,7 +662,7 @@ func (app *Application) enqueueResumedCompletion(jobID string, fileIdx int, fail
 		case app.internalFileComplete <- fc:
 		case <-ctx.Done():
 			app.log.Info("resumed completion not delivered; the app is stopping",
-				"job", jobID, "fileidx", fileIdx)
+				"job", j.ID(), "fileidx", fileIdx)
 		}
 	}()
 }

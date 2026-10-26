@@ -42,11 +42,11 @@ func TestStallAndFail_LeaveALaterInstanceAlone(t *testing.T) {
 	}
 }
 
-// TestHandleWriteFault_ActsOnTheAttemptRegisteredOnTheWorker pins #914 at
-// handleWriteFault: the job is resolved when the fault is raised, so a retry
-// registered under the same ID before the routing goroutine runs is neither
-// parked nor failed.
-func TestHandleWriteFault_ActsOnTheAttemptRegisteredOnTheWorker(t *testing.T) {
+// TestHandleWriteFault_ActsOnTheWritingAttempt pins #914 at handleWriteFault:
+// the fault names the instance whose write faulted, so a retry registered
+// under the same ID before the routing goroutine runs is neither parked nor
+// failed.
+func TestHandleWriteFault_ActsOnTheWritingAttempt(t *testing.T) {
 	t.Parallel()
 	for _, tc := range []struct {
 		name  string
@@ -60,7 +60,8 @@ func TestHandleWriteFault_ActsOnTheAttemptRegisteredOnTheWorker(t *testing.T) {
 			application := newTestApplication(t)
 			const id = "feedface00914a02"
 			d := application.Dispatcher()
-			if err := d.Add(t.Context(), job.New(id, "first", job.Policy{}), dispatch.Header{Name: "first"}); err != nil {
+			first := job.New(id, "first", job.Policy{})
+			if err := d.Add(t.Context(), first, dispatch.Header{Name: "first"}); err != nil {
 				t.Fatalf("Add(first): %v", err)
 			}
 			retry := job.New(id, "second", job.Policy{})
@@ -73,7 +74,7 @@ func TestHandleWriteFault_ActsOnTheAttemptRegisteredOnTheWorker(t *testing.T) {
 				}
 			}
 
-			application.handleWriteFault(id, 0, tc.fault)
+			application.handleWriteFault(first, 0, tc.fault)
 			application.wg.Wait()
 
 			if got := retry.Intent(); got != job.IntentRun {

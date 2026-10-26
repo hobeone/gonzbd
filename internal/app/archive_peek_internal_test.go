@@ -178,7 +178,7 @@ func newPeekAppMode(t *testing.T, action unwanted.Action, mode unwanted.Mode, ex
 
 func (a *peekApp) complete(t *testing.T, i int) {
 	t.Helper()
-	if err := a.completeFinalizedFile(FileComplete{JobID: a.j.ID(), FileIdx: i}); err != nil {
+	if err := a.completeFinalizedFile(FileComplete{Job: a.j, FileIdx: i}); err != nil {
 		t.Fatalf("completeFinalizedFile(%d): %v", i, err)
 	}
 }
@@ -396,7 +396,7 @@ func TestPeek_ConcurrentCompletionsActOnce(t *testing.T) {
 			<-start
 			// The peek itself, not the whole completion, so the filing below
 			// stays in one place.
-			if a.peekArchiveForUnwanted(a.j, FileComplete{JobID: a.j.ID(), FileIdx: i}) != "" {
+			if a.peekArchiveForUnwanted(a.j, FileComplete{Job: a.j, FileIdx: i}) != "" {
 				asked.Add(1)
 			}
 		})
@@ -523,7 +523,7 @@ func TestPeek_FailOwedJobIsNotFedToDirectUnpack(t *testing.T) {
 	if moved, err := a.dispatcher.BlockUnwanted(a.j, false); err != nil || !moved {
 		t.Fatalf("BlockUnwanted = (%v, %v)", moved, err)
 	}
-	a.duOrch.maybeStart(FileComplete{JobID: a.j.ID(), FileIdx: 0})
+	a.duOrch.maybeStart(FileComplete{Job: a.j, FileIdx: 0})
 	if _, ok := a.duOrch.status(a.j.ID()); ok {
 		t.Error("an unpacker was started for a job owed an unwanted-extension filing")
 	}

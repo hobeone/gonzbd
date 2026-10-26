@@ -245,7 +245,7 @@ func TestWatchCompletions_DispatchesToHandleFileComplete(t *testing.T) {
 		<-done
 	})
 
-	application.internalFileComplete <- FileComplete{JobID: j.ID(), FileIdx: 0}
+	application.internalFileComplete <- FileComplete{Job: j, FileIdx: 0}
 
 	waitForFileComplete(t, application, j.ID(), 0)
 
@@ -275,7 +275,7 @@ func TestWatchCompletions_DrainsPendingOnContextCancel(t *testing.T) {
 	// Buffer all the events and cancel before the loop ever starts, so the
 	// first iteration's select sees ctx.Done and a full backlog ready.
 	for i := range nEvents {
-		application.internalFileComplete <- FileComplete{JobID: j.ID(), FileIdx: i}
+		application.internalFileComplete <- FileComplete{Job: j, FileIdx: i}
 	}
 	cancel()
 

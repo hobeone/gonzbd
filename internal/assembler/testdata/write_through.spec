@@ -4,7 +4,7 @@ run Test(WriteFault_IsRoutedOutOfTheAssembler)$
 [routeOutcome drops the write-fault report]
 file internal/assembler/assembler.go
 --- anchor
-		a.noteArticlesUnwritten(req.JobID, req.FileIdx, []int32{req.ArtIdx})
+		a.noteArticlesUnwritten(req, []int32{req.ArtIdx})
 		a.noteWriteFault(f.info.Path(), req, o.fault)
 --- replace
 		a.noteWriteFault(f.info.Path(), req, o.fault)
@@ -13,10 +13,10 @@ file internal/assembler/assembler.go
 [routeOutcome reports the write fault twice]
 file internal/assembler/assembler.go
 --- anchor
-		a.noteArticlesUnwritten(req.JobID, req.FileIdx, []int32{req.ArtIdx})
+		a.noteArticlesUnwritten(req, []int32{req.ArtIdx})
 		a.noteWriteFault(f.info.Path(), req, o.fault)
 --- replace
-		a.noteArticlesUnwritten(req.JobID, req.FileIdx, []int32{req.ArtIdx})
-		a.noteArticlesUnwritten(req.JobID, req.FileIdx, []int32{req.ArtIdx})
+		a.noteArticlesUnwritten(req, []int32{req.ArtIdx})
+		a.noteArticlesUnwritten(req, []int32{req.ArtIdx})
 		a.noteWriteFault(f.info.Path(), req, o.fault)
 --- end

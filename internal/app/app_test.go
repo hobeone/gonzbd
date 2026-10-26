@@ -1319,10 +1319,10 @@ func TestApplication_SettersAndOptions(t *testing.T) {
 	_ = application.TriggerBuildDirectUnpackOpts()
 
 	// Trigger maybeDirectUnpack with nonexistent job (nil snap check)
-	application.TriggerMaybeDirectUnpack(app.FileComplete{JobID: "nonexistent", FileIdx: 0})
+	application.TriggerMaybeDirectUnpack(app.FileComplete{Job: jobpkg.New("nonexistent", "nonexistent", jobpkg.Policy{}), FileIdx: 0})
 
 	// Trigger maybeDirectUnpack with valid job but bad index
-	application.TriggerMaybeDirectUnpack(app.FileComplete{JobID: job.ID(), FileIdx: -1})
+	application.TriggerMaybeDirectUnpack(app.FileComplete{Job: job, FileIdx: -1})
 
 	// Trigger maybeDirectUnpack with valid job but non-rar filename
 	parsed2 := &nzb.NZB{
@@ -1333,10 +1333,10 @@ func TestApplication_SettersAndOptions(t *testing.T) {
 	}
 	job2, hdr2 := buildTestJob(t, application.GetConfig(), parsed2, types.FetchOptions{NzbName: "du-test-txt", Category: "movies", PP: 3})
 	_ = application.Dispatcher().Add(context.Background(), job2, hdr2)
-	application.TriggerMaybeDirectUnpack(app.FileComplete{JobID: job2.ID(), FileIdx: 0})
+	application.TriggerMaybeDirectUnpack(app.FileComplete{Job: job2, FileIdx: 0})
 
 	// Trigger maybeDirectUnpack with valid job and valid RAR filename (resolves but fails resolveFileInfo)
-	application.TriggerMaybeDirectUnpack(app.FileComplete{JobID: job.ID(), FileIdx: 0})
+	application.TriggerMaybeDirectUnpack(app.FileComplete{Job: job, FileIdx: 0})
 }
 
 func TestApplication_EdgeCases(t *testing.T) {
@@ -1474,12 +1474,12 @@ func TestApplication_EdgeCases(t *testing.T) {
 
 	// 4. Test handleFileComplete branches
 	// Nonexistent job (early return)
-	application.TriggerHandleFileComplete(t.Context(), app.FileComplete{JobID: "nonexistent", FileIdx: 0})
+	application.TriggerHandleFileComplete(t.Context(), app.FileComplete{Job: jobpkg.New("nonexistent", "nonexistent", jobpkg.Policy{}), FileIdx: 0})
 
 	// Cancelled context (early return)
 	cancelledCtx, cancelCtx := context.WithCancel(t.Context())
 	cancelCtx()
-	application.TriggerHandleFileComplete(cancelledCtx, app.FileComplete{JobID: job.ID(), FileIdx: 0})
+	application.TriggerHandleFileComplete(cancelledCtx, app.FileComplete{Job: job, FileIdx: 0})
 
 	// Job already in post-processing (early return)
 	jobPostProc, hdrPostProc := buildTestJob(t, cfg, parsed, types.FetchOptions{NzbName: "postproc-already"})
@@ -1487,10 +1487,10 @@ func TestApplication_EdgeCases(t *testing.T) {
 	_ = jobPostProc.SetNext(jobpkg.Assessing)
 	_ = jobPostProc.Transition(jobpkg.Assessing)
 	_ = application.Dispatcher().Add(context.Background(), jobPostProc, hdrPostProc)
-	application.TriggerHandleFileComplete(t.Context(), app.FileComplete{JobID: jobPostProc.ID(), FileIdx: 0})
+	application.TriggerHandleFileComplete(t.Context(), app.FileComplete{Job: jobPostProc, FileIdx: 0})
 
 	// 5. Test drainCompletions case branch (channel has entry)
-	application.SendFileComplete(app.FileComplete{JobID: "nonexistent", FileIdx: 0})
+	application.SendFileComplete(app.FileComplete{Job: jobpkg.New("nonexistent", "nonexistent", jobpkg.Policy{}), FileIdx: 0})
 	application.TriggerDrainCompletions(t.Context())
 
 	// 6. Test maybeFinalizeJob double start branch (returns early when already started)
@@ -1525,22 +1525,22 @@ func TestApplication_EdgeCases(t *testing.T) {
 	// Low PP (returns early)
 	jobNoPP, hdrNoPP := buildTestJob(t, cfg, parsedRar, types.FetchOptions{NzbName: "no-pp-job", PP: 1})
 	_ = application.Dispatcher().Add(context.Background(), jobNoPP, hdrNoPP)
-	application.TriggerMaybeDirectUnpack(app.FileComplete{JobID: jobNoPP.ID(), FileIdx: 0})
+	application.TriggerMaybeDirectUnpack(app.FileComplete{Job: jobNoPP, FileIdx: 0})
 
 	// Password set (returns early)
 	jobPwd, hdrPwd := buildTestJob(t, cfg, parsedRar, types.FetchOptions{NzbName: "pwd-job", PP: 3, Password: "foo"})
 	_ = application.Dispatcher().Add(context.Background(), jobPwd, hdrPwd)
-	application.TriggerMaybeDirectUnpack(app.FileComplete{JobID: jobPwd.ID(), FileIdx: 0})
+	application.TriggerMaybeDirectUnpack(app.FileComplete{Job: jobPwd, FileIdx: 0})
 
 	// Invalid file index (returns early)
-	application.TriggerMaybeDirectUnpack(app.FileComplete{JobID: jobRar.ID(), FileIdx: -1})
-	application.TriggerMaybeDirectUnpack(app.FileComplete{JobID: jobRar.ID(), FileIdx: 99})
+	application.TriggerMaybeDirectUnpack(app.FileComplete{Job: jobRar, FileIdx: -1})
+	application.TriggerMaybeDirectUnpack(app.FileComplete{Job: jobRar, FileIdx: 99})
 
 	// Not a RAR volume (returns early)
-	application.TriggerMaybeDirectUnpack(app.FileComplete{JobID: job.ID(), FileIdx: 0})
+	application.TriggerMaybeDirectUnpack(app.FileComplete{Job: job, FileIdx: 0})
 
 	// resolveFileInfo fails (returns early)
-	application.TriggerMaybeDirectUnpack(app.FileComplete{JobID: jobRar.ID(), FileIdx: 0})
+	application.TriggerMaybeDirectUnpack(app.FileComplete{Job: jobRar, FileIdx: 0})
 
 	// Concurrency limit reached (returns early)
 	application.InjectPipelineFileInfo(jobRar.ID(), 0, filepath.Join(dl, "test.part1.rar"))
@@ -1550,12 +1550,12 @@ func TestApplication_EdgeCases(t *testing.T) {
 		c.PostProc.EnableUnrar = true
 	})
 	application.SetActiveDU(1)
-	application.TriggerMaybeDirectUnpack(app.FileComplete{JobID: jobRar.ID(), FileIdx: 0})
+	application.TriggerMaybeDirectUnpack(app.FileComplete{Job: jobRar, FileIdx: 0})
 
 	// Success path (creates new direct unpacker and calls Add)
 	application.SetActiveDU(0)
 	application.InjectCtx(t.Context())
-	application.TriggerMaybeDirectUnpack(app.FileComplete{JobID: jobRar.ID(), FileIdx: 0})
+	application.TriggerMaybeDirectUnpack(app.FileComplete{Job: jobRar, FileIdx: 0})
 }
 
 func TestApplication_PersistAndCommitError(t *testing.T) {

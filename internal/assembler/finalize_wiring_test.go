@@ -20,7 +20,7 @@ func TestCompletedFileIsTrimmedAndClosedBeforeItIsReported(t *testing.T) {
 
 	sizeAtReport := make(chan int64, 1)
 	opts := makeOpts(dir, files)
-	opts.OnFileComplete = func(string, int) {
+	opts.OnFileComplete = func(Owner, int) {
 		st, err := os.Stat(path)
 		if err != nil {
 			t.Errorf("stat at report: %v", err)
@@ -32,7 +32,7 @@ func TestCompletedFileIsTrimmedAndClosedBeforeItIsReported(t *testing.T) {
 	a := startAssembler(t, opts)
 
 	if err := writeArticle(t.Context(), a, WriteRequest{
-		JobID: "job1", FileIdx: 0, ArtIdx: 0, MessageID: "a0",
+		Owner: ownerFor("job1"), JobID: "job1", FileIdx: 0, ArtIdx: 0, MessageID: "a0",
 		Offset: 0, Data: make([]byte, 100),
 	}); err != nil {
 		t.Fatalf("WriteArticle: %v", err)

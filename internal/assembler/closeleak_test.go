@@ -20,12 +20,12 @@ import (
 func cancelWithoutRouting(t *testing.T, name string, disposition FileDisposition) (path string, open map[fileKey]*openFile, key fileKey) {
 	t.Helper()
 	a := newHelperAssembler()
-	a.opts.OnArticlesUnwritten = func(_ string, _ int, arts []int32) {
+	a.opts.OnArticlesUnwritten = func(_ Owner, _ int, arts []int32) {
 		t.Errorf("OnArticlesUnwritten(%v) on the cancel path — the job is leaving the "+
 			"queue, so returning its articles to Outstanding re-dispatches work for a "+
 			"job that is going away", arts)
 	}
-	a.opts.OnArticleRejected = func(_ string, _ int, artIdx int32, _ string, _ int64) {
+	a.opts.OnArticleRejected = func(_ Owner, _ int, artIdx int32, _ string, _ int64) {
 		t.Errorf("OnArticleRejected(%d) on the cancel path", artIdx)
 	}
 

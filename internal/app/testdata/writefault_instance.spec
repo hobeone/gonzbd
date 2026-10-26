@@ -1,8 +1,9 @@
 pkg ./internal/app/
-run ^(TestStallAndFail_LeaveALaterInstanceAlone|TestHandleWriteFault_ActsOnTheAttemptRegisteredOnTheWorker)$
+run ^(TestStallAndFail_LeaveALaterInstanceAlone|TestHandleWriteFault_ActsOnTheWritingAttempt)$
 
 # A storage fault stalls or fails the attempt it belongs to, never a later
-# attempt registered under the same ID (#914). The dispatcher doors' own
+# attempt registered under the same ID (#914, #1056): the fault carries its
+# owner, and the handler never looks the ID up. The dispatcher doors' own
 # instance checks are pinned in internal/dispatch by fault_instance_doors.spec.
 
 [handleWriteFault fails whatever instance holds the ID when its goroutine runs]
@@ -11,7 +12,7 @@ file internal/app/durability.go
 			app.Fail(j, f)
 			return
 --- replace
-			cur, _ := app.dispatcher.Job(jobID)
+			cur, _ := app.dispatcher.Job(j.ID())
 			app.Fail(cur, f)
 			return
 --- end
@@ -22,7 +23,7 @@ file internal/app/durability.go
 		app.Stall(j, f)
 	})
 --- replace
-		cur, _ := app.dispatcher.Job(jobID)
+		cur, _ := app.dispatcher.Job(j.ID())
 		app.Stall(cur, f)
 	})
 --- end

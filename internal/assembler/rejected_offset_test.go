@@ -31,14 +31,14 @@ func TestRejectedOffsetIsFailedAndStillCompletesTheFile(t *testing.T) {
 	dir := t.TempDir()
 	a := newHelperAssembler()
 	var rejected []int32
-	a.opts.OnArticleRejected = func(_ string, _ int, artIdx int32, _ string, _ int64) {
+	a.opts.OnArticleRejected = func(_ Owner, _ int, artIdx int32, _ string, _ int64) {
 		rejected = append(rejected, artIdx)
 	}
 	f := newHelperFile(t, dir, "hostile.dat", 1000)
 	f.info.TotalParts = 2
 
 	req := WriteRequest{
-		JobID: "job", FileIdx: 0, ArtIdx: 7, MessageID: "<evil@x>",
+		Owner: ownerFor("job"), JobID: "job", FileIdx: 0, ArtIdx: 7, MessageID: "<evil@x>",
 		Offset: 1 << 40, Data: []byte("x"),
 	}
 	a.handleSuccessArticle(f, req)
@@ -81,15 +81,15 @@ func TestRejectedOffsetIsFailedAndStillCompletesTheFile(t *testing.T) {
 // never clear because there is no condition.
 func TestRouteOutcome_SplitsArticleFaultsFromStorageFaults(t *testing.T) {
 	dir := t.TempDir()
-	req := WriteRequest{JobID: "job", FileIdx: 0, ArtIdx: 3}
+	req := WriteRequest{Owner: ownerFor("job"), JobID: "job", FileIdx: 0, ArtIdx: 3}
 
 	t.Run("a rejected article goes to OnArticleRejected", func(t *testing.T) {
 		a := newHelperAssembler()
 		var rejReason string
 		var faults, unwritten int
-		a.opts.OnArticleRejected = func(_ string, _ int, _ int32, reason string, _ int64) { rejReason = reason }
-		a.opts.OnWriteFault = func(string, int, *storagefault.Fault) { faults++ }
-		a.opts.OnArticlesUnwritten = func(string, int, []int32) { unwritten++ }
+		a.opts.OnArticleRejected = func(_ Owner, _ int, _ int32, reason string, _ int64) { rejReason = reason }
+		a.opts.OnWriteFault = func(Owner, int, *storagefault.Fault) { faults++ }
+		a.opts.OnArticlesUnwritten = func(Owner, int, []int32) { unwritten++ }
 		f := newHelperFile(t, dir, "reject.dat", 100)
 
 		a.routeOutcome(f, req, outcome{disposition: dispositionRejected, reason: "negative offset", uncovered: WholeArticle})
@@ -107,9 +107,9 @@ func TestRouteOutcome_SplitsArticleFaultsFromStorageFaults(t *testing.T) {
 		var rejected int
 		var gotFault *storagefault.Fault
 		var unwritten []int32
-		a.opts.OnArticleRejected = func(string, int, int32, string, int64) { rejected++ }
-		a.opts.OnWriteFault = func(_ string, _ int, f *storagefault.Fault) { gotFault = f }
-		a.opts.OnArticlesUnwritten = func(_ string, _ int, arts []int32) { unwritten = append(unwritten, arts...) }
+		a.opts.OnArticleRejected = func(Owner, int, int32, string, int64) { rejected++ }
+		a.opts.OnWriteFault = func(_ Owner, _ int, f *storagefault.Fault) { gotFault = f }
+		a.opts.OnArticlesUnwritten = func(_ Owner, _ int, arts []int32) { unwritten = append(unwritten, arts...) }
 		f := newHelperFile(t, dir, "fault.dat", 100)
 
 		a.routeOutcome(f, req, outcome{disposition: dispositionRolledBack, fault: syscall.ENOSPC})
@@ -134,9 +134,9 @@ func TestRouteOutcome_SplitsArticleFaultsFromStorageFaults(t *testing.T) {
 		a := newHelperAssembler()
 		var gotN int64 = -1
 		var rejected, faults int
-		a.opts.OnArticleWritten = func(_ string, _ int, _ int32, _, n int64, _ uint32) { gotN = n }
-		a.opts.OnArticleRejected = func(string, int, int32, string, int64) { rejected++ }
-		a.opts.OnWriteFault = func(string, int, *storagefault.Fault) { faults++ }
+		a.opts.OnArticleWritten = func(_ Owner, _ int, _ int32, _, n int64, _ uint32) { gotN = n }
+		a.opts.OnArticleRejected = func(Owner, int, int32, string, int64) { rejected++ }
+		a.opts.OnWriteFault = func(Owner, int, *storagefault.Fault) { faults++ }
 		f := newHelperFile(t, dir, "written.dat", 100)
 
 		a.routeOutcome(f, req, outcome{disposition: dispositionWritten, n: 42})
@@ -183,21 +183,21 @@ func TestRejectedOffset_TheFileStillCompletes(t *testing.T) {
 	opts := makeOpts(dir, files)
 
 	completions := make(chan int, 4)
-	opts.OnFileComplete = func(_ string, fileIdx int) { completions <- fileIdx }
+	opts.OnFileComplete = func(_ Owner, fileIdx int) { completions <- fileIdx }
 	rejected := make(chan int32, 4)
-	opts.OnArticleRejected = func(_ string, _ int, artIdx int32, _ string, _ int64) { rejected <- artIdx }
+	opts.OnArticleRejected = func(_ Owner, _ int, artIdx int32, _ string, _ int64) { rejected <- artIdx }
 
 	a := startAssembler(t, opts)
 
 	if err := writeArticle(t.Context(), a, WriteRequest{
-		JobID: "job1", FileIdx: 0, ArtIdx: 0, MessageID: "<good@x>",
+		Owner: ownerFor("job1"), JobID: "job1", FileIdx: 0, ArtIdx: 0, MessageID: "<good@x>",
 		Offset: 0, Data: []byte("AAAA"),
 	}); err != nil {
 		t.Fatal(err)
 	}
 	// A yEnc header claiming an offset far past the file's expected size.
 	if err := writeArticle(t.Context(), a, WriteRequest{
-		JobID: "job1", FileIdx: 0, ArtIdx: 1, MessageID: "<evil@x>",
+		Owner: ownerFor("job1"), JobID: "job1", FileIdx: 0, ArtIdx: 1, MessageID: "<evil@x>",
 		Offset: 1 << 20, Data: []byte("B"),
 	}); err != nil {
 		t.Fatal(err)

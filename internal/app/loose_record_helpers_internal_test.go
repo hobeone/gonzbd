@@ -368,21 +368,36 @@ func TestResidencyFault_ParksOnlyADeviceFault(t *testing.T) {
 	}
 }
 
-// TestRecordHandlers_IgnoreAJobTheDispatcherDoesNotHold pins the departed-job
-// branch of the assembler's two record callbacks: nothing is buffered, and the
-// instance lookup answers nil.
-func TestRecordHandlers_IgnoreAJobTheDispatcherDoesNotHold(t *testing.T) {
+// TestRecordHandlers_DiscardADepartedInstancesReport pins the two record
+// callbacks for an instance the dispatcher does not hold: the written row is
+// buffered under that instance and the next flush discards it rather than
+// writing it under the ID (takeRowsLocked), and the untrust touches nothing.
+func TestRecordHandlers_DiscardADepartedInstancesReport(t *testing.T) {
 	t.Parallel()
 	a := newLREnv(t).newApp(t)
+	gone := job.New("gone", "gone", job.Policy{})
 	if got := a.lookupCurrent("gone"); got != nil {
 		t.Errorf("lookupCurrent(gone) = %v, want nil", got)
 	}
-	a.handleArticleWritten("gone", 0, 0, 0, lrArtLen, 1)
-	a.handleFileUntrusted("gone", 0)
+	a.handleArticleWritten(gone, 0, 0, 0, lrArtLen, 1)
+	a.handleFileUntrusted(gone, 0)
 	a.recorder.mu.Lock()
-	defer a.recorder.mu.Unlock()
-	if len(a.recorder.pending) != 0 || len(a.recorder.dirty) != 0 {
-		t.Errorf("a departed job left %d pending and %d dirty entries", len(a.recorder.pending), len(a.recorder.dirty))
+	pending, dirty := len(a.recorder.pending[gone]), len(a.recorder.dirty)
+	a.recorder.mu.Unlock()
+	if pending != 1 || dirty != 0 {
+		t.Errorf("a departed instance has %d pending rows and left %d dirty entries, want 1 and 0", pending, dirty)
+	}
+	if err := a.recorder.flush(t.Context()); err != nil {
+		t.Fatalf("flush: %v", err)
+	}
+	a.recorder.mu.Lock()
+	left := len(a.recorder.pending)
+	a.recorder.mu.Unlock()
+	if left != 0 {
+		t.Errorf("%d pending entries survived the flush, want 0: a departed instance's rows are dropped, not carried", left)
+	}
+	if got := rowsFor(t, a.repo.DB(), "gone"); len(got) != 0 {
+		t.Errorf("%d rows reached SQLite under a departed instance's ID, want 0", len(got))
 	}
 }
 
@@ -399,11 +414,11 @@ func TestHandleFileUntrusted_ReturnsArticlesToOutstandingWhenSQLiteFails(t *test
 	}
 	a.recorder.st = failRecordFor{recordStore: a.recorder.st, id: j.ID()}
 
-	a.handleFileUntrusted(j.ID(), 9)
+	a.handleFileUntrusted(j, 9)
 	if !articleDone(j, 0) {
 		t.Error("an untrust of a file past the manifest cleared file A's article")
 	}
-	a.handleFileUntrusted(j.ID(), 0)
+	a.handleFileUntrusted(j, 0)
 	if articleDone(j, 0) {
 		t.Error("a failed SQLite untrust left the article Done in memory")
 	}
@@ -446,8 +461,8 @@ func TestHandleFileUntrusted_AFailedDeleteIsOwedUntilItLands(t *testing.T) {
 	}
 	a.markFileDirty(j, 0)
 	crc := func(art int) uint32 { return crc32.ChecksumIEEE(lrArticle(0, art)) }
-	a.handleArticleWritten(j.ID(), 0, 0, 0, lrArtLen, crc(0))
-	a.handleArticleWritten(j.ID(), 0, 1, lrArtLen, lrArtLen, crc(1))
+	a.handleArticleWritten(j, 0, 0, 0, lrArtLen, crc(0))
+	a.handleArticleWritten(j, 0, 1, lrArtLen, lrArtLen, crc(1))
 	if err := a.recorder.flush(t.Context()); err != nil {
 		t.Fatalf("flush: %v", err)
 	}
@@ -457,7 +472,7 @@ func TestHandleFileUntrusted_AFailedDeleteIsOwedUntilItLands(t *testing.T) {
 
 	inject := &failFirstDeleteAll{recordStore: a.recorder.st}
 	a.recorder.st = inject
-	a.handleFileUntrusted(j.ID(), 0)
+	a.handleFileUntrusted(j, 0)
 	if !inject.failed.Load() {
 		t.Fatal("fixture: the untrust's delete was not failed")
 	}
@@ -469,11 +484,11 @@ func TestHandleFileUntrusted_AFailedDeleteIsOwedUntilItLands(t *testing.T) {
 	}
 
 	// The refetch: A0 is written again; A1 is gone from every server.
-	a.handleArticleWritten(j.ID(), 0, 0, 0, lrArtLen, crc(0))
+	a.handleArticleWritten(j, 0, 0, 0, lrArtLen, crc(0))
 	if err := j.MarkArticleFailed(1, job.WholeArticle); err != nil {
 		t.Fatalf("MarkArticleFailed: %v", err)
 	}
-	if err := a.completeFinalizedFile(FileComplete{JobID: j.ID(), FileIdx: 0}); err != nil {
+	if err := a.completeFinalizedFile(FileComplete{Job: j, FileIdx: 0}); err != nil {
 		t.Fatalf("completeFinalizedFile: %v", err)
 	}
 	if err := a.recorder.flush(t.Context()); err != nil {
@@ -523,15 +538,17 @@ func TestEnqueueResumedCompletion_DeliversWhenTheChannelIsFull(t *testing.T) {
 	// The app.ctx Start would set; nothing consumes the channel but this test.
 	a.ctx, a.cancel = context.WithCancel(t.Context())
 	t.Cleanup(a.cancel)
+	filler := job.New("filler", "filler", job.Policy{})
 	for len(a.internalFileComplete) < cap(a.internalFileComplete) {
-		a.internalFileComplete <- FileComplete{JobID: "filler"}
+		a.internalFileComplete <- FileComplete{Job: filler}
 	}
-	a.enqueueResumedCompletion("resumed", 7, "")
+	resumed := job.New("resumed", "resumed", job.Policy{})
+	a.enqueueResumedCompletion(resumed, 7, "")
 	deadline := time.After(10 * time.Second)
 	for {
 		select {
 		case fc := <-a.internalFileComplete:
-			if fc.JobID == "resumed" {
+			if fc.Job == resumed {
 				if fc.FileIdx != 7 || !fc.Resumed {
 					t.Errorf("delivered %+v, want file 7 marked Resumed", fc)
 				}
@@ -563,10 +580,11 @@ func waitResumedSenders(a *Application) int32 {
 func TestEnqueueResumedCompletion_StartDoesNotWaitForTheConsumer(t *testing.T) {
 	t.Parallel()
 	const n = 200
+	noSuchJob := job.New("no-such-job", "no-such-job", job.Policy{})
 	a := newLREnv(t).newApp(t, func(app *Application) {
 		app.startedTransitionHook = func() {
 			for i := range n {
-				app.enqueueResumedCompletion("no-such-job", i, "")
+				app.enqueueResumedCompletion(noSuchJob, i, "")
 			}
 		}
 	})
@@ -608,11 +626,13 @@ func TestEnqueueResumedCompletion_SenderExitsAtShutdown(t *testing.T) {
 	if err := a.Shutdown(); err != nil {
 		t.Fatalf("Shutdown: %v", err)
 	}
+	filler := job.New("filler", "filler", job.Policy{})
 	for len(a.internalFileComplete) < cap(a.internalFileComplete) {
-		a.internalFileComplete <- FileComplete{JobID: "filler"}
+		a.internalFileComplete <- FileComplete{Job: filler}
 	}
+	late := job.New("late", "late", job.Policy{})
 	for i := range 20 {
-		a.enqueueResumedCompletion("late", i, "")
+		a.enqueueResumedCompletion(late, i, "")
 	}
 	if left := waitResumedSenders(a.Application); left != 0 {
 		t.Errorf("%d resumed senders outlived Shutdown: a sender that cannot deliver must give up on app.ctx", left)
@@ -649,7 +669,7 @@ func TestHandleFileUntrusted_KeepsTheFilesNameForTheNextFlush(t *testing.T) {
 	}
 	a.markFileDirty(j, 0)
 
-	a.handleFileUntrusted(j.ID(), 0)
+	a.handleFileUntrusted(j, 0)
 	if err := a.recorder.flush(t.Context()); err != nil {
 		t.Fatalf("flush: %v", err)
 	}

@@ -120,8 +120,9 @@ func newHelperFile(t *testing.T, dir, name string, expectedSize int64) *openFile
 	t.Cleanup(func() { _ = fh.Close() })
 	key := fileKey{jobID: "job", fileIdx: 0}
 	return &openFile{
-		w:    newFileWriter(fh, path, key),
-		info: FileInfo{Dir: filepath.Dir(path), Name: filepath.Base(path), ExpectedSize: expectedSize},
+		w:     newFileWriter(fh, path, key),
+		info:  FileInfo{Dir: filepath.Dir(path), Name: filepath.Base(path), ExpectedSize: expectedSize},
+		owner: ownerFor(key.jobID),
 	}
 }
 
@@ -190,7 +191,7 @@ func TestCloseAll(t *testing.T) {
 	dir := t.TempDir()
 	a := newHelperAssembler()
 	var completions int
-	a.opts.OnFileComplete = func(string, int) { completions++ }
+	a.opts.OnFileComplete = func(Owner, int) { completions++ }
 
 	f1 := newHelperFile(t, dir, "close1.dat", 0)
 	f2 := newHelperFile(t, dir, "close2.dat", 0)
@@ -267,7 +268,7 @@ func TestAcceptArticle_OutOfRangeOffsetIsNotReported(t *testing.T) {
 	writes := countWrites(f.w)
 
 	o := a.acceptArticle(f, articleID{artIdx: 4}, WriteRequest{
-		JobID: "job", FileIdx: 0, ArtIdx: 4, MessageID: "bad",
+		Owner: ownerFor("job"), JobID: "job", FileIdx: 0, ArtIdx: 4, MessageID: "bad",
 		Offset: 1 << 40, Data: []byte("evil"),
 	})
 
@@ -331,7 +332,7 @@ func TestHandleLateDuplicate_ReturnsTheBufferAndClaimsNothing(t *testing.T) {
 	// nil writer: the buffer must come back whether or not there is a writer
 	// left to consult about the article's state.
 	a.handleLateDuplicate(WriteRequest{
-		JobID: "job", FileIdx: 0, ArtIdx: 2, MessageID: "late", Data: data,
+		Owner: ownerFor("job"), JobID: "job", FileIdx: 0, ArtIdx: 2, MessageID: "late", Data: data,
 	})
 
 	if len(released) != 1 {
@@ -349,7 +350,7 @@ func TestHandleLateDuplicate_ReturnsTheBufferAndClaimsNothing(t *testing.T) {
 	// FatalErr arm has no coverage at all.
 	released = nil
 	a.handleLateDuplicate(WriteRequest{
-		JobID: "job", FileIdx: 0, ArtIdx: 2, MessageID: "late", FatalErr: os.ErrClosed,
+		Owner: ownerFor("job"), JobID: "job", FileIdx: 0, ArtIdx: 2, MessageID: "late", FatalErr: os.ErrClosed,
 	})
 	if len(released) != 0 {
 		t.Errorf("released %d buffers for a data-less late duplicate, want 0", len(released))

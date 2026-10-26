@@ -229,7 +229,15 @@ type Options struct {
 	//
 	// The callback should be cheap; expensive work should be dispatched
 	// asynchronously.
-	OnFileComplete func(jobID string, fileIdx int)
+	//
+	// Each of the six per-job callbacks (OnFileComplete, OnFileUntrusted,
+	// OnWriteFault, OnArticlesUnwritten, OnArticleRejected, OnArticleWritten)
+	// names the Owner whose request the worker is reporting on: the one the
+	// article's ref carried, or the one that opened the handle for a report
+	// made on a handle. A caller acts on that instance, not on whatever holds
+	// the ID when the report arrives. OnLowDisk is per directory and names
+	// none.
+	OnFileComplete func(owner Owner, fileIdx int)
 
 	// OnFileUntrusted, if non-nil, is called on the worker goroutine for a
 	// file whose bytes this package can no longer vouch for: its completion
@@ -238,7 +246,7 @@ type Options struct {
 	// returns the file's written articles to Outstanding and removes their
 	// record. The fault itself, where there is a caller to answer, goes
 	// separately to OnWriteFault or the close-handles ack.
-	OnFileUntrusted func(jobID string, fileIdx int)
+	OnFileUntrusted func(owner Owner, fileIdx int)
 
 	// SyncFile, if non-nil, replaces (*os.File).Sync for every fsync this
 	// package runs on a file it writes. It is a seam for tests to inject a
@@ -267,7 +275,7 @@ type Options struct {
 	// that rolled back several could report only whichever article triggered
 	// it, and the rest were rolled back silently. Returning articles to
 	// Outstanding is OnArticlesUnwritten's job, which takes a set.
-	OnWriteFault func(jobID string, fileIdx int, f *storagefault.Fault)
+	OnWriteFault func(owner Owner, fileIdx int, f *storagefault.Fault)
 
 	// OnArticlesUnwritten, if non-nil, is called on the worker goroutine with
 	// articles whose bytes did not reach disk: one whose write faulted, or one
@@ -298,7 +306,7 @@ type Options struct {
 	//
 	// No fault is passed, deliberately. This says nothing about why the write
 	// failed and must not be read as evidence about any article (A1).
-	OnArticlesUnwritten func(jobID string, fileIdx int, artIdxs []int32)
+	OnArticlesUnwritten func(owner Owner, fileIdx int, artIdxs []int32)
 
 	// OnArticleRejected reports an article this package refused to write
 	// because the article itself is not usable: an out-of-range yEnc offset
@@ -334,7 +342,7 @@ type Options struct {
 	// charges its bytes against the job's par2 recovery budget. Without it the article stays Emitted, which
 	// is not Outstanding: ForEachUnfinishedArticle skips a set Emitted bit, so
 	// the job waits forever on an article nothing will re-dispatch.
-	OnArticleRejected func(jobID string, fileIdx int, artIdx int32, reason string, uncovered int64)
+	OnArticleRejected func(owner Owner, fileIdx int, artIdx int32, reason string, uncovered int64)
 
 	// OnArticleWritten, if non-nil, is called on the worker goroutine once per
 	// article whose bytes were written without error: off and n are the range,
@@ -348,7 +356,7 @@ type Options struct {
 	// untrusts it (OnFileUntrusted), which returns the article to Outstanding;
 	// a redelivery opens a fresh writer and calls this again with the same
 	// artIdx.
-	OnArticleWritten func(jobID string, fileIdx int, artIdx int32, off, n int64, crc uint32)
+	OnArticleWritten func(owner Owner, fileIdx int, artIdx int32, off, n int64, crc uint32)
 
 	// MinFreeBytes is the low-disk threshold. Zero disables disk-space checks.
 	MinFreeBytes int64
@@ -1156,7 +1164,7 @@ func (a *Assembler) dispatchRequest(
 				// untrusted too: this fsync consumed the error, so no later
 				// fsync at verification would report it.
 				closeErr = errors.Join(closeErr, cerr)
-				a.noteFileUntrusted(k.jobID, k.fileIdx)
+				a.noteFileUntrusted(f.owner, k.fileIdx)
 			}
 			delete(open, k)
 		}
@@ -1325,7 +1333,7 @@ func (a *Assembler) syncAndCloseAll(open map[fileKey]*openFile) {
 		// fsync consumed the error, so the next start's verification fsync
 		// would not see it.
 		if err := a.syncAndClose(f); err != nil {
-			a.noteFileUntrusted(k.jobID, k.fileIdx)
+			a.noteFileUntrusted(f.owner, k.fileIdx)
 		}
 	}
 }
@@ -1399,7 +1407,7 @@ func (a *Assembler) processRequest(req WriteRequest, open map[fileKey]*openFile,
 			// rolled it back, because the file was never opened. The article
 			// is nevertheless un-written and still Emitted, which is not
 			// Outstanding.
-			a.noteArticlesUnwritten(req.JobID, req.FileIdx, []int32{req.ArtIdx})
+			a.noteArticlesUnwritten(req, []int32{req.ArtIdx})
 			a.noteWriteFault("", req, err)
 			if req.Data != nil {
 				a.releaseBuffer(req.Data)
@@ -1479,7 +1487,7 @@ func (a *Assembler) handleLateDuplicate(req WriteRequest) {
 		a.releaseBuffer(req.Data)
 	}
 	if a.opts.OnArticleRejected != nil {
-		a.opts.OnArticleRejected(req.JobID, req.FileIdx, req.ArtIdx,
+		a.opts.OnArticleRejected(req.Owner, req.FileIdx, req.ArtIdx,
 			"redelivered after its file was completed", WholeArticle)
 	}
 }
@@ -1771,32 +1779,33 @@ func (a *Assembler) routeOutcome(f *openFile, req WriteRequest, o outcome) {
 		// refreshed (#987).
 		a.diskProbe.NoteWritten(o.n)
 		if a.opts.OnArticleWritten != nil {
-			a.opts.OnArticleWritten(req.JobID, req.FileIdx, req.ArtIdx, req.Offset, o.n, req.CRC32)
+			a.opts.OnArticleWritten(req.Owner, req.FileIdx, req.ArtIdx, req.Offset, o.n, req.CRC32)
 		}
 	case dispositionRejected:
 		a.log.Warn("article rejected; it will be recorded as permanently failed",
 			"job", req.JobID, "fileidx", req.FileIdx, "artidx", req.ArtIdx,
 			"msgid", req.MessageID, "path", f.info.Path(), "reason", o.reason)
 		if a.opts.OnArticleRejected != nil {
-			a.opts.OnArticleRejected(req.JobID, req.FileIdx, req.ArtIdx, o.reason, o.uncovered)
+			a.opts.OnArticleRejected(req.Owner, req.FileIdx, req.ArtIdx, o.reason, o.uncovered)
 		}
 	case dispositionRolledBack:
-		a.noteArticlesUnwritten(req.JobID, req.FileIdx, []int32{req.ArtIdx})
+		a.noteArticlesUnwritten(req, []int32{req.ArtIdx})
 		a.noteWriteFault(f.info.Path(), req, o.fault)
 	default:
 		panic(fmt.Sprintf("assembler: article %d routed with %s, which acceptArticle does not produce", req.ArtIdx, o.disposition))
 	}
 }
 
-// noteArticlesUnwritten hands one set of un-written articles to their owner.
-func (a *Assembler) noteArticlesUnwritten(jobID string, fileIdx int, arts []int32) {
+// noteArticlesUnwritten hands one set of un-written articles to the owner of
+// the request they belong to.
+func (a *Assembler) noteArticlesUnwritten(req WriteRequest, arts []int32) {
 	if len(arts) == 0 {
 		return
 	}
 	a.log.Warn("articles did not reach disk; they return to Outstanding",
-		"job", jobID, "fileidx", fileIdx, "articles", len(arts))
+		"job", req.JobID, "fileidx", req.FileIdx, "articles", len(arts))
 	if a.opts.OnArticlesUnwritten != nil {
-		a.opts.OnArticlesUnwritten(jobID, fileIdx, arts)
+		a.opts.OnArticlesUnwritten(req.Owner, req.FileIdx, arts)
 	}
 }
 
@@ -1813,7 +1822,7 @@ func (a *Assembler) noteWriteFault(path string, req WriteRequest, err error) {
 	a.log.Error("article could not be written",
 		"job", req.JobID, "path", path, "offset", req.Offset, "error", err)
 	if a.opts.OnWriteFault != nil {
-		a.opts.OnWriteFault(req.JobID, req.FileIdx, fault)
+		a.opts.OnWriteFault(req.Owner, req.FileIdx, fault)
 	}
 }
 
@@ -1842,13 +1851,13 @@ func (a *Assembler) finalizeFile(f *openFile, key fileKey, req WriteRequest,
 	if err != nil {
 		a.log.Error("completed file could not be finished; its articles are refetched",
 			"job", req.JobID, "fileidx", req.FileIdx, "path", f.info.Path(), "error", err)
-		a.noteFileUntrusted(req.JobID, req.FileIdx)
+		a.noteFileUntrusted(req.Owner, req.FileIdx)
 		fault, ok := errors.AsType[*storagefault.Fault](err)
 		if !ok {
 			fault = storagefault.Classify("finish", f.info.Path(), err)
 		}
 		if a.opts.OnWriteFault != nil {
-			a.opts.OnWriteFault(req.JobID, req.FileIdx, fault)
+			a.opts.OnWriteFault(req.Owner, req.FileIdx, fault)
 		}
 		return
 	}
@@ -1856,14 +1865,14 @@ func (a *Assembler) finalizeFile(f *openFile, key fileKey, req WriteRequest,
 	telemetry.FilesCompleted.Add(1)
 	a.log.Info("file complete", "job", req.JobID, "fileidx", req.FileIdx, "path", f.info.Path())
 	if a.opts.OnFileComplete != nil {
-		a.opts.OnFileComplete(req.JobID, req.FileIdx)
+		a.opts.OnFileComplete(req.Owner, req.FileIdx)
 	}
 }
 
 // noteFileUntrusted hands one untrusted file to its owner.
-func (a *Assembler) noteFileUntrusted(jobID string, fileIdx int) {
+func (a *Assembler) noteFileUntrusted(owner Owner, fileIdx int) {
 	if a.opts.OnFileUntrusted != nil {
-		a.opts.OnFileUntrusted(jobID, fileIdx)
+		a.opts.OnFileUntrusted(owner, fileIdx)
 	}
 }
 

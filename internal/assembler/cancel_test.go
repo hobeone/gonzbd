@@ -37,10 +37,10 @@ func TestCancelJob_ClosesOpenFileHandles(t *testing.T) {
 
 	// Write one article per file to open the file handles.
 	_ = writeArticle(t.Context(), a, WriteRequest{
-		JobID: "job1", FileIdx: 0, ArtIdx: 0, Offset: 0, Data: []byte("hello"),
+		Owner: ownerFor("job1"), JobID: "job1", FileIdx: 0, ArtIdx: 0, Offset: 0, Data: []byte("hello"),
 	})
 	_ = writeArticle(t.Context(), a, WriteRequest{
-		JobID: "job1", FileIdx: 1, ArtIdx: 1, Offset: 0, Data: []byte("world"),
+		Owner: ownerFor("job1"), JobID: "job1", FileIdx: 1, ArtIdx: 1, Offset: 0, Data: []byte("world"),
 	})
 
 	// Wait for the worker to have processed both file opens.
@@ -91,7 +91,7 @@ func TestCancelJob_RejectsLateArticles(t *testing.T) {
 	var completions atomic.Int32
 	var closed atomic.Bool
 	opts := makeOpts(dir, files)
-	opts.OnFileComplete = func(_ string, _ int) { completions.Add(1) }
+	opts.OnFileComplete = func(_ Owner, _ int) { completions.Add(1) }
 	resolve := opts.FileInfo
 	opts.FileInfo = func(owner Owner, fileIdx int) (FileInfo, error) {
 		if closed.Load() {
@@ -105,7 +105,7 @@ func TestCancelJob_RejectsLateArticles(t *testing.T) {
 	// Write one article, then cancel as RemoveJob does: the job leaves the
 	// queue first, so the resolver refuses from here on.
 	_ = writeArticle(t.Context(), a, WriteRequest{
-		JobID: "job1", FileIdx: 0, ArtIdx: 0, Offset: 0, Data: []byte("data"),
+		Owner: ownerFor("job1"), JobID: "job1", FileIdx: 0, ArtIdx: 0, Offset: 0, Data: []byte("data"),
 	})
 	closed.Store(true)
 	_ = a.CancelJob(t.Context(), "job1", DeleteFiles)
@@ -113,7 +113,7 @@ func TestCancelJob_RejectsLateArticles(t *testing.T) {
 	// Send more articles after cancellation — they should be silently dropped.
 	for i := 1; i < 5; i++ {
 		_ = writeArticle(t.Context(), a, WriteRequest{
-			JobID: "job1", FileIdx: 0, ArtIdx: testArtIdx(i + 1), Offset: int64(i * 4), Data: []byte("late"),
+			Owner: ownerFor("job1"), JobID: "job1", FileIdx: 0, ArtIdx: testArtIdx(i + 1), Offset: int64(i * 4), Data: []byte("late"),
 		})
 	}
 
@@ -136,18 +136,18 @@ func TestCancelJob_DoesNotAffectOtherJobs(t *testing.T) {
 
 	var completed sync.Map
 	opts := makeOpts(dir, files)
-	opts.OnFileComplete = func(jobID string, fileIdx int) {
-		completed.Store(fmt.Sprintf("%s:%d", jobID, fileIdx), true)
+	opts.OnFileComplete = func(o Owner, fileIdx int) {
+		completed.Store(fmt.Sprintf("%s:%d", o.ID(), fileIdx), true)
 	}
 
 	a := startAssembler(t, opts)
 
 	// Write to both jobs.
 	_ = writeArticle(t.Context(), a, WriteRequest{
-		JobID: "job1", FileIdx: 0, ArtIdx: 0, Offset: 0, Data: []byte("AAAA"),
+		Owner: ownerFor("job1"), JobID: "job1", FileIdx: 0, ArtIdx: 0, Offset: 0, Data: []byte("AAAA"),
 	})
 	_ = writeArticle(t.Context(), a, WriteRequest{
-		JobID: "job2", FileIdx: 0, ArtIdx: 0, Offset: 0, Data: []byte("XXXX"),
+		Owner: ownerFor("job2"), JobID: "job2", FileIdx: 0, ArtIdx: 0, Offset: 0, Data: []byte("XXXX"),
 	})
 
 	// Cancel only job1.
@@ -155,7 +155,7 @@ func TestCancelJob_DoesNotAffectOtherJobs(t *testing.T) {
 
 	// Finish job2.
 	_ = writeArticle(t.Context(), a, WriteRequest{
-		JobID: "job2", FileIdx: 0, ArtIdx: 1, Offset: 4, Data: []byte("YYYY"),
+		Owner: ownerFor("job2"), JobID: "job2", FileIdx: 0, ArtIdx: 1, Offset: 4, Data: []byte("YYYY"),
 	})
 
 	_ = a.Stop()
@@ -227,10 +227,10 @@ func TestCancelJob_KeepFilesLeavesThemOnDisk(t *testing.T) {
 	a := startAssembler(t, makeOpts(dir, files))
 
 	_ = writeArticle(t.Context(), a, WriteRequest{
-		JobID: "job1", FileIdx: 0, ArtIdx: 0, Offset: 0, Data: []byte("AAAA"),
+		Owner: ownerFor("job1"), JobID: "job1", FileIdx: 0, ArtIdx: 0, Offset: 0, Data: []byte("AAAA"),
 	})
 	_ = writeArticle(t.Context(), a, WriteRequest{
-		JobID: "job1", FileIdx: 1, ArtIdx: 0, Offset: 0, Data: []byte("BBBB"),
+		Owner: ownerFor("job1"), JobID: "job1", FileIdx: 1, ArtIdx: 0, Offset: 0, Data: []byte("BBBB"),
 	})
 
 	if err := a.CancelJob(t.Context(), "job1", KeepFiles); err != nil {
@@ -300,7 +300,7 @@ func TestCancelJob_ContextCancel(t *testing.T) {
 	// Fill the queue with a request that blocks the worker.
 	go func() {
 		_ = writeArticle(t.Context(), a, WriteRequest{
-			JobID: "block", FileIdx: 0, ArtIdx: 0, Data: []byte("x"),
+			Owner: ownerFor("block"), JobID: "block", FileIdx: 0, ArtIdx: 0, Data: []byte("x"),
 		})
 	}()
 	// Deterministically wait until the worker has dequeued the request and
@@ -311,7 +311,7 @@ func TestCancelJob_ContextCancel(t *testing.T) {
 	ctx, cancel := context.WithTimeout(t.Context(), 50*time.Millisecond)
 	defer cancel()
 	_ = writeArticle(ctx, a, WriteRequest{
-		JobID: "fill", FileIdx: 0, ArtIdx: 0, Data: []byte("y"),
+		Owner: ownerFor("fill"), JobID: "fill", FileIdx: 0, ArtIdx: 0, Data: []byte("y"),
 	})
 
 	// Now CancelJob with an already-cancelled context.
@@ -343,21 +343,21 @@ func TestFatalErrCountsTowardCompletion(t *testing.T) {
 
 	var completions atomic.Int32
 	opts := makeOpts(dir, files)
-	opts.OnFileComplete = func(_ string, _ int) { completions.Add(1) }
+	opts.OnFileComplete = func(_ Owner, _ int) { completions.Add(1) }
 
 	a := startAssembler(t, opts)
 
 	// 2 good articles, 1 fatal.
 	_ = writeArticle(t.Context(), a, WriteRequest{
-		JobID: "job1", FileIdx: 0, ArtIdx: 0, Offset: 0, Data: []byte("AAAA"),
+		Owner: ownerFor("job1"), JobID: "job1", FileIdx: 0, ArtIdx: 0, Offset: 0, Data: []byte("AAAA"),
 		MessageID: "good1",
 	})
 	_ = writeArticle(t.Context(), a, WriteRequest{
-		JobID: "job1", FileIdx: 0, ArtIdx: 1, Offset: 4, Data: []byte("BBBB"),
+		Owner: ownerFor("job1"), JobID: "job1", FileIdx: 0, ArtIdx: 1, Offset: 4, Data: []byte("BBBB"),
 		MessageID: "good2",
 	})
 	_ = writeArticle(t.Context(), a, WriteRequest{
-		JobID: "job1", FileIdx: 0, ArtIdx: 2,
+		Owner: ownerFor("job1"), JobID: "job1", FileIdx: 0, ArtIdx: 2,
 		MessageID: "fail1",
 		FatalErr:  fmt.Errorf("article not found on any server"),
 	})
@@ -376,21 +376,21 @@ func TestFatalErrDuplicate(t *testing.T) {
 
 	var completions atomic.Int32
 	opts := makeOpts(dir, files)
-	opts.OnFileComplete = func(_ string, _ int) { completions.Add(1) }
+	opts.OnFileComplete = func(_ Owner, _ int) { completions.Add(1) }
 
 	a := startAssembler(t, opts)
 
 	// Send the same FatalErr twice — only one should count.
 	for range 2 {
 		_ = writeArticle(t.Context(), a, WriteRequest{
-			JobID: "job1", FileIdx: 0, ArtIdx: 0,
+			Owner: ownerFor("job1"), JobID: "job1", FileIdx: 0, ArtIdx: 0,
 			MessageID: "dup-fail",
 			FatalErr:  fmt.Errorf("gone"),
 		})
 	}
 	// Send one good article to complete the file (total=2 parts).
 	_ = writeArticle(t.Context(), a, WriteRequest{
-		JobID: "job1", FileIdx: 0, ArtIdx: 1, Offset: 0, Data: []byte("AAAA"),
+		Owner: ownerFor("job1"), JobID: "job1", FileIdx: 0, ArtIdx: 1, Offset: 0, Data: []byte("AAAA"),
 		MessageID: "good1",
 	})
 
@@ -410,23 +410,23 @@ func TestLateDuplicateForCompletedFile(t *testing.T) {
 
 	var completions atomic.Int32
 	opts := makeOpts(dir, files)
-	opts.OnFileComplete = func(_ string, _ int) { completions.Add(1) }
+	opts.OnFileComplete = func(_ Owner, _ int) { completions.Add(1) }
 
 	a := startAssembler(t, opts)
 
 	// Complete the file.
 	_ = writeArticle(t.Context(), a, WriteRequest{
-		JobID: "job1", FileIdx: 0, ArtIdx: 0, Offset: 0, Data: []byte("AA"),
+		Owner: ownerFor("job1"), JobID: "job1", FileIdx: 0, ArtIdx: 0, Offset: 0, Data: []byte("AA"),
 		MessageID: "msg1",
 	})
 	_ = writeArticle(t.Context(), a, WriteRequest{
-		JobID: "job1", FileIdx: 0, ArtIdx: 1, Offset: 2, Data: []byte("BB"),
+		Owner: ownerFor("job1"), JobID: "job1", FileIdx: 0, ArtIdx: 1, Offset: 2, Data: []byte("BB"),
 		MessageID: "msg2",
 	})
 
 	// Send a late duplicate — should be rejected (tombstone set).
 	_ = writeArticle(t.Context(), a, WriteRequest{
-		JobID: "job1", FileIdx: 0, ArtIdx: 2, Offset: 0, Data: []byte("XX"),
+		Owner: ownerFor("job1"), JobID: "job1", FileIdx: 0, ArtIdx: 2, Offset: 0, Data: []byte("XX"),
 		MessageID: "msg1-late",
 	})
 

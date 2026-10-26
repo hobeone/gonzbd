@@ -191,10 +191,10 @@ file internal/assembler/assembler.go
 file internal/assembler/assembler.go
 --- anchor
 	if a.opts.OnArticleRejected != nil {
-		a.opts.OnArticleRejected(req.JobID, req.FileIdx, req.ArtIdx,
+		a.opts.OnArticleRejected(req.Owner, req.FileIdx, req.ArtIdx,
 			"redelivered after its file was completed", WholeArticle)
 --- replace
 	if false {
-		a.opts.OnArticleRejected(req.JobID, req.FileIdx, req.ArtIdx,
+		a.opts.OnArticleRejected(req.Owner, req.FileIdx, req.ArtIdx,
 			"redelivered after its file was completed", WholeArticle)
 --- end

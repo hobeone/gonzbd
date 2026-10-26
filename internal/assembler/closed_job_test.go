@@ -28,14 +28,14 @@ func TestOpenTargetFile_ClosedJobDropsTheArticle(t *testing.T) {
 		return inner(owner, fileIdx)
 	}
 	var faults, unwritten atomic.Int32
-	opts.OnWriteFault = func(string, int, *storagefault.Fault) { faults.Add(1) }
-	opts.OnArticlesUnwritten = func(string, int, []int32) { unwritten.Add(1) }
+	opts.OnWriteFault = func(Owner, int, *storagefault.Fault) { faults.Add(1) }
+	opts.OnArticlesUnwritten = func(Owner, int, []int32) { unwritten.Add(1) }
 
 	a := startAssembler(t, opts)
 	closed.Store(true)
 	released := make(chan struct{})
 	_ = writeArticle(t.Context(), a, WriteRequest{
-		JobID: "job1", FileIdx: 0, ArtIdx: 0, Offset: 0, Data: []byte("late"),
+		Owner: ownerFor("job1"), JobID: "job1", FileIdx: 0, ArtIdx: 0, Offset: 0, Data: []byte("late"),
 		Release: func() { close(released) },
 	})
 	if err := a.Quiesce(t.Context()); err != nil {

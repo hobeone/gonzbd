@@ -5,15 +5,20 @@ import (
 	"time"
 
 	"github.com/hobeone/gonzbd/internal/downloader"
+	"github.com/hobeone/gonzbd/internal/job"
 )
 
 // FileComplete is emitted when a file assembly is finished: the assembler
 // finished the file on its writing handle, or verification finished it by path.
 //
+// Job is the instance the file was finished for: the owner the assembler
+// reported, or the instance the verifier hydrated. The consumer acts on it
+// only while it is the instance registered under its ID (#1056).
+//
 // It carries no CRC32. The whole-file CRC is derived from the file's written
 // rows when the completion is consumed (Job.SettleFileCRC).
 type FileComplete struct {
-	JobID   string
+	Job     *job.Job
 	FileIdx int
 	// Resumed marks a completion the verifier produced at hydration rather
 	// than one this process assembled. The hydration already settled the

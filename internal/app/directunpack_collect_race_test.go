@@ -120,7 +120,11 @@ func fetchingRarApp(t *testing.T) (*Application, *job.Job) {
 // completeFile runs the completion of file i of id that follows its finalize.
 func completeFile(t *testing.T, application *Application, id string, i int) {
 	t.Helper()
-	if err := application.completeFinalizedFile(FileComplete{JobID: id, FileIdx: i}); err != nil {
+	j, ok := application.dispatcher.Job(id)
+	if !ok {
+		t.Fatalf("completeFile(%d): no job under %s", i, id)
+	}
+	if err := application.completeFinalizedFile(FileComplete{Job: j, FileIdx: i}); err != nil {
 		t.Errorf("completeFinalizedFile(%d): %v", i, err)
 	}
 }

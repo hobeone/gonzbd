@@ -29,7 +29,7 @@ func newFailingWriteFile(t *testing.T, err error) (*openFile, string) {
 	key := fileKey{jobID: "job1", fileIdx: 0}
 	w := newFileWriter(fh, path, key)
 	w.writeAt = func([]byte, int64) (int, error) { return 0, err }
-	return &openFile{w: w, info: FileInfo{Dir: filepath.Dir(path), Name: filepath.Base(path), ExpectedSize: 4096}}, path
+	return &openFile{w: w, info: FileInfo{Dir: filepath.Dir(path), Name: filepath.Base(path), ExpectedSize: 4096}, owner: ownerFor(key.jobID)}, path
 }
 
 // TestWriteFault_IsNotCountedTowardCompletion pins the half of the defect that
@@ -50,7 +50,7 @@ func TestWriteFault_IsNotCountedTowardCompletion(t *testing.T) {
 	a := New(makeOpts(t.TempDir(), map[string]FileInfo{}), slog.New(slog.DiscardHandler))
 
 	a.handleSuccessArticle(f, WriteRequest{
-		JobID: "job1", FileIdx: 0, ArtIdx: 7, MessageID: "m1",
+		Owner: ownerFor("job1"), JobID: "job1", FileIdx: 0, ArtIdx: 7, MessageID: "m1",
 		Offset: 0, Data: []byte("AAAA"),
 	})
 
@@ -75,16 +75,16 @@ func TestWriteFault_IsRoutedOutOfTheAssembler(t *testing.T) {
 	var gotArts []int32
 	var gotFault *storagefault.Fault
 	opts := makeOpts(t.TempDir(), map[string]FileInfo{})
-	opts.OnWriteFault = func(jobID string, fileIdx int, flt *storagefault.Fault) {
-		gotJob, gotFile, gotFault = jobID, fileIdx, flt
+	opts.OnWriteFault = func(o Owner, fileIdx int, flt *storagefault.Fault) {
+		gotJob, gotFile, gotFault = o.ID(), fileIdx, flt
 	}
-	opts.OnArticlesUnwritten = func(_ string, _ int, artIdxs []int32) {
+	opts.OnArticlesUnwritten = func(_ Owner, _ int, artIdxs []int32) {
 		gotArts = append(gotArts, artIdxs...)
 	}
 	a := New(opts, slog.New(slog.DiscardHandler))
 
 	a.handleSuccessArticle(f, WriteRequest{
-		JobID: "job1", FileIdx: 0, ArtIdx: 7, MessageID: "m1",
+		Owner: ownerFor("job1"), JobID: "job1", FileIdx: 0, ArtIdx: 7, MessageID: "m1",
 		Offset: 0, Data: []byte("AAAA"),
 	})
 
@@ -121,12 +121,12 @@ func TestNoteWriteFault_KeepsAnAlreadyClassifiedFault(t *testing.T) {
 
 	var got *storagefault.Fault
 	opts := makeOpts(t.TempDir(), map[string]FileInfo{})
-	opts.OnWriteFault = func(_ string, _ int, flt *storagefault.Fault) { got = flt }
+	opts.OnWriteFault = func(_ Owner, _ int, flt *storagefault.Fault) { got = flt }
 	a := New(opts, slog.New(slog.DiscardHandler))
 
 	// A fault that arrived from elsewhere, naming a different op and path.
 	original := storagefault.Classify("sync", "/mnt/other/vol.rar", syscall.EIO)
-	a.noteWriteFault(f.info.Path(), WriteRequest{JobID: "job1", FileIdx: 0, ArtIdx: 3}, original)
+	a.noteWriteFault(f.info.Path(), WriteRequest{Owner: ownerFor("job1"), JobID: "job1", FileIdx: 0, ArtIdx: 3}, original)
 
 	if got == nil {
 		t.Fatal("noteWriteFault did not surface the fault")
@@ -139,7 +139,7 @@ func TestNoteWriteFault_KeepsAnAlreadyClassifiedFault(t *testing.T) {
 
 	// An unclassified error is the case Classify is actually for.
 	got = nil
-	a.noteWriteFault(f.info.Path(), WriteRequest{JobID: "job1", FileIdx: 0, ArtIdx: 3}, errors.New("bare"))
+	a.noteWriteFault(f.info.Path(), WriteRequest{Owner: ownerFor("job1"), JobID: "job1", FileIdx: 0, ArtIdx: 3}, errors.New("bare"))
 	if got == nil {
 		t.Fatal("a bare error was not classified and surfaced")
 	}

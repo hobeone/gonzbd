@@ -24,10 +24,10 @@ func TestProcessRequest_RoutesAFailedOpen(t *testing.T) {
 	opts := makeOpts(dir, map[string]FileInfo{})
 	var faults []*storagefault.Fault
 	var gotArt int32 = -1
-	opts.OnWriteFault = func(_ string, _ int, f *storagefault.Fault) {
+	opts.OnWriteFault = func(_ Owner, _ int, f *storagefault.Fault) {
 		faults = append(faults, f)
 	}
-	opts.OnArticlesUnwritten = func(_ string, _ int, artIdxs []int32) {
+	opts.OnArticlesUnwritten = func(_ Owner, _ int, artIdxs []int32) {
 		if len(artIdxs) > 0 {
 			gotArt = artIdxs[0]
 		}
@@ -35,7 +35,7 @@ func TestProcessRequest_RoutesAFailedOpen(t *testing.T) {
 
 	a := startAssembler(t, opts)
 	if err := writeArticle(t.Context(), a, WriteRequest{
-		JobID: "job1", FileIdx: 0, ArtIdx: 9, MessageID: "m1",
+		Owner: ownerFor("job1"), JobID: "job1", FileIdx: 0, ArtIdx: 9, MessageID: "m1",
 		Offset: 0, Data: []byte("AAAA"),
 	}); err != nil {
 		t.Fatalf("WriteArticle: %v", err)
@@ -98,14 +98,14 @@ func TestProcessRequest_FailedOpenReleasesTheBufferOnce(t *testing.T) {
 			a := newHelperAssembler()
 			a.opts.FileInfo = tc.resolver
 			var faults int
-			a.opts.OnWriteFault = func(string, int, *storagefault.Fault) { faults++ }
-			a.opts.OnArticlesUnwritten = func(string, int, []int32) {}
+			a.opts.OnWriteFault = func(Owner, int, *storagefault.Fault) { faults++ }
+			a.opts.OnArticlesUnwritten = func(Owner, int, []int32) {}
 			var released [][]byte
 			a.putBuffer = func(b []byte) { released = append(released, b) }
 
 			data := []byte("AAAA")
 			a.processRequest(WriteRequest{
-				JobID: "job1", FileIdx: 0, ArtIdx: 9, MessageID: "m1",
+				Owner: ownerFor("job1"), JobID: "job1", FileIdx: 0, ArtIdx: 9, MessageID: "m1",
 				Offset: 0, Data: data,
 			}, map[fileKey]*openFile{}, map[fileKey]struct{}{})
 

@@ -48,14 +48,14 @@ func newDirectUnpackOrchestrator(app *Application) *directUnpackOrchestrator {
 // job is eligible for extraction-while-downloading.
 func (o *directUnpackOrchestrator) maybeStart(fc FileComplete) {
 	app := o.app
-	j, ok := app.dispatcher.Job(fc.JobID)
+	// RowJob rather than Row: the unpacker map below is keyed by ID, and an
+	// attempt a retry has replaced under that ID must not reach it (#1056).
+	j := fc.Job
+	row, ok := app.dispatcher.RowJob(j)
 	if !ok {
 		return
 	}
-	row, ok := app.dispatcher.Row(fc.JobID)
-	if !ok {
-		return
-	}
+	jobID := j.ID()
 	// Skip DU for jobs that don't want unpacking (PP < 2) or have a password
 	// (DU would fail on the password and fall back anyway).
 	if row.Header.PP.Int() < 2 || row.Header.Password != "" {
@@ -72,15 +72,15 @@ func (o *directUnpackOrchestrator) maybeStart(fc FileComplete) {
 	}
 
 	// Resolve the on-disk path from the pipeline's file info cache.
-	info, err := app.pipeline.resolveFileInfo(fc.JobID, fc.FileIdx)
+	info, err := app.pipeline.resolveFileInfo(jobID, fc.FileIdx)
 	if err != nil {
 		app.log.Debug("directunpack: cannot resolve file path",
-			"job", fc.JobID, "fileidx", fc.FileIdx, "err", err)
+			"job", jobID, "fileidx", fc.FileIdx, "err", err)
 		return
 	}
 
 	o.mu.Lock()
-	du, exists := o.unpackers[fc.JobID]
+	du, exists := o.unpackers[jobID]
 	if !exists {
 		// No unpacker is started for an instance that is admitted or
 		// removed. An admitted job's enqueuePostProc collects its unpacker
@@ -114,7 +114,7 @@ func (o *directUnpackOrchestrator) maybeStart(fc FileComplete) {
 		if app.postProcAdmissions.has(j) || app.transitions.wasRemoved(j) {
 			o.mu.Unlock()
 			app.log.Debug("directunpack: not starting, the job is handed to post-processing or removed",
-				"job", fc.JobID, "fileidx", fc.FileIdx)
+				"job", jobID, "fileidx", fc.FileIdx)
 			return
 		}
 		cfgSnap := app.config.Snapshot()
@@ -123,13 +123,13 @@ func (o *directUnpackOrchestrator) maybeStart(fc FileComplete) {
 		if limit > 0 && o.active >= limit {
 			o.mu.Unlock()
 			app.log.Debug("directunpack: skipping, concurrency limit reached",
-				"job", fc.JobID, "active", o.active, "limit", limit)
+				"job", jobID, "active", o.active, "limit", limit)
 			return
 		}
 		downloadDir := filepath.Join(downloadDirBase, j.Name())
 		du = directunpack.New(
-			app.log.With("component", "directunpack", "job", fc.JobID),
-			fc.JobID, downloadDir, downloadDir,
+			app.log.With("component", "directunpack", "job", jobID),
+			jobID, downloadDir, downloadDir,
 			o.buildOpts(cfgSnap),
 		)
 		// Provide all filenames so the DU can compute total volume counts.
@@ -138,7 +138,7 @@ func (o *directUnpackOrchestrator) maybeStart(fc FileComplete) {
 			allNames[i] = m.Files().Subject(i)
 		}
 		du.SetAllFilenames(allNames)
-		o.unpackers[fc.JobID] = du
+		o.unpackers[jobID] = du
 		o.active++
 	}
 	o.mu.Unlock()
@@ -150,11 +150,11 @@ func (o *directUnpackOrchestrator) maybeStart(fc FileComplete) {
 	// o.mu, so an unpacker created above either predates that abortJob, which
 	// removes it, or was created after it, when the state is already visible
 	// here. The read is outside o.mu: it takes the dispatcher's lock, and the
-	// Job and Row calls at the top of this function take it before o.mu.
-	if st, _ := app.dispatcher.UnwantedState(fc.JobID); st.Blocked() {
-		o.abortJob(fc.JobID)
+	// RowJob call at the top of this function takes it before o.mu.
+	if st, _ := app.dispatcher.UnwantedState(jobID); st.Blocked() {
+		o.abortJob(jobID)
 		app.log.Debug("directunpack: not feeding a job blocked for unwanted extensions",
-			"job", fc.JobID, "fileidx", fc.FileIdx)
+			"job", jobID, "fileidx", fc.FileIdx)
 		return
 	}
 
@@ -172,7 +172,7 @@ func (o *directUnpackOrchestrator) maybeStart(fc FileComplete) {
 		reason := fmt.Sprintf("volume %s had failed/missing download articles", filename)
 		du.MarkCorrupt(setname, reason)
 		app.log.Warn("directunpack: marking set corrupt, volume incomplete",
-			"job", fc.JobID, "set", setname, "file", filename)
+			"job", jobID, "set", setname, "file", filename)
 	}
 
 	du.Add(app.ctx, filename, info.Path())

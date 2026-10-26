@@ -81,7 +81,7 @@ type fileKey struct {
 
 // refFor is the sole place a downloaded article's identity becomes an
 // assembler.ArticleRef, and so the one producer of an assembler.Owner outside
-// tests (`git grep -n -E '^\s+Owner:' -- 'internal/*.go' ':!*_test.go'`
+// tests (`git grep -n -E 'Owner:\s' -- 'internal/*.go' ':!*_test.go'`
 // returns 1 line): the owner is res.Job, the instance the fetch was
 // dispatched for, which is why resolveForWrite may assert it to a *job.Job.
 //
@@ -98,6 +98,19 @@ func refFor(res *downloader.ArticleResult) assembler.ArticleRef {
 		ArtIdx:    res.ArtIdx,
 		MessageID: res.MessageID,
 	}
+}
+
+// instanceOf is the *job.Job behind the assembler.Owner a callback reports.
+// refFor above is the one producer of an Owner outside tests (its citation),
+// and it supplies res.Job, so the assertion cannot fail in production; a
+// failure is a fixture that built a ref by hand, and it panics rather than
+// letting a handler act on a nil instance.
+func instanceOf(o assembler.Owner) *job.Job {
+	j, ok := o.(*job.Job)
+	if !ok {
+		panic(fmt.Sprintf("app: assembler owner %T is not a *job.Job", o))
+	}
+	return j
 }
 
 // pipeline plumbs Downloader.Completions() → assembler; the downloader has

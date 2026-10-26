@@ -29,7 +29,7 @@ func TestCompleteFinalizedFile_EvictedAfterTheResidencyCheckIsMarked(t *testing.
 	var reported []string
 	a.downloadReportedHook = func(id string) { reported = append(reported, id) }
 
-	if err := a.completeFinalizedFile(FileComplete{JobID: a.j.ID(), FileIdx: 0}); err != nil {
+	if err := a.completeFinalizedFile(FileComplete{Job: a.j, FileIdx: 0}); err != nil {
 		t.Fatalf("completeFinalizedFile: %v", err)
 	}
 	if !fired {
@@ -69,7 +69,7 @@ func TestCompleteFinalizedFile_EvictedBeforeTheResidencyCheckIsNotMarked(t *test
 	reported := false
 	a.downloadReportedHook = func(string) { reported = true }
 
-	err := a.completeFinalizedFile(FileComplete{JobID: a.j.ID(), FileIdx: 0})
+	err := a.completeFinalizedFile(FileComplete{Job: a.j, FileIdx: 0})
 	if !errors.Is(err, job.ErrNotResident) {
 		t.Fatalf("completeFinalizedFile = %v, want job.ErrNotResident", err)
 	}

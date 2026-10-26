@@ -89,14 +89,14 @@ func TestOpenTargetFile_RefusesToWriteOutOfTheJobDirectory(t *testing.T) {
 				return FileInfo{Dir: jobDir, Name: name, TotalParts: 1}, nil
 			}
 			var faults []*storagefault.Fault
-			a.opts.OnWriteFault = func(_ string, _ int, f *storagefault.Fault) { faults = append(faults, f) }
+			a.opts.OnWriteFault = func(_ Owner, _ int, f *storagefault.Fault) { faults = append(faults, f) }
 			var unwritten []int32
-			a.opts.OnArticlesUnwritten = func(_ string, _ int, idx []int32) { unwritten = append(unwritten, idx...) }
+			a.opts.OnArticlesUnwritten = func(_ Owner, _ int, idx []int32) { unwritten = append(unwritten, idx...) }
 			a.putBuffer = func([]byte) {}
 
 			open := map[fileKey]*openFile{}
 			a.processRequest(WriteRequest{
-				JobID: "job1", FileIdx: 0, ArtIdx: 3, MessageID: "m1",
+				Owner: ownerFor("job1"), JobID: "job1", FileIdx: 0, ArtIdx: 3, MessageID: "m1",
 				Offset: 0, Data: []byte("PAYLOAD!"),
 			}, open, map[fileKey]struct{}{})
 			for _, f := range open {
