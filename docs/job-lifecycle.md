@@ -977,8 +977,8 @@ par2 file's declared archive volumes and par2 files are not judged, since the
 pipeline consumes them before `unwanted_cleanup` and the two must judge one
 population. The peek never forks `unrar`: a RAR volume the engine cannot list,
 such as a header-encrypted one, is skipped (its content is caught by
-`unwanted_cleanup` after unpack), while the par2 hint does not depend on the
-archive version. It
+`unwanted_cleanup` once it unpacks; a failed unpack fails the job, and that
+stage is skipped), while the par2 hint does not depend on the archive version. It
 runs from `completeFinalizedFile` for a live completion, before the
 DirectUnpack feed and before `MarkFileComplete`
 (`git grep -n 'app\.completeFinalizedFile(' -- 'internal/app/*.go'

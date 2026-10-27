@@ -655,8 +655,9 @@ Both par2 engines are handed one candidate list, which `RepairStage.repairSets` 
    volume headers (RAR5 and RAR 1.5-4.x) and the names a par2 file declares.
    The peek is an accelerator, lists in pure Go, and never forks `unrar`: a
    RAR volume the engine cannot list is skipped and its content is caught by
-   this stage after unpack, while the par2 hint does not depend on the
-   archive version. It reads no 7z, zip, nested or
+   this stage once it unpacks (a failed unpack fails the job, and `runStage`
+   then skips this stage, keeping the files for a retry), while the par2 hint
+   does not depend on the archive version. It reads no 7z, zip, nested or
    header-encrypted archive, skips a file with a failed article, and skips a job that is approved or
    whose action is `off`, so this stage still runs for every one of those.
    That directory is the download directory joined with the job's name, and

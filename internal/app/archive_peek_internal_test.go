@@ -587,15 +587,17 @@ func TestArchiveMemberNames(t *testing.T) {
 		{"missing file is an error", filepath.Join(dir, "missing"), "", nil, true},
 	}
 	for _, tc := range cases {
-		got, kind, err := archiveMemberNames(tc.path, opts)
-		if (err != nil) != tc.wantErr {
-			t.Errorf("%s: err = %v, want error: %v", tc.name, err, tc.wantErr)
-		}
-		if kind != tc.wantKind {
-			t.Errorf("%s: kind = %q, want %q", tc.name, kind, tc.wantKind)
-		}
-		if !slices.Equal(got, tc.want) {
-			t.Errorf("%s: names = %v, want %v", tc.name, got, tc.want)
-		}
+		t.Run(tc.name, func(t *testing.T) {
+			got, kind, err := archiveMemberNames(tc.path, opts)
+			if (err != nil) != tc.wantErr {
+				t.Errorf("err = %v, want error: %v", err, tc.wantErr)
+			}
+			if kind != tc.wantKind {
+				t.Errorf("kind = %q, want %q", kind, tc.wantKind)
+			}
+			if !slices.Equal(got, tc.want) {
+				t.Errorf("names = %v, want %v", got, tc.want)
+			}
+		})
 	}
 }
