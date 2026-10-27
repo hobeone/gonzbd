@@ -149,7 +149,11 @@ func TestInstallVerification_RestoresThePolicyOnlyWhenAsked(t *testing.T) {
 	log := slog.New(slog.DiscardHandler)
 
 	retry := lrBuiltJob(t, a, "retry", 1, 1)
-	if got, _ := installVerification(retry, nil, files, []durability.WrittenRow{row}, res, false, log, nil); !slices.Equal(got, []int{0}) {
+	got, err := installVerification(retry, nil, files, []durability.WrittenRow{row}, res, false, log, nil)
+	if err != nil {
+		t.Fatalf("installVerification(retry): %v", err)
+	}
+	if !slices.Equal(got, []int{0}) {
 		t.Errorf("finished = %v, want [0]: the verdict set file A complete", got)
 	}
 	if got := retry.FileFetchPolicy(1); got != job.FetchAlways {
@@ -160,7 +164,9 @@ func TestInstallVerification_RestoresThePolicyOnlyWhenAsked(t *testing.T) {
 	}
 
 	hydrated := lrBuiltJob(t, a, "hydrate", 1, 1)
-	installVerification(hydrated, nil, files, []durability.WrittenRow{row}, res, true, log, nil)
+	if _, err := installVerification(hydrated, nil, files, []durability.WrittenRow{row}, res, true, log, nil); err != nil {
+		t.Fatalf("installVerification(hydrate): %v", err)
+	}
 	if got := hydrated.FileFetchPolicy(1); got != job.FetchNever {
 		t.Errorf("hydration left file B at %v, want the stored FetchNever", got)
 	}
@@ -201,7 +207,7 @@ func TestInstallVerification_SettlesAndFailsBeforeThePeek(t *testing.T) {
 		crc                                 uint32
 	}
 	seen := map[int]atPeek{}
-	finished, _ := installVerification(j, nil, files, rows, res, true, slog.New(slog.DiscardHandler), func(fi int) {
+	finished, err := installVerification(j, nil, files, rows, res, true, slog.New(slog.DiscardHandler), func(fi int) {
 		p := j.Progress()
 		seen[fi] = atPeek{
 			loserFailed:  p.ArticleFailed(int(loser)),
@@ -210,6 +216,9 @@ func TestInstallVerification_SettlesAndFailsBeforeThePeek(t *testing.T) {
 			crc:          p.FileAssembledCRC32(fi),
 		}
 	})
+	if err != nil {
+		t.Fatalf("installVerification: %v", err)
+	}
 	if !slices.Equal(finished, []int{0, 1}) {
 		t.Fatalf("finished = %v, want [0 1]", finished)
 	}

@@ -75,7 +75,9 @@ func TestInstallVerification_FilenameWithoutRowsMarksBegun(t *testing.T) {
 	if err != nil {
 		t.Fatalf("verifyJobFiles: %v", err)
 	}
-	installVerification(j, nil, files, nil, res, true, slog.New(slog.DiscardHandler), nil)
+	if _, err := installVerification(j, nil, files, nil, res, true, slog.New(slog.DiscardHandler), nil); err != nil {
+		t.Fatalf("installVerification: %v", err)
+	}
 	if !j.DownloadBegun() {
 		t.Error("a restored file with a recorded filename and no rows does not report DownloadBegun")
 	}

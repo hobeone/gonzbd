@@ -35,10 +35,13 @@ func TestInstallVerification_PeeksAFinishedFileBeforeMarkingItComplete(t *testin
 
 	var peeked []int
 	var completeAtPeek bool
-	finished, _ := installVerification(a.j, nil, files, rows, res, true, slog.New(slog.DiscardHandler), func(fi int) {
+	finished, err := installVerification(a.j, nil, files, rows, res, true, slog.New(slog.DiscardHandler), func(fi int) {
 		peeked = append(peeked, fi)
 		completeAtPeek = a.j.Progress().FileComplete(fi)
 	})
+	if err != nil {
+		t.Fatalf("installVerification: %v", err)
+	}
 
 	if len(peeked) != 1 || peeked[0] != 0 {
 		t.Fatalf("peeked = %v, want [0]", peeked)
@@ -63,11 +66,13 @@ func TestInstallVerification_TheResidencyPeekBlocksTheJobBeforeTheMark(t *testin
 
 	var blockedAtPeekEnd unwanted.State
 	var completeAtPeekEnd bool
-	installVerification(a.j, nil, files, rows, res, true, slog.New(slog.DiscardHandler), func(fi int) {
+	if _, err := installVerification(a.j, nil, files, rows, res, true, slog.New(slog.DiscardHandler), func(fi int) {
 		_ = a.residency.peek(a.j, fi)
 		blockedAtPeekEnd = a.state(t)
 		completeAtPeekEnd = a.j.Progress().FileComplete(fi)
-	})
+	}); err != nil {
+		t.Fatalf("installVerification: %v", err)
+	}
 
 	if blockedAtPeekEnd != unwanted.StateBlocked {
 		t.Errorf("Unwanted after the peek = %d, want blocked", blockedAtPeekEnd)
