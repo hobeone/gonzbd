@@ -381,13 +381,20 @@ where a file is not yet verified in this process (`verifyAndAttach`):
 2. calls `verifyJobFiles`, which reads bytes and returns a verdict without
    touching the job or a row;
 3. commits the verdict's deletes and `complete` changes through `recorder.apply`;
-4. only then calls `Job.AttachArticles` and installs what was verified for
-   every file (`installVerification`), which marks each file verified.
+4. only then attaches the articles and installs what was verified for every
+   file in one step (`installVerification` → `Job.AttachArticles`), which marks
+   each file verified.
+
+Step 4 is one step because the job is resident from the moment its manifest is
+attached, and the downloader hands out a resident job's articles that are not
+Done. Attached first and installed after, a verified article could be fetched
+again in between, and its copy, refused against the bytes already on disk,
+counted toward the file's parts — finishing the file short (#1066).
 
 If any of steps 1 to 3 fails or is cancelled, no article is attached and no file
 is marked verified, so the next hydration starts again from step 1. A failure
-in step 4 is per file: `Job.InstallFileVerification` returns an error having
-changed nothing (the job is not resident, or the index names no file),
+in step 4 is per file: `Job.AttachArticles` reports a file whose install
+failed (its index names no file) having changed nothing for it,
 `installVerification` logs it and goes on, and that file stays unverified with
 the job's articles attached. `Job.AllVerified` is then false, so the next
 hydration after an eviction verifies again. So **a job `Hydrate` attached was
@@ -583,7 +590,7 @@ verification counts it `Unverified` whatever its CRC and it goes to par2;
 without par2 it is delivered with the tail (*Accepted limitations* 9).
 
 A `complete=1` file is not read. Its rows are installed as they stand
-(`Job.InstallFileVerification` with `Complete` set): each row's article is Done, **every other article
+(`Job.AttachArticles`, a `FileVerification` with `Complete` set): each row's article is Done, **every other article
 of the file's range is failed** — the failed set is the complement of the rows
 — the file is Complete, and its whole-file CRC is settled. The failed set is
 installed during hydration, before anything can consult it (the archive peek,
@@ -623,12 +630,15 @@ A context error is returned as it is, parks nothing, and settles nothing.
 #### Files the verifier finished
 
 `installVerification` installs each file's outcome in two phases while the
-manifest is certainly attached. First `Job.InstallFileVerification` applies,
-under one hold of the job's content lock, the recorded filename, the recorded
-fetch policy (hydration only), the rows, the intersection's failed articles
-and, for a file whose verdict carries `SetComplete`, the settled CRC — the
-settle comes last because it derives the CRC from the installed rows and
-releases them. No reader sees part of that step. Then, for a finished file,
+manifest is certainly attached. First each file's outcome is applied under one
+hold of the job's content lock: the recorded filename, the recorded fetch
+policy (hydration only), the rows, the intersection's failed articles and, for
+a file whose verdict carries `SetComplete`, the settled CRC — the settle comes
+last because it derives the CRC from the installed rows and releases them. No
+reader sees part of that step. A hydration applies every file in the same hold
+that attaches the manifest (`Job.AttachArticles`); a retry, whose job is
+already attached and not yet registered, applies them one file at a time
+(`Job.InstallFileVerification`). Then, for a finished file,
 with no job lock held, it runs the archive peek, and only then calls
 `MarkFileComplete` — the mark is what lets the download-complete report take
 the job to Assessing, so a last file marked first could reach post-processing
@@ -902,12 +912,14 @@ result only if the file's resident rows are unchanged when it re-takes the
 lock; otherwise it derives the CRC again under the lock from the rows as they
 are then (`TestSettleFileCRC_RefusesAStaleCombine`,
 `TestSettleFileCRC_CombinesWithoutTheLock`). For files a restart finished or
-found `complete=1`, `Job.InstallFileVerification` runs the same derivation
+found `complete=1`, the verification install (`Job.AttachArticles` at a
+restart, `Job.InstallFileVerification` on a retry) runs the same derivation
 (`settleFileCRC`) under the lock it already holds.
 
 The per-article rows a file needs for it are kept resident in
 `JobProgress.written` until the CRC is settled — installed by
-`InstallFileVerification` (or `InstallVerified`) and appended by
+the verification install (`AttachArticles` or `InstallFileVerification`), or
+by `InstallVerified`, and appended by
 `MarkArticleWritten` — so nothing on the worker path reads SQLite. A stored
 slice is never edited in place, so a `Progress()` clone shares them. A row
 also leaves with its article's Done bit: `JobProgress.clearDone` is the one

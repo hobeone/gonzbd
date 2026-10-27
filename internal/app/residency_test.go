@@ -219,7 +219,7 @@ func TestAppResidency_HydrateWaitsForAHydrationInFlight(t *testing.T) {
 		if err != nil {
 			t.Fatalf("NewManifestFromArticles: %v", err)
 		}
-		if err := j.AttachArticles(m); err != nil {
+		if _, err := j.AttachArticles(m, nil); err != nil {
 			t.Fatalf("AttachArticles: %v", err)
 		}
 		finish()

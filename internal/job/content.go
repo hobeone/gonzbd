@@ -76,9 +76,19 @@ func (j *Job) AttachFiles(ft *FileTable, seed []FileSeed) error {
 }
 
 // AttachArticles installs the article table beside the job's file table and
-// its own progress record. It is the counterpart of Evict, and the only
-// writer of the manifest pointer besides Evict's nil, which
-// TestManifestPointerWriters_MatchTheEnumerationStatedInProse pins.
+// its own progress record, then installs every verification in vs
+// (installFileVerificationLocked), all under one hold of contentMu. It is the
+// counterpart of Evict, and the only writer of the manifest pointer besides
+// Evict's nil, which TestManifestPointerWriters_MatchTheEnumerationStatedInProse
+// pins.
+//
+// The attach and the install are one step because a job is resident from the
+// moment its manifest is attached, and the downloader hands out every resident
+// job's articles that are not Done (ForEachUnfinishedArticle). A reader between
+// a separate attach and install would see a verified article as unfinished
+// and fetch it again; the copy, refused against the bytes already on disk,
+// would count toward the file's parts and finish it short (#1066). A caller
+// with nothing to install passes nil.
 //
 // The record is recomputed in place, under the same lock its writers take, and
 // never replaced. Writes that need no manifest — MarkArticleFailed,
@@ -91,34 +101,42 @@ func (j *Job) AttachFiles(ft *FileTable, seed []FileSeed) error {
 // It verifies the manifest was built from this job's own table, by pointer
 // identity rather than by comparing shapes: NewManifestFromArticles already
 // refused a count that disagrees with its table, so the pairing is the only
-// thing left to check.
-func (j *Job) AttachArticles(m *Manifest) error {
+// thing left to check. A refused attach returns its error, having changed
+// nothing. Each verification is then installed whatever became of the one
+// before it; its outcome is the FileInstall at the same index.
+func (j *Job) AttachArticles(m *Manifest, vs []FileVerification) ([]FileInstall, error) {
 	if m == nil {
-		return fmt.Errorf("job %s: AttachArticles: nil manifest", j.id)
+		return nil, fmt.Errorf("job %s: AttachArticles: nil manifest", j.id)
 	}
 	j.contentMu.Lock()
 	defer j.contentMu.Unlock()
 	if j.fileTable == nil {
-		return fmt.Errorf("job %s: AttachArticles: no file table attached; use AttachFiles", j.id)
+		return nil, fmt.Errorf("job %s: AttachArticles: no file table attached; use AttachFiles", j.id)
 	}
 	if m.Files() != j.fileTable {
-		return fmt.Errorf("job %s: AttachArticles: manifest was built from a different file table", j.id)
+		return nil, fmt.Errorf("job %s: AttachArticles: manifest was built from a different file table", j.id)
 	}
 	if j.manifest != nil {
-		return fmt.Errorf("job %s: AttachArticles: manifest already attached", j.id)
+		return nil, fmt.Errorf("job %s: AttachArticles: manifest already attached", j.id)
 	}
 	j.progress.recompute(m)
 	j.manifest = m
-	return nil
+	out := make([]FileInstall, len(vs))
+	for k, v := range vs {
+		out[k].Dropped, out[k].Err = j.installFileVerificationLocked(v)
+	}
+	return out, nil
 }
 
 // AttachContent attaches a job's files and articles together: AttachFiles on
-// m's table, then AttachArticles on m. It writes no field itself.
+// m's table, then AttachArticles on m with nothing to install. It writes no
+// field itself.
 // It takes contentMu twice, so a reader between the two calls sees a job with
 // a table and progress but no manifest, which looks evicted; harmless for
 // ingest, which attaches before the job is visible. Hydrate does not call it:
-// the job already holds its table, and Hydrate calls AttachArticles alone,
-// under the hydrating claim it takes at `r.hydrating.TryClaim(id)` in
+// the job already holds its table, and Hydrate attaches through AttachArticles
+// alone, with the verifications to install when it verified, under the
+// hydrating claim it takes at `r.hydrating.TryClaim(id)` in
 // internal/app/residency.go.
 func (j *Job) AttachContent(m *Manifest) error {
 	if m == nil {
@@ -127,7 +145,8 @@ func (j *Job) AttachContent(m *Manifest) error {
 	if err := j.AttachFiles(m.Files(), nil); err != nil {
 		return err
 	}
-	return j.AttachArticles(m)
+	_, err := j.AttachArticles(m, nil)
+	return err
 }
 
 // AllVerified reports whether every file's verification is installed
@@ -275,7 +294,7 @@ func (j *Job) DownloadStarted() time.Time {
 // registerFile sets it (RecordFileFilename) before it hands the file's first
 // article to the assembler, which creates the file, on the success path and
 // the permanent-failure path alike. Verification restores it
-// (InstallFileVerification), and drops the rows of a complete=0 file recorded
+// (installFileVerificationLocked), and drops the rows of a complete=0 file recorded
 // without one (verifyJobFiles), so a restored or retried job with done articles
 // reports it too; ResetForRetry does not clear it, and post-processing rename
 // stages update it in place (RecordFileRename). The writers of
@@ -344,7 +363,7 @@ func (j *Job) SetFileFetchPolicy(fi int, policy FetchPolicy) error {
 
 // setFileFetchPolicy is the one writer of a file's fetch policy:
 // `git grep -nE '\.Fetch\s*=[^=]' -- '*.go' ':!*_test.go'` finds 1 line, the
-// assignment below. SetFileFetchPolicy, Job.InstallFileVerification's
+// assignment below. SetFileFetchPolicy, installFileVerificationLocked's
 // restore, undeferRecovery, DiscardDeferredPar2 and newJobProgress (a restore
 // seed's policy) all call it. A progress built with a nil seed starts every
 // file at the FetchAlways zero; a restore seed's policy is applied through
@@ -423,7 +442,7 @@ func (j *Job) MarkArticleFailed(artIdx int, charge int64) error {
 }
 
 // markArticleFailed is the body of MarkArticleFailed, which
-// Job.InstallFileVerification also calls. charge is the bytes the failure
+// installFileVerificationLocked also calls. charge is the bytes the failure
 // charges, or WholeArticle. The caller holds contentMu.
 func (j *Job) markArticleFailed(artIdx int, charge int64) error {
 	if j.progress == nil {

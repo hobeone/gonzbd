@@ -102,7 +102,7 @@ func TestFetchPolicyChange_PendingFollowsThePolicy(t *testing.T) {
 			t.Fatalf("SetFileFetchPolicy: %v", err)
 		}
 		j.Evict()
-		if err := j.AttachArticles(m); err != nil {
+		if _, err := j.AttachArticles(m, nil); err != nil {
 			t.Fatalf("AttachArticles: %v", err)
 		}
 		if err := j.SetFileFetchPolicy(1, FetchAlways); err != nil {
@@ -158,7 +158,7 @@ func TestFetchPolicyDoors_OneResidencyRule(t *testing.T) {
 		if got := j.Progress().FileFetchPolicy(1); got != FetchAlways {
 			t.Errorf("policy = %v after the release, want FetchAlways", got)
 		}
-		if err := j.AttachArticles(m); err != nil {
+		if _, err := j.AttachArticles(m, nil); err != nil {
 			t.Fatalf("AttachArticles: %v", err)
 		}
 		checkPendingMatchesRecompute(t, j, m, 5)
@@ -176,7 +176,7 @@ func TestFetchPolicyDoors_OneResidencyRule(t *testing.T) {
 		if !j.DiscardDeferredPar2() {
 			t.Fatal("DiscardDeferredPar2 on an evicted job reported no change")
 		}
-		if err := j.AttachArticles(m); err != nil {
+		if _, err := j.AttachArticles(m, nil); err != nil {
 			t.Fatalf("AttachArticles: %v", err)
 		}
 		checkPendingMatchesRecompute(t, j, m, 2)
@@ -204,7 +204,7 @@ func TestAttachArticles_RefusesAManifestWithADifferentFileShape(t *testing.T) {
 	if other.NumArticles() != m.NumArticles() || other.NumFiles() != m.NumFiles() {
 		t.Fatal("precondition: the two manifests must agree on both totals")
 	}
-	if err := j.AttachArticles(other); err == nil {
+	if _, err := j.AttachArticles(other, nil); err == nil {
 		t.Error("AttachArticles accepted a manifest whose files split the articles differently")
 	}
 }

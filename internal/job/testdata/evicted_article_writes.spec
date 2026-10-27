@@ -111,13 +111,13 @@ file internal/job/content.go
 --- anchor
 	j.progress.recompute(m)
 	j.manifest = m
-	return nil
+	out := make([]FileInstall, len(vs))
 --- replace
 	cp := j.progress.clone()
 	cp.recompute(m)
 	j.progress = cp
 	j.manifest = m
-	return nil
+	out := make([]FileInstall, len(vs))
 --- end
 
 [re-hydration replaces the record with a fresh one]
@@ -125,9 +125,9 @@ file internal/job/content.go
 --- anchor
 	j.progress.recompute(m)
 	j.manifest = m
-	return nil
+	out := make([]FileInstall, len(vs))
 --- replace
 	j.progress = newJobProgress(m.Files(), nil)
 	j.manifest = m
-	return nil
+	out := make([]FileInstall, len(vs))
 --- end

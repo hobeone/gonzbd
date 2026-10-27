@@ -55,7 +55,7 @@ func TestAttachArticles_RefusesAManifestFromAnotherTable(t *testing.T) {
 	if err := j.AttachFiles(ft1, nil); err != nil {
 		t.Fatalf("AttachFiles: %v", err)
 	}
-	if err := j.AttachArticles(m2); err == nil {
+	if _, err := j.AttachArticles(m2, nil); err == nil {
 		t.Error("AttachArticles accepted a manifest built from another FileTable")
 	}
 	if j.Resident() {
@@ -69,10 +69,10 @@ func TestAttachArticles_RequiresFiles(t *testing.T) {
 		t.Fatalf("NewManifestFromArticles: %v", err)
 	}
 	j := New("j", "j", Policy{})
-	if err := j.AttachArticles(m); err == nil {
+	if _, err := j.AttachArticles(m, nil); err == nil {
 		t.Error("AttachArticles before AttachFiles: nil error")
 	}
-	if err := j.AttachArticles(nil); err == nil {
+	if _, err := j.AttachArticles(nil, nil); err == nil {
 		t.Error("AttachArticles(nil): nil error")
 	}
 }
@@ -85,7 +85,7 @@ func TestAttachArticles_RecomputesInPlace(t *testing.T) {
 	if err := j.MarkArticleFailed(2, WholeArticle); err != nil {
 		t.Fatalf("MarkArticleFailed: %v", err)
 	}
-	if err := j.AttachArticles(m); err != nil {
+	if _, err := j.AttachArticles(m, nil); err != nil {
 		t.Fatalf("AttachArticles: %v", err)
 	}
 	p := j.Progress()
@@ -95,7 +95,7 @@ func TestAttachArticles_RecomputesInPlace(t *testing.T) {
 	if got := j.FailedBytes(); got != 100 {
 		t.Errorf("FailedBytes = %d, want 100", got)
 	}
-	if err := j.AttachArticles(m); err == nil {
+	if _, err := j.AttachArticles(m, nil); err == nil {
 		t.Error("AttachArticles on a resident job: nil error")
 	}
 }

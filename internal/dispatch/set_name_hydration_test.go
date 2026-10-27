@@ -135,7 +135,7 @@ func TestLoadProgress_RecordsOnlyALoadItMade(t *testing.T) {
 		t.Fatal("the evicted job does not have progress without a manifest")
 	}
 	fr.onHydrate = func(string) {
-		if err := ev.AttachArticles(m); err != nil {
+		if _, err := ev.AttachArticles(m, nil); err != nil {
 			t.Errorf("AttachArticles: %v", err)
 		}
 	}

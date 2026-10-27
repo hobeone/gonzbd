@@ -235,8 +235,8 @@ Three things follow:
   under the same lock refuses with `ErrNameChanged` if the job is no longer
   named what the file's directory was resolved from, so either the rename is
   refused or the file is resolved again under the new name. A hydration
-  installs verified filenames (`Job.InstallFileVerification`) after it
-  attaches the job's content, and `LoadProgress` calls `Hydrate` even for a
+  installs verified filenames in the same step that attaches the job's
+  content (`Job.AttachArticles`), and `LoadProgress` calls `Hydrate` even for a
   job with progress, which waits for a hydration in flight, so `SetName`
   checks only once the install is done.
 - **`Outcome` stays genuinely write-once.** A verdict is never revised, only
@@ -1350,10 +1350,11 @@ gate consumes the unverified value. The downloaded bytes of an unverified file
 are estimated as `Bytes × Recorded / ArticleCount`, in the NZB's encoded unit
 (`fileBytesDownloaded`), so `RemainingBytes` and the percentage derived from it
 show roughly how far a half-downloaded job got; the record's own byte lengths,
-which are decoded payload, are never used. `InstallFileVerification` replaces
-the estimate with the maintained figure and is the only function that sets a
-file Verified after construction
-(`TestVerifiedWriters_MatchTheEnumerationStatedInProse`). `Hydrate` keys its
+which are decoded payload, are never used. The verification install
+(`installFileVerificationLocked`, under `AttachArticles` at a hydration and
+`InstallFileVerification` on a retry) replaces the estimate with the
+maintained figure and is the only function that sets a file Verified after
+construction (`TestVerifiedWriters_MatchTheEnumerationStatedInProse`). `Hydrate` keys its
 articles-only branch on `Job.AllVerified`, not on the table's presence, so a
 job the pass seeded has every file verified at its first successful
 hydration, `complete=1` and row-less files included; the API reports the state as `progress_verified`
@@ -1540,8 +1541,9 @@ jobs are registered and queued; a query or cursor iteration failure in
 reads the job's `written_articles` rows, reads each row of an incomplete file
 back from the device, and installs as Done only the rows whose bytes match
 their CRC (`appResidency.Hydrate` → `verifyJobFiles` → `installVerification`
-→ `Job.InstallFileVerification`, which applies each file's outcome under one
-hold of the content lock, so no reader sees part of it). A `complete=1` file is installed from its rows without a read, and every
+→ `Job.AttachArticles`, which attaches the manifest and applies every file's
+outcome under one hold of the content lock, so no reader sees the job
+resident before its verified articles are Done). A `complete=1` file is installed from its rows without a read, and every
 article of it with no row is failed. Nothing else about resolution is stored:
 a permanent failure in an incomplete file is not persisted and comes back
 Outstanding. `docs/durability-contract.md` §3 is the contract.
@@ -1810,12 +1812,13 @@ ingest: the finalizer's retry of a failed par2 repair, which calls
 restart, which applies whatever `job_files` holds twice: first the restore
 pass's seed (`newJobProgress`, reached from `AttachFiles`, before the first
 tick), and again the first hydration after a restart, which re-applies it
-through `Job.InstallFileVerification` (#329). Those are the callers, outside
+through `Job.AttachArticles` (#329). Those are the callers, outside
 ingest, of the one policy writer: `git grep -n 'setFileFetchPolicy(' --
 internal/job/ ':!*_test.go' ':!*.spec'` returns 6 lines, the definition and five
 call sites, under `SetFileFetchPolicy` (called only at ingest), `undeferRecovery`
 (under `ReleaseRecovery`), `DiscardDeferredPar2`, `newJobProgress` and
-`InstallFileVerification`. None of these touches the file set. A recovery
+`installFileVerificationLocked` (under `AttachArticles` and
+`InstallFileVerification`). None of these touches the file set. A recovery
 volume proven unnecessary keeps its `job_files` row exactly where it was; only
 its `fetch_policy` column moves, from `FetchIfNeeded` to `FetchNever`. That
 write is residency-independent: the recorder's dirty mark reads each file's

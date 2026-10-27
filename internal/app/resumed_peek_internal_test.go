@@ -35,7 +35,7 @@ func TestInstallVerification_PeeksAFinishedFileBeforeMarkingItComplete(t *testin
 
 	var peeked []int
 	var completeAtPeek bool
-	finished := installVerification(a.j, files, rows, res, true, slog.New(slog.DiscardHandler), func(fi int) {
+	finished, _ := installVerification(a.j, nil, files, rows, res, true, slog.New(slog.DiscardHandler), func(fi int) {
 		peeked = append(peeked, fi)
 		completeAtPeek = a.j.Progress().FileComplete(fi)
 	})
@@ -63,7 +63,7 @@ func TestInstallVerification_TheResidencyPeekBlocksTheJobBeforeTheMark(t *testin
 
 	var blockedAtPeekEnd unwanted.State
 	var completeAtPeekEnd bool
-	installVerification(a.j, files, rows, res, true, slog.New(slog.DiscardHandler), func(fi int) {
+	installVerification(a.j, nil, files, rows, res, true, slog.New(slog.DiscardHandler), func(fi int) {
 		_ = a.residency.peek(a.j, fi)
 		blockedAtPeekEnd = a.state(t)
 		completeAtPeekEnd = a.j.Progress().FileComplete(fi)

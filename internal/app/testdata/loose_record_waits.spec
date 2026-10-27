@@ -9,15 +9,13 @@ run ^(TestLooseRecord_VerificationFaultParksNeverFails|TestLooseRecord_Untrusted
 [a verification that succeeds never attaches the job]
 file internal/app/residency.go
 --- anchor
-	if err := j.AttachArticles(m); err != nil {
-		return err
-	}
-	// The message is a fact about the job, not the file: only the peek that
+	finished, err := installVerification(j, m, files, rows, res, true, r.log, peek)
 --- replace
 	if m != nil {
 		return nil
 	}
-	// The message is a fact about the job, not the file: only the peek that
+	_ = peek
+	var finished []int
 --- end
 
 [a write fault never stalls the job]

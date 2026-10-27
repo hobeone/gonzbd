@@ -52,9 +52,9 @@ file internal/job/content.go
 --- anchor
 	j.progress.recompute(m)
 	j.manifest = m
-	return nil
+	out := make([]FileInstall, len(vs))
 --- replace
 	j.progress = newJobProgress(m.Files(), nil)
 	j.manifest = m
-	return nil
+	out := make([]FileInstall, len(vs))
 --- end

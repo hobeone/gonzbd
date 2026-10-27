@@ -28,9 +28,9 @@ file internal/app/residency.go
 [the retry path applies a policy it did not derive]
 file internal/app/app.go
 --- anchor
-	return installVerification(j, files, rows, res, false, app.log, nil), nil
+	return installVerification(j, nil, files, rows, res, false, app.log, nil)
 --- replace
-	return installVerification(j, files, rows, res, true, app.log, nil), nil
+	return installVerification(j, nil, files, rows, res, true, app.log, nil)
 --- end
 
 # Correcting memory is not enough: the persisted row is a second door, which

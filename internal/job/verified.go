@@ -10,9 +10,10 @@ import (
 
 // The resident written rows (JobProgress.written) are what the whole-file CRC
 // is derived from. They enter through InstallVerified and
-// InstallFileVerification at verification and through MarkArticleWritten as
+// installFileVerificationLocked (under AttachArticles and
+// InstallFileVerification) at verification and through MarkArticleWritten as
 // articles are written, and leave when the file's CRC is settled
-// (SettleFileCRC, or InstallFileVerification itself), when the file is
+// (SettleFileCRC, or installFileVerificationLocked itself), when the file is
 // untrusted (UntrustFile), or with their article's Done bit
 // (JobProgress.clearDone). A resident row's article is Done.
 //
@@ -22,8 +23,8 @@ import (
 
 // InstallVerified marks each row's article Done and keeps the rows resident
 // for the whole-file CRC; the caller has already read each row's bytes back
-// and matched its CRC. It is the rows step of InstallFileVerification alone,
-// which is how a restart's or a retry's rows enter a job; its own callers are
+// and matched its CRC. It is the rows step of installFileVerificationLocked
+// alone, which is how a restart's or a retry's rows enter a job; its own callers are
 // tests seeding Done articles (`git grep -n '\.[I]nstallVerified(' -- '*.go'
 // ':!*_test.go'` returns nothing).
 //

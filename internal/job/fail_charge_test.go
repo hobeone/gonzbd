@@ -99,7 +99,7 @@ func TestMarkArticleFailedCharge_EvictedChargeHoldsAtHydration(t *testing.T) {
 	if err := j.MarkArticleFailed(2, 30); err != nil {
 		t.Fatalf("MarkArticleFailed on an evicted job: %v", err)
 	}
-	if err := j.AttachArticles(m); err != nil {
+	if _, err := j.AttachArticles(m, nil); err != nil {
 		t.Fatalf("AttachArticles: %v", err)
 	}
 	checkFigures(t, j, 30)
@@ -173,7 +173,7 @@ func TestMarkArticleFailedCharge_SecondFailureKeepsTheFirstCharge(t *testing.T) 
 		if err := j.MarkArticleFailed(2, 10); err != nil {
 			t.Fatalf("MarkArticleFailed: %v", err)
 		}
-		if err := j.AttachArticles(m); err != nil {
+		if _, err := j.AttachArticles(m, nil); err != nil {
 			t.Fatalf("AttachArticles: %v", err)
 		}
 		checkFigures(t, j, 100)
@@ -283,7 +283,7 @@ func TestCheckEarlyAbort_IgnoresARefusalThatChargesNothing(t *testing.T) {
 			j, m := newJob(t)
 			j.Evict()
 			failAll(t, j, charge)
-			if err := j.AttachArticles(m); err != nil {
+			if _, err := j.AttachArticles(m, nil); err != nil {
 				t.Fatalf("AttachArticles: %v", err)
 			}
 			return j
@@ -361,7 +361,7 @@ func TestCheckEarlyAbort_AZeroChargeRefusalStaysResolved(t *testing.T) {
 			j, m := newJob(t)
 			j.Evict()
 			failAll(t, j)
-			if err := j.AttachArticles(m); err != nil {
+			if _, err := j.AttachArticles(m, nil); err != nil {
 				t.Fatalf("AttachArticles: %v", err)
 			}
 			return j
@@ -486,7 +486,7 @@ func TestCheckEarlyAbort_SparesAJobWhoseDamageFitsRecovery(t *testing.T) {
 				j, m := newJob(t)
 				j.Evict()
 				failAll(t, j)
-				if err := j.AttachArticles(m); err != nil {
+				if _, err := j.AttachArticles(m, nil); err != nil {
 					t.Fatalf("AttachArticles: %v", err)
 				}
 				return j
