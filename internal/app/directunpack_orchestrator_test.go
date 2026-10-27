@@ -196,7 +196,7 @@ func TestMaybeStart_IneligibleJobsCreateNothing(t *testing.T) {
 		}
 		// Removal evicted the manifest; restored so the file lookup below
 		// the guard would succeed for first if the guard let it through.
-		if err := first.AttachArticles(m); err != nil {
+		if _, err := first.AttachArticles(m, nil); err != nil {
 			t.Fatalf("AttachArticles(first): %v", err)
 		}
 		second, hdr, err := BuildIngestJob(o.app.config, duNZB(), "movie.nzb",

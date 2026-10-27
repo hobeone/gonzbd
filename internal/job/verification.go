@@ -7,7 +7,8 @@ import (
 )
 
 // FileVerification is one file's verification outcome at a restart or a
-// retry, as Job.InstallFileVerification applies it.
+// retry, as Job.AttachArticles (restart) or Job.InstallFileVerification
+// (retry) applies it.
 type FileVerification struct {
 	FileIdx int
 	// Filename is the recorded filename, restored when non-empty.
@@ -32,8 +33,24 @@ type FileVerification struct {
 	Settle bool
 }
 
-// InstallFileVerification applies one file's verification outcome under a
-// single hold of contentMu, so no reader sees part of it. In order: the
+// FileInstall is what AttachArticles did with one FileVerification: the
+// values InstallFileVerification returns for it.
+type FileInstall struct {
+	Dropped int
+	Err     error
+}
+
+// InstallFileVerification applies one file's verification outcome to a
+// resident job under a single hold of contentMu, so no reader sees part of it
+// (installFileVerificationLocked).
+func (j *Job) InstallFileVerification(v FileVerification) (dropped int, err error) {
+	j.contentMu.Lock()
+	defer j.contentMu.Unlock()
+	return j.installFileVerificationLocked(v)
+}
+
+// installFileVerificationLocked applies one file's verification outcome. The
+// caller holds contentMu. In order: the
 // filename and, when asked, the fetch policy are restored; the rows are
 // installed (Done, and resident for the CRC); for a complete=1 file every
 // other article of its range is failed and the file is Complete; the
@@ -44,9 +61,7 @@ type FileVerification struct {
 // own article and nothing else (Standing Design Rule 3), as does a Failed index
 // out of range. It returns an error, having changed nothing, when the job is
 // not resident or FileIdx names no file.
-func (j *Job) InstallFileVerification(v FileVerification) (dropped int, err error) {
-	j.contentMu.Lock()
-	defer j.contentMu.Unlock()
+func (j *Job) installFileVerificationLocked(v FileVerification) (dropped int, err error) {
 	if j.manifest == nil || j.progress == nil {
 		return 0, fmt.Errorf("job %s: %w", j.id, ErrNotResident)
 	}

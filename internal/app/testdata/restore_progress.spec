@@ -123,11 +123,13 @@ file internal/app/residency.go
 run TestHydrate_FirstHydrationVerifiesEveryFile
 --- anchor
 	if j.AllVerified() {
-		return j.AttachArticles(m)
+		_, err := j.AttachArticles(m, nil)
+		return err
 	}
 --- replace
 	if ft != nil {
-		return j.AttachArticles(m)
+		_, err := j.AttachArticles(m, nil)
+		return err
 	}
 --- end
 
@@ -136,11 +138,13 @@ file internal/app/residency.go
 run TestHydrate_VerifiedJobRehydratesWithoutVerifying
 --- anchor
 	if j.AllVerified() {
-		return j.AttachArticles(m)
+		_, err := j.AttachArticles(m, nil)
+		return err
 	}
 --- replace
 	if false {
-		return j.AttachArticles(m)
+		_, err := j.AttachArticles(m, nil)
+		return err
 	}
 --- end
 

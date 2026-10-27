@@ -5,10 +5,12 @@ run TestAppResidency_HydrateThenEvict|TestHydrate_VerifiedJobRehydratesWithoutVe
 file internal/app/residency.go
 --- anchor
 	if j.AllVerified() {
-		return j.AttachArticles(m)
+		_, err := j.AttachArticles(m, nil)
+		return err
 	}
 --- replace
 	if false {
-		return j.AttachArticles(m)
+		_, err := j.AttachArticles(m, nil)
+		return err
 	}
 --- end

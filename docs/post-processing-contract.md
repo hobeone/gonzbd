@@ -591,7 +591,8 @@ Both par2 engines are handed one candidate list, which `RepairStage.repairSets` 
    it — a *resumed* file supplies a CRC as readily as a fresh one. No read of
    the file is involved (R24). `Job.SettleFileCRC` derives the value when the
    file completes (for a file a restart or a retry finishes,
-   `Job.InstallFileVerification` runs the same derivation), and publishes it **only when every article of the file has
+   the verification install — `Job.AttachArticles` at a restart,
+   `Job.InstallFileVerification` on a retry — runs the same derivation), and publishes it **only when every article of the file has
    exactly one row, none failed, the first row starts at offset 0, and each row
    starts where the previous one ends**. A file with a hole, a failed article,
    or rows that do not chain supplies no CRC rather than one describing bytes
@@ -739,7 +740,7 @@ carry the previous attempt's policy forward at all.
 
 Across a restart there is one path back, and it is hydration rather than a
 verdict: the first hydration after a restart restores every file's policy from
-`job_files` via `Job.InstallFileVerification` (`installVerification`), so the job
+`job_files` via `Job.AttachArticles` (`installVerification`), so the job
 resumes with whatever the row holds. That is only safe because every change to
 the policy reaches the record: the field has one writer,
 `JobProgress.setFileFetchPolicy`, which records each change it makes, and the

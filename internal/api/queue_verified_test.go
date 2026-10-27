@@ -21,7 +21,7 @@ func restoredUnverifiedJob(t *testing.T) (*job.Job, dispatch.Row) {
 	if err := j.AttachFiles(m.Files(), seeds); err != nil {
 		t.Fatalf("AttachFiles: %v", err)
 	}
-	if err := j.AttachArticles(m); err != nil {
+	if _, err := j.AttachArticles(m, nil); err != nil {
 		t.Fatalf("AttachArticles: %v", err)
 	}
 	row := dispatch.Row{

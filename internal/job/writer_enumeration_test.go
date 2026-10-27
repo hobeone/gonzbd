@@ -18,7 +18,7 @@ import (
 // field apart from an unrelated struct that happens to reuse the same field
 // name. Of the package's non-test struct types —
 // `git grep -n '^typ[e] [A-Za-z]* struct' -- 'internal/job/*.go' ':!internal/job/*_test.go'`
-// returns 26 — only the owners listed below declare any of these fields;
+// returns 27 — only the owners listed below declare any of these fields;
 // TestFieldOwners_AreTheOnlyDeclarers enforces that, so this sentence is
 // orientation rather than the guarantee.
 var fieldOwner = map[string]string{
@@ -463,13 +463,14 @@ func TestFieldOwners_AreTheOnlyDeclarers(t *testing.T) {
 }
 
 // TestVerifiedWriters_MatchTheEnumerationStatedInProse asserts that
-// InstallFileVerification is the only function that sets a file Verified after
-// construction, and newJobProgress the only one that initialises it. The scan
-// counts every assignment to .Verified, so a literal `= true` elsewhere and an
-// expression both show up.
+// installFileVerificationLocked is the only function that sets a file Verified
+// after construction — its callers are AttachArticles and
+// InstallFileVerification — and newJobProgress the only one that initialises
+// it. The scan counts every assignment to .Verified, so a literal `= true`
+// elsewhere and an expression both show up.
 func TestVerifiedWriters_MatchTheEnumerationStatedInProse(t *testing.T) {
 	writers := scanWriters(t, "Verified")
-	want := []string{"InstallFileVerification", "newJobProgress"}
+	want := []string{"installFileVerificationLocked", "newJobProgress"}
 	if !slices.Equal(writers, want) {
 		t.Errorf("functions assigning .Verified = %v, want %v\n\n"+
 			"Verified gates the restore estimate and the verification install; a second "+

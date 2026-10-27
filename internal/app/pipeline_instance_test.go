@@ -51,7 +51,7 @@ func retriedUnderOneID(t *testing.T, application *Application, id string) (first
 	}
 	// Removal evicted the first instance's manifest. Restored, so a result
 	// that reached it would leave a mark the test can see.
-	if err := first.AttachArticles(m); err != nil {
+	if _, err := first.AttachArticles(m, nil); err != nil {
 		t.Fatalf("AttachArticles(first): %v", err)
 	}
 	second = build("second")

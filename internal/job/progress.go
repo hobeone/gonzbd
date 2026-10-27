@@ -28,8 +28,9 @@ type JobProgress struct {
 	// The done bit is what marks an article as resolved, and nothing sets it
 	// from dispatch. Its doors are MarkArticleWritten, which the recorder
 	// calls once the article's WriteAt has returned (internal/app/record.go);
-	// installRows, through InstallVerified and InstallFileVerification, which
-	// install rows a restart or retry read back and fsynced, or rows of a
+	// installRows, through InstallVerified and installFileVerificationLocked
+	// (under AttachArticles and InstallFileVerification), which install rows a
+	// restart or retry read back and fsynced, or rows of a
 	// complete=1 file whose fsync preceded the flag; and setFailedBits, for
 	// an article whose bytes will never arrive (that failure is in memory
 	// only: it is not persisted). Of the functions that reach markDone,
@@ -62,7 +63,7 @@ type JobProgress struct {
 	// ClearEmittedForReload, which AttachArticles's recompute folds in at the
 	// next hydration. A restart sets no bit directly: it installs through
 	// markDone (installRows), markFailed and markArticleFailed, all three from
-	// InstallFileVerification.
+	// installFileVerificationLocked, under AttachArticles.
 	// TestBitsetWriters_MatchTheEnumerationStatedInProse pins the writers of
 	// each Set and Clear.
 	done, failed, emitted bitset
@@ -193,7 +194,7 @@ type FileProgress struct {
 	// of a failed article), and rebuilt by recompute, all from the manifest.
 	BytesDownloaded int64
 	// Verified is true once this process has installed this file's
-	// verification (InstallFileVerification), and false from a restore seed
+	// verification (installFileVerificationLocked), and false from a restore seed
 	// until then — for EVERY restored file, including one with complete=1 and
 	// one with no rows. A complete=1 file has no Done bits, no failed set and
 	// no settled CRC until the install puts them there (verification.go), and
@@ -202,7 +203,7 @@ type FileProgress struct {
 	// was recorded, so there is nothing to install.
 	//
 	// Writers are pinned by TestVerifiedWriters_MatchTheEnumerationStatedInProse:
-	// InstallFileVerification sets it, newJobProgress initialises it.
+	// installFileVerificationLocked sets it, newJobProgress initialises it.
 	Verified bool
 	// Recorded is the number of this file's articles the record holds a row for,
 	// read at restore. Meaningful only while !Verified; display derives an
@@ -219,7 +220,7 @@ type FileProgress struct {
 	// article whose range other articles partly cover. The manifest knows an
 	// article's size whether or not it was ever fetched. The failed set itself
 	// is in memory only: across a restart a complete=1 file rebuilds it as the
-	// complement of its written rows (InstallFileVerification), and a complete=0
+	// complement of its written rows (installFileVerificationLocked), and a complete=0
 	// file's failed articles are Outstanding again.
 	FailedBytes int64
 	// IsPar2 marks a par2 file — the index or a recovery volume — as opposed
@@ -362,7 +363,8 @@ func fileMetaFromTable(ft *FileTable) []FileMeta {
 // FileSeed is what the record held for one file at restore, applied by
 // newJobProgress before the first tick. It carries no article bit: a Done bit
 // after restart exists only because a device read matched its row's CRC
-// (docs/durability-contract.md §3), and that is InstallFileVerification's job.
+// (docs/durability-contract.md §3), and that is installFileVerificationLocked's
+// job.
 type FileSeed struct {
 	Recorded int
 	Complete bool

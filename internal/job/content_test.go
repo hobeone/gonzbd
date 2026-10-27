@@ -268,21 +268,21 @@ func TestJob_AdditionalMethods(t *testing.T) {
 	// AttachArticles needs a file table and a progress record of the job's own
 	// to attach onto, and a manifest slot that is empty.
 	j2 := New("j3", "test3", Policy{})
-	if err := j2.AttachArticles(m); err == nil {
+	if _, err := j2.AttachArticles(m, nil); err == nil {
 		t.Error("AttachArticles on a job with no file table: nil error")
 	}
-	if err := j.AttachArticles(nil); err == nil {
+	if _, err := j.AttachArticles(nil, nil); err == nil {
 		t.Error("AttachArticles(nil): nil error")
 	}
-	if err := j.AttachArticles(m); err == nil {
+	if _, err := j.AttachArticles(m, nil); err == nil {
 		t.Error("AttachArticles on a job whose manifest is resident: nil error")
 	}
 	j.Evict()
 	other := NewManifest([]JobFile{{Subject: "x.rar", Bytes: 100, Articles: []JobArticle{{ID: "<x>", Bytes: 100}}}})
-	if err := j.AttachArticles(other); err == nil {
+	if _, err := j.AttachArticles(other, nil); err == nil {
 		t.Error("AttachArticles with a manifest of a different shape: nil error")
 	}
-	if err := j.AttachArticles(m); err != nil {
+	if _, err := j.AttachArticles(m, nil); err != nil {
 		t.Errorf("AttachArticles: %v", err)
 	}
 
@@ -909,7 +909,7 @@ func TestMarkArticleFailed_RecordsAFailureThatArrivesAfterEviction(t *testing.T)
 		t.Error("article 2 is still Emitted after its failure was recorded")
 	}
 
-	if err := j.AttachArticles(m); err != nil {
+	if _, err := j.AttachArticles(m, nil); err != nil {
 		t.Fatalf("AttachArticles: %v", err)
 	}
 	if got := j.FailedBytes(); got != 100 {
@@ -1002,7 +1002,7 @@ func TestClearArticleEmitted_ReturnsAnEvictedArticleToOutstanding(t *testing.T) 
 		t.Fatal("article 2 is still Emitted after the clear")
 	}
 
-	if err := j.AttachArticles(m); err != nil {
+	if _, err := j.AttachArticles(m, nil); err != nil {
 		t.Fatalf("AttachArticles: %v", err)
 	}
 	if got := unfinishedArticles(t, j); len(got) != 1 || got[0] != 2 {
@@ -1045,7 +1045,7 @@ func TestAttachArticles_KeepsWritesMadeWhileEvicted(t *testing.T) {
 		t.Fatalf("SetFileFetchPolicy: %v", err)
 	}
 
-	if err := j.AttachArticles(m); err != nil {
+	if _, err := j.AttachArticles(m, nil); err != nil {
 		t.Fatalf("AttachArticles: %v", err)
 	}
 

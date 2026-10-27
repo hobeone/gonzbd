@@ -3043,7 +3043,7 @@ func (app *Application) verifyRetry(ctx context.Context, j *job.Job, m *job.Mani
 		}
 	}
 	cleanUnrecordedRetryFiles(j.Name(), m.Files(), files, app.pipeline.sanitizeOptions(), locate, app.log)
-	return installVerification(j, files, rows, res, false, app.log, nil), nil
+	return installVerification(j, nil, files, rows, res, false, app.log, nil)
 }
 
 // rowsFitManifest reports whether every row names an article inside its

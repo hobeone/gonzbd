@@ -22,8 +22,8 @@ import (
 // verifyResult is what one verification pass established about a job's files.
 // It describes; it changes nothing. The caller commits Verdicts through
 // recorder.apply, then installs Verified (installVerification). A hydration
-// attaches the job's content between the two (verifyAndAttach); a retry's
-// rebuilt job is already attached (verifyRetry).
+// attaches the job's content in the same step as that install
+// (verifyAndAttach); a retry's rebuilt job is already attached (verifyRetry).
 type verifyResult struct {
 	Verdicts []durability.FileVerdict
 	Verified map[int][]durability.WrittenRow // per file, rows that matched, in no particular order

@@ -30,11 +30,13 @@ file internal/app/residency.go
 run TestRestoreProgress_BuildsTheFileTableFromJobFiles
 --- anchor
 	if j.AllVerified() {
-		return j.AttachArticles(m)
+		_, err := j.AttachArticles(m, nil)
+		return err
 	}
 --- replace
 	if ft != nil {
-		return j.AttachArticles(m)
+		_, err := j.AttachArticles(m, nil)
+		return err
 	}
 --- end
 
@@ -61,11 +63,22 @@ run ^(TestVerifyAndAttach_MissingDirectoryParksTheJob|TestLooseRecord_ZeroedRang
 	if j.State().State == job.Fetching {
 		cleanUnrecordedFetchingFiles(j.Name(), files, locate, r.log)
 	}
-	if err := j.AttachArticles(m); err != nil {
-		return err
+	// The message is a fact about the job, not the file: only the peek that
+	// moved the job to Blocked returns one, and the first completion queued
+	// may be an unflagged file's, which would file the job without the names.
+	// So the first message goes to every completion of this hydration.
+	var failMsg string
+	var peek func(int)
+	if r.peek != nil {
+		peek = func(fi int) {
+			if msg := r.peek(j, fi); failMsg == "" {
+				failMsg = msg
+			}
+		}
 	}
+	finished, err := installVerification(j, m, files, rows, res, true, r.log, peek)
 --- replace
-	if err := j.AttachArticles(m); err != nil {
+	if _, err := j.AttachArticles(m, nil); err != nil {
 		return err
 	}
 	res, err := verifyJobFiles(ctx, m.Files(), files, rows, locate, false)
@@ -84,6 +97,20 @@ run ^(TestVerifyAndAttach_MissingDirectoryParksTheJob|TestLooseRecord_ZeroedRang
 	if j.State().State == job.Fetching {
 		cleanUnrecordedFetchingFiles(j.Name(), files, locate, r.log)
 	}
+	// The message is a fact about the job, not the file: only the peek that
+	// moved the job to Blocked returns one, and the first completion queued
+	// may be an unflagged file's, which would file the job without the names.
+	// So the first message goes to every completion of this hydration.
+	var failMsg string
+	var peek func(int)
+	if r.peek != nil {
+		peek = func(fi int) {
+			if msg := r.peek(j, fi); failMsg == "" {
+				failMsg = msg
+			}
+		}
+	}
+	finished, err := installVerification(j, nil, files, rows, res, true, r.log, peek)
 --- end
 
 # A first hydration cancelled while it reads the articles must report the

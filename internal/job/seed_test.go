@@ -186,7 +186,7 @@ func TestInstallFileVerification_MarksVerifiedAndZeroesRecorded(t *testing.T) {
 	if err := j.AttachFiles(ft, []FileSeed{{Recorded: 3}, {Recorded: 1}, {}}); err != nil {
 		t.Fatalf("AttachFiles: %v", err)
 	}
-	if err := j.AttachArticles(m); err != nil {
+	if _, err := j.AttachArticles(m, nil); err != nil {
 		t.Fatalf("AttachArticles: %v", err)
 	}
 	if _, err := j.InstallFileVerification(FileVerification{FileIdx: 0}); err != nil {
