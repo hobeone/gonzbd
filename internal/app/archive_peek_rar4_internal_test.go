@@ -35,6 +35,7 @@ func TestPeek_RAR4VolumeIsListedWithoutForkingUnrar(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			_ = os.Remove(marker) // a fork in an earlier case is that case's failure
 			a := newPeekApp(t, unwanted.ActionPause, onlyTxt, false, []peekFile{{"x.rar", tc.fixture}})
 			a.complete(t, 0)
 
