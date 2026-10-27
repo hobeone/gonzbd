@@ -21,7 +21,7 @@ require (
 )
 
 require (
-	github.com/andybalholm/brotli v1.2.6 // indirect
+	github.com/andybalholm/brotli v1.2.7 // indirect
 	github.com/bodgit/plumbing v1.3.0 // indirect
 	github.com/bodgit/windows v1.0.1 // indirect
 	github.com/deckarep/golang-set/v2 v2.8.0 // indirect
@@ -43,7 +43,7 @@ require (
 	github.com/ulikunitz/xz v0.5.17 // indirect
 	go.uber.org/multierr v1.11.0 // indirect
 	go4.org v0.0.0-20261019143151-5b882263cdaf // indirect
-	modernc.org/libc v1.79.0 // indirect
+	modernc.org/libc v1.79.1 // indirect
 	modernc.org/mathutil v1.7.1 // indirect
 	modernc.org/memory v1.12.1 // indirect
 )
