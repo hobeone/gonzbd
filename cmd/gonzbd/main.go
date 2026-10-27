@@ -283,12 +283,7 @@ func serveMode(configPath, listenOverride, logLevelsOverride, pidPath string, ve
 	trustedFn := func(r *http.Request) bool {
 		gen := cfg.GetGeneral()
 		ranges := gen.TrustedRanges()
-		fh := config.ForwardedHeaders{
-			XForwardedFor: r.Header.Get("X-Forwarded-For"),
-			Forwarded:     r.Header.Get("Forwarded"),
-			XRealIP:       r.Header.Get("X-Real-IP"),
-		}
-		trusted, reason := config.IsTrustedRemote(r.RemoteAddr, fh, ranges, gen.VerifyXFFHeader, gen.TrustedForwardHeader)
+		trusted, reason := config.IsTrustedRequest(r, ranges, gen.VerifyXFFHeader, gen.TrustedForwardHeader)
 		if !trusted {
 			log.Warn("refused session cookie / /debug/ access: source not trusted", "remote_addr", r.RemoteAddr, "reason", reason)
 		}

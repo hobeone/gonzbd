@@ -64,7 +64,7 @@ type AuthConfig struct {
 	ForwardHeader config.TrustedForwardHeader
 
 	// Logger receives an actionable line whenever the cookie path is
-	// refused because config.IsTrustedRemote rejected the source. Falls
+	// refused because config.IsTrustedRequest rejected the source. Falls
 	// back to slog.Default() when nil, matching api.New's convention.
 	Logger *slog.Logger
 }
@@ -102,12 +102,7 @@ func callerLevel(r *http.Request, cfg AuthConfig) AccessLevel {
 		// (the SEC-1 attack: GET / to grab the cookie, then replay it)
 		// is rejected. Without this, any caller that can reach the port
 		// obtained zero-credential admin.
-		fh := config.ForwardedHeaders{
-			XForwardedFor: r.Header.Get("X-Forwarded-For"),
-			Forwarded:     r.Header.Get("Forwarded"),
-			XRealIP:       r.Header.Get("X-Real-IP"),
-		}
-		if trusted, reason := config.IsTrustedRemote(r.RemoteAddr, fh, cfg.TrustedRanges, cfg.VerifyXFF, cfg.ForwardHeader); !trusted {
+		if trusted, reason := config.IsTrustedRequest(r, cfg.TrustedRanges, cfg.VerifyXFF, cfg.ForwardHeader); !trusted {
 			log := cfg.Logger
 			if log == nil {
 				log = slog.Default()
@@ -225,33 +220,22 @@ func splitHostPortNormalized(hostport, defaultScheme string) (host, port string)
 }
 
 // requestScheme returns "https" if r uses TLS directly. If r.TLS is nil and the
-// request originates from a trusted source (per config.IsTrustedRemote), it
-// also inspects forwarding headers (X-Forwarded-Proto, X-Forwarded-Scheme,
-// Forwarded) for an "https" scheme; otherwise returns "http".
+// request originates from a trusted source (per config.IsTrustedRequest), it
+// also inspects forwarding headers (X-Forwarded-Proto, X-Forwarded-Scheme, and
+// the proto= of every Forwarded element) for an "https" scheme; otherwise
+// returns "http".
 func requestScheme(r *http.Request, cfg AuthConfig) string {
 	if r.TLS != nil {
 		return "https"
 	}
-	fh := config.ForwardedHeaders{
-		XForwardedFor: r.Header.Get("X-Forwarded-For"),
-		Forwarded:     r.Header.Get("Forwarded"),
-		XRealIP:       r.Header.Get("X-Real-IP"),
-	}
-	if trusted, _ := config.IsTrustedRemote(r.RemoteAddr, fh, cfg.TrustedRanges, cfg.VerifyXFF, cfg.ForwardHeader); trusted {
+	if trusted, _ := config.IsTrustedRequest(r, cfg.TrustedRanges, cfg.VerifyXFF, cfg.ForwardHeader); trusted {
 		if strings.EqualFold(r.Header.Get("X-Forwarded-Proto"), "https") ||
 			strings.EqualFold(r.Header.Get("X-Forwarded-Scheme"), "https") {
 			return "https"
 		}
-		if fwd := r.Header.Get("Forwarded"); fwd != "" {
-			for part := range strings.SplitSeq(fwd, ";") {
-				part = strings.TrimSpace(part)
-				if strings.HasPrefix(strings.ToLower(part), "proto=") {
-					val := strings.TrimPrefix(part, "proto=")
-					val = strings.Trim(val, `"`)
-					if strings.EqualFold(val, "https") {
-						return "https"
-					}
-				}
+		for _, proto := range config.ForwardedProtos(r.Header) {
+			if strings.EqualFold(proto, "https") {
+				return "https"
 			}
 		}
 	}

@@ -1,6 +1,7 @@
 package config
 
 import (
+	"net/http/httptest"
 	"net/netip"
 	"slices"
 	"strings"
@@ -85,7 +86,7 @@ func TestIsTrustedRemote(t *testing.T) {
 	tests := []struct {
 		name          string
 		remoteAddr    string
-		fh            ForwardedHeaders
+		fh            forwardedHeaders
 		ranges        []string
 		verifyXFF     bool
 		forwardHeader TrustedForwardHeader
@@ -118,56 +119,56 @@ func TestIsTrustedRemote(t *testing.T) {
 		// non-loopback trusted IP (explicitly listed in local_ranges), we trust
 		// the proxy directly and ignore/short-circuit client hop verification
 		// when verifyXFF is off.
-		{name: "spoofed xff from untrusted peer still rejected (peer check first)", remoteAddr: "8.8.8.8:5000", fh: ForwardedHeaders{XForwardedFor: "127.0.0.1"}, want: false},
+		{name: "spoofed xff from untrusted peer still rejected (peer check first)", remoteAddr: "8.8.8.8:5000", fh: forwardedHeaders{XForwardedFor: "127.0.0.1"}, want: false},
 		{
 			name: "trusted peer + xff present + verify off -> trusted", remoteAddr: "192.168.1.10:5000",
-			fh: ForwardedHeaders{XForwardedFor: "8.8.8.8"}, ranges: []string{"192.168.0.0/16"},
+			fh: forwardedHeaders{XForwardedFor: "8.8.8.8"}, ranges: []string{"192.168.0.0/16"},
 			want: true,
 		},
 		{
 			name: "trusted peer + forwarded present + verify off -> trusted", remoteAddr: "192.168.1.10:5000",
-			fh: ForwardedHeaders{Forwarded: "for=8.8.8.8"}, ranges: []string{"192.168.0.0/16"},
+			fh: forwardedHeaders{Forwarded: "for=8.8.8.8"}, ranges: []string{"192.168.0.0/16"},
 			want: true,
 		},
 		{
 			name: "trusted peer + x-real-ip present + verify off -> trusted", remoteAddr: "192.168.1.10:5000",
-			fh: ForwardedHeaders{XRealIP: "8.8.8.8"}, ranges: []string{"192.168.0.0/16"},
+			fh: forwardedHeaders{XRealIP: "8.8.8.8"}, ranges: []string{"192.168.0.0/16"},
 			want: true,
 		},
 		{
 			name: "loopback peer + xff present + verify off -> fails closed", remoteAddr: "127.0.0.1:5000",
-			fh: ForwardedHeaders{XForwardedFor: "8.8.8.8"}, want: false, wantReasonContains: "verify_xff_header is false",
+			fh: forwardedHeaders{XForwardedFor: "8.8.8.8"}, want: false, wantReasonContains: "verify_xff_header is false",
 		},
 		{
 			name: "loopback peer + forwarded present + verify off -> fails closed", remoteAddr: "127.0.0.1:5000",
-			fh: ForwardedHeaders{Forwarded: "for=8.8.8.8"}, want: false, wantReasonContains: "verify_xff_header is false",
+			fh: forwardedHeaders{Forwarded: "for=8.8.8.8"}, want: false, wantReasonContains: "verify_xff_header is false",
 		},
 		{
 			name: "loopback peer + x-real-ip present + verify off -> fails closed", remoteAddr: "127.0.0.1:5000",
-			fh: ForwardedHeaders{XRealIP: "8.8.8.8"}, want: false, wantReasonContains: "verify_xff_header is false",
+			fh: forwardedHeaders{XRealIP: "8.8.8.8"}, want: false, wantReasonContains: "verify_xff_header is false",
 		},
 		{name: "trusted peer + no forwarding header + verify off -> trusted", remoteAddr: "192.168.1.10:5000", ranges: []string{"192.168.0.0/16"}, want: true},
 
 		// verifyXFF: peer must be trusted AND every hop trusted.
-		{name: "verify: untrusted peer rejected before xff", remoteAddr: "8.8.8.8:5000", fh: ForwardedHeaders{XForwardedFor: "127.0.0.1"}, verifyXFF: true, want: false},
-		{name: "verify: trusted peer + trusted hop", remoteAddr: "192.168.1.1:5000", fh: ForwardedHeaders{XForwardedFor: "192.168.1.50"}, ranges: []string{"192.168.0.0/16"}, verifyXFF: true, want: true},
-		{name: "verify: trusted peer + untrusted hop", remoteAddr: "192.168.1.1:5000", fh: ForwardedHeaders{XForwardedFor: "8.8.8.8"}, ranges: []string{"192.168.0.0/16"}, verifyXFF: true, want: false},
-		{name: "verify: multi-hop all trusted", remoteAddr: "192.168.1.1:5000", fh: ForwardedHeaders{XForwardedFor: "192.168.1.50, 192.168.1.51"}, ranges: []string{"192.168.0.0/16"}, verifyXFF: true, want: true},
-		{name: "verify: multi-hop one untrusted", remoteAddr: "192.168.1.1:5000", fh: ForwardedHeaders{XForwardedFor: "192.168.1.50, 8.8.8.8"}, ranges: []string{"192.168.0.0/16"}, verifyXFF: true, want: false},
+		{name: "verify: untrusted peer rejected before xff", remoteAddr: "8.8.8.8:5000", fh: forwardedHeaders{XForwardedFor: "127.0.0.1"}, verifyXFF: true, want: false},
+		{name: "verify: trusted peer + trusted hop", remoteAddr: "192.168.1.1:5000", fh: forwardedHeaders{XForwardedFor: "192.168.1.50"}, ranges: []string{"192.168.0.0/16"}, verifyXFF: true, want: true},
+		{name: "verify: trusted peer + untrusted hop", remoteAddr: "192.168.1.1:5000", fh: forwardedHeaders{XForwardedFor: "8.8.8.8"}, ranges: []string{"192.168.0.0/16"}, verifyXFF: true, want: false},
+		{name: "verify: multi-hop all trusted", remoteAddr: "192.168.1.1:5000", fh: forwardedHeaders{XForwardedFor: "192.168.1.50, 192.168.1.51"}, ranges: []string{"192.168.0.0/16"}, verifyXFF: true, want: true},
+		{name: "verify: multi-hop one untrusted", remoteAddr: "192.168.1.1:5000", fh: forwardedHeaders{XForwardedFor: "192.168.1.50, 8.8.8.8"}, ranges: []string{"192.168.0.0/16"}, verifyXFF: true, want: false},
 		{name: "verify: no forwarding header at all ok", remoteAddr: "127.0.0.1:5000", verifyXFF: true, want: true},
-		{name: "verify: unparseable hop rejected", remoteAddr: "127.0.0.1:5000", fh: ForwardedHeaders{XForwardedFor: "not-an-ip"}, verifyXFF: true, want: false},
+		{name: "verify: unparseable hop rejected", remoteAddr: "127.0.0.1:5000", fh: forwardedHeaders{XForwardedFor: "not-an-ip"}, verifyXFF: true, want: false},
 
 		// Forwarded: (RFC 7239) — only the for= parameter is consulted.
 		// All Forwarded: cases below explicitly select ForwardHeaderForwarded
 		// — without it, the default XFF selector would find no XFF header
 		// and fall back to peer-only trust, making these vacuously pass.
-		{name: "verify: forwarded single hop trusted", remoteAddr: "192.168.1.1:5000", fh: ForwardedHeaders{Forwarded: "for=192.168.1.50;proto=https;by=192.168.1.1"}, ranges: []string{"192.168.0.0/16"}, verifyXFF: true, forwardHeader: ForwardHeaderForwarded, want: true},
-		{name: "verify: forwarded single hop untrusted", remoteAddr: "192.168.1.1:5000", fh: ForwardedHeaders{Forwarded: "for=8.8.8.8"}, ranges: []string{"192.168.0.0/16"}, verifyXFF: true, forwardHeader: ForwardHeaderForwarded, want: false},
-		{name: "verify: forwarded multi-element chain", remoteAddr: "192.168.1.1:5000", fh: ForwardedHeaders{Forwarded: "for=192.168.1.50, for=192.168.1.51"}, ranges: []string{"192.168.0.0/16"}, verifyXFF: true, forwardHeader: ForwardHeaderForwarded, want: true},
-		{name: "verify: forwarded quoted ipv6 with port", remoteAddr: "[fd00::2]:5000", fh: ForwardedHeaders{Forwarded: `for="[fd00::1]:4711"`}, ranges: []string{"fd00::/8"}, verifyXFF: true, forwardHeader: ForwardHeaderForwarded, want: true},
+		{name: "verify: forwarded single hop trusted", remoteAddr: "192.168.1.1:5000", fh: forwardedHeaders{Forwarded: "for=192.168.1.50;proto=https;by=192.168.1.1"}, ranges: []string{"192.168.0.0/16"}, verifyXFF: true, forwardHeader: ForwardHeaderForwarded, want: true},
+		{name: "verify: forwarded single hop untrusted", remoteAddr: "192.168.1.1:5000", fh: forwardedHeaders{Forwarded: "for=8.8.8.8"}, ranges: []string{"192.168.0.0/16"}, verifyXFF: true, forwardHeader: ForwardHeaderForwarded, want: false},
+		{name: "verify: forwarded multi-element chain", remoteAddr: "192.168.1.1:5000", fh: forwardedHeaders{Forwarded: "for=192.168.1.50, for=192.168.1.51"}, ranges: []string{"192.168.0.0/16"}, verifyXFF: true, forwardHeader: ForwardHeaderForwarded, want: true},
+		{name: "verify: forwarded quoted ipv6 with port", remoteAddr: "[fd00::2]:5000", fh: forwardedHeaders{Forwarded: `for="[fd00::1]:4711"`}, ranges: []string{"fd00::/8"}, verifyXFF: true, forwardHeader: ForwardHeaderForwarded, want: true},
 		// Regression guard: a malformed for= value must not be truncated
 		// into a valid-looking (and always-trusted) loopback address.
-		{name: "verify: forwarded malformed ip:port not coerced into trusted loopback", remoteAddr: "192.168.1.1:5000", fh: ForwardedHeaders{Forwarded: "for=127.0.0.1:garbage"}, ranges: []string{"192.168.0.0/16"}, verifyXFF: true, forwardHeader: ForwardHeaderForwarded, want: false, wantReasonContains: "unparseable hop"},
+		{name: "verify: forwarded malformed ip:port not coerced into trusted loopback", remoteAddr: "192.168.1.1:5000", fh: forwardedHeaders{Forwarded: "for=127.0.0.1:garbage"}, ranges: []string{"192.168.0.0/16"}, verifyXFF: true, forwardHeader: ForwardHeaderForwarded, want: false, wantReasonContains: "unparseable hop"},
 		// Forwarded is present (a proxy signal exists) but has no for= param
 		// to check — this must fail closed, not fall back to peer trust:
 		// the header's presence alone means a proxy may be interposed, and
@@ -175,7 +176,7 @@ func TestIsTrustedRemote(t *testing.T) {
 		// for a misconfigured/malformed selected header.
 		{
 			name: "verify: forwarded present with no for= param fails closed (does not silently trust peer)", remoteAddr: "192.168.1.1:5000",
-			fh: ForwardedHeaders{Forwarded: "by=192.168.1.1;proto=https"}, ranges: []string{"192.168.0.0/16"},
+			fh: forwardedHeaders{Forwarded: "by=192.168.1.1;proto=https"}, ranges: []string{"192.168.0.0/16"},
 			verifyXFF: true, forwardHeader: ForwardHeaderForwarded, want: false, wantReasonContains: "is absent, empty, or",
 		},
 		// The selected header (x-real-ip) is entirely absent, but a
@@ -184,19 +185,19 @@ func TestIsTrustedRemote(t *testing.T) {
 		// the operator's chosen header isn't giving us anything to verify.
 		{
 			name: "verify: selected header absent but a different one present fails closed", remoteAddr: "192.168.1.1:5000",
-			fh: ForwardedHeaders{XForwardedFor: "192.168.1.50"}, ranges: []string{"192.168.0.0/16"},
+			fh: forwardedHeaders{XForwardedFor: "192.168.1.50"}, ranges: []string{"192.168.0.0/16"},
 			verifyXFF: true, forwardHeader: ForwardHeaderXRealIP, want: false, wantReasonContains: "is absent, empty, or",
 		},
 
 		// X-Real-IP — single address, no chain. Explicitly selects
 		// ForwardHeaderXRealIP for the same reason as above.
-		{name: "verify: x-real-ip trusted", remoteAddr: "192.168.1.1:5000", fh: ForwardedHeaders{XRealIP: "192.168.1.50"}, ranges: []string{"192.168.0.0/16"}, verifyXFF: true, forwardHeader: ForwardHeaderXRealIP, want: true},
-		{name: "verify: x-real-ip untrusted", remoteAddr: "192.168.1.1:5000", fh: ForwardedHeaders{XRealIP: "8.8.8.8"}, ranges: []string{"192.168.0.0/16"}, verifyXFF: true, forwardHeader: ForwardHeaderXRealIP, want: false},
+		{name: "verify: x-real-ip trusted", remoteAddr: "192.168.1.1:5000", fh: forwardedHeaders{XRealIP: "192.168.1.50"}, ranges: []string{"192.168.0.0/16"}, verifyXFF: true, forwardHeader: ForwardHeaderXRealIP, want: true},
+		{name: "verify: x-real-ip untrusted", remoteAddr: "192.168.1.1:5000", fh: forwardedHeaders{XRealIP: "8.8.8.8"}, ranges: []string{"192.168.0.0/16"}, verifyXFF: true, forwardHeader: ForwardHeaderXRealIP, want: false},
 
 		// TrustedForwardHeader selects exactly one header to consult; the
 		// other two are ignored for verification purposes even if present.
 		// Empty forwardHeader defaults to X-Forwarded-For (back-compat).
-		{name: "default selector consults xff, ignores forwarded/x-real-ip content", remoteAddr: "192.168.1.1:5000", fh: ForwardedHeaders{XForwardedFor: "192.168.1.50", Forwarded: "for=8.8.8.8", XRealIP: "8.8.8.8"}, ranges: []string{"192.168.0.0/16"}, verifyXFF: true, want: true},
+		{name: "default selector consults xff, ignores forwarded/x-real-ip content", remoteAddr: "192.168.1.1:5000", fh: forwardedHeaders{XForwardedFor: "192.168.1.50", Forwarded: "for=8.8.8.8", XRealIP: "8.8.8.8"}, ranges: []string{"192.168.0.0/16"}, verifyXFF: true, want: true},
 		// Regression guard for the reviewed finding on issue #94: when the
 		// operator has declared X-Real-IP as the proxy-managed header, an
 		// attacker-injected X-Forwarded-For (even one that LOOKS like a
@@ -206,17 +207,17 @@ func TestIsTrustedRemote(t *testing.T) {
 		// X-Real-IP and bypass verification entirely.
 		{
 			name:       "x-real-ip selector: forged trusted-looking xff is ignored, real x-real-ip is checked and rejected",
-			remoteAddr: "192.168.1.1:5000", fh: ForwardedHeaders{XForwardedFor: "192.168.1.50", XRealIP: "8.8.8.8"},
+			remoteAddr: "192.168.1.1:5000", fh: forwardedHeaders{XForwardedFor: "192.168.1.50", XRealIP: "8.8.8.8"},
 			ranges: []string{"192.168.0.0/16"}, verifyXFF: true, forwardHeader: ForwardHeaderXRealIP, want: false,
 		},
 		{
 			name:       "x-real-ip selector: trusted x-real-ip accepted regardless of untrusted xff/forwarded present",
-			remoteAddr: "192.168.1.1:5000", fh: ForwardedHeaders{XForwardedFor: "8.8.8.8", Forwarded: "for=8.8.8.8", XRealIP: "192.168.1.50"},
+			remoteAddr: "192.168.1.1:5000", fh: forwardedHeaders{XForwardedFor: "8.8.8.8", Forwarded: "for=8.8.8.8", XRealIP: "192.168.1.50"},
 			ranges: []string{"192.168.0.0/16"}, verifyXFF: true, forwardHeader: ForwardHeaderXRealIP, want: true,
 		},
 		{
 			name:       "forwarded selector: untrusted forwarded rejected even with trusted-looking xff present",
-			remoteAddr: "192.168.1.1:5000", fh: ForwardedHeaders{XForwardedFor: "192.168.1.50", Forwarded: "for=8.8.8.8"},
+			remoteAddr: "192.168.1.1:5000", fh: forwardedHeaders{XForwardedFor: "192.168.1.50", Forwarded: "for=8.8.8.8"},
 			ranges: []string{"192.168.0.0/16"}, verifyXFF: true, forwardHeader: ForwardHeaderForwarded, want: false,
 		},
 
@@ -229,9 +230,9 @@ func TestIsTrustedRemote(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			ranges := mustRanges(t, tc.ranges...)
-			got, reason := IsTrustedRemote(tc.remoteAddr, tc.fh, ranges, tc.verifyXFF, tc.forwardHeader)
+			got, reason := isTrustedRemote(tc.remoteAddr, tc.fh, ranges, tc.verifyXFF, tc.forwardHeader)
 			if got != tc.want {
-				t.Errorf("IsTrustedRemote(%q, %+v, ranges=%v, verify=%v) = %v (reason %q); want %v",
+				t.Errorf("isTrustedRemote(%q, %+v, ranges=%v, verify=%v) = %v (reason %q); want %v",
 					tc.remoteAddr, tc.fh, tc.ranges, tc.verifyXFF, got, reason, tc.want)
 			}
 			if tc.wantReasonContains != "" && !strings.Contains(reason, tc.wantReasonContains) {
@@ -239,6 +240,143 @@ func TestIsTrustedRemote(t *testing.T) {
 			}
 			if tc.want && reason != "" {
 				t.Errorf("trusted=true but reason = %q; want empty", reason)
+			}
+		})
+	}
+}
+
+// TestIsTrustedRequest pins that a forwarding header sent on several lines is
+// judged on every line (#1052). The requests come from a loopback peer, as
+// through a same-host proxy, so the peer check alone would trust them all.
+func TestIsTrustedRequest(t *testing.T) {
+	t.Parallel()
+	type line struct{ name, value string }
+	tests := []struct {
+		name          string
+		lines         []line
+		verifyXFF     bool
+		forwardHeader TrustedForwardHeader
+		want          bool
+		wantReason    string
+	}{
+		{
+			name:      "a client's xff line ahead of the proxy's",
+			lines:     []line{{"X-Forwarded-For", "127.0.0.1"}, {"X-Forwarded-For", "203.0.113.9"}},
+			verifyXFF: true, want: false, wantReason: "203.0.113.9",
+		},
+		{
+			name:      "the same chain on one line",
+			lines:     []line{{"X-Forwarded-For", "127.0.0.1, 203.0.113.9"}},
+			verifyXFF: true, want: false, wantReason: "203.0.113.9",
+		},
+		{
+			name:      "an empty xff line ahead of the proxy's",
+			lines:     []line{{"X-Forwarded-For", ""}, {"X-Forwarded-For", "203.0.113.9"}},
+			verifyXFF: true, want: false, wantReason: "203.0.113.9",
+		},
+		{
+			name:      "two empty xff lines",
+			lines:     []line{{"X-Forwarded-For", ""}, {"X-Forwarded-For", ""}},
+			verifyXFF: true, want: false, wantReason: "no verifiable client address",
+		},
+		{
+			name:  "an empty xff line ahead of the proxy's, verify off",
+			lines: []line{{"X-Forwarded-For", ""}, {"X-Forwarded-For", "203.0.113.9"}},
+			want:  false, wantReason: "verify_xff_header is false",
+		},
+		{
+			name:      "a client's forwarded line ahead of the proxy's",
+			lines:     []line{{"Forwarded", "for=127.0.0.1"}, {"Forwarded", "for=203.0.113.9"}},
+			verifyXFF: true, forwardHeader: ForwardHeaderForwarded, want: false, wantReason: "203.0.113.9",
+		},
+		{
+			name:      "x-real-ip sent twice",
+			lines:     []line{{"X-Real-IP", "127.0.0.1"}, {"X-Real-IP", "127.0.0.1"}},
+			verifyXFF: true, forwardHeader: ForwardHeaderXRealIP, want: false, wantReason: "unparseable hop",
+		},
+		{
+			name:      "an empty x-real-ip line ahead of a value",
+			lines:     []line{{"X-Real-IP", ""}, {"X-Real-IP", "127.0.0.1"}},
+			verifyXFF: true, forwardHeader: ForwardHeaderXRealIP, want: false, wantReason: "unparseable hop",
+		},
+		{
+			name:      "every xff line trusted",
+			lines:     []line{{"X-Forwarded-For", "127.0.0.1"}, {"X-Forwarded-For", "127.0.0.1"}},
+			verifyXFF: true, want: true,
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			r := httptest.NewRequest("GET", "/", nil)
+			r.RemoteAddr = "127.0.0.1:1"
+			for _, l := range tc.lines {
+				r.Header.Add(l.name, l.value)
+			}
+			got, reason := IsTrustedRequest(r, nil, tc.verifyXFF, tc.forwardHeader)
+			if got != tc.want {
+				t.Errorf("IsTrustedRequest(%v) = %v (reason %q); want %v", r.Header, got, reason, tc.want)
+			}
+			if !strings.Contains(reason, tc.wantReason) {
+				t.Errorf("reason = %q; want substring %q", reason, tc.wantReason)
+			}
+			if tc.want && reason != "" {
+				t.Errorf("trusted=true but reason = %q; want empty", reason)
+			}
+		})
+	}
+}
+
+func TestForwardedProtos(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name  string
+		lines []string
+		want  []string
+	}{
+		{name: "absent", lines: nil, want: nil},
+		{name: "proto on the second line", lines: []string{"for=127.0.0.1", "for=127.0.0.1;proto=https"}, want: []string{"https"}},
+		{name: "proto in a non-last element", lines: []string{"for=192.0.2.1;proto=https, for=192.0.2.2"}, want: []string{"https"}},
+		{name: "upper-case name", lines: []string{"PROTO=https"}, want: []string{"https"}},
+		{name: "quoted value", lines: []string{`proto="https"`}, want: []string{"https"}},
+		{name: "one per element", lines: []string{"proto=http, proto=https"}, want: []string{"http", "https"}},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			r := httptest.NewRequest("GET", "/", nil)
+			for _, l := range tc.lines {
+				r.Header.Add("Forwarded", l)
+			}
+			if got := ForwardedProtos(r.Header); !slices.Equal(got, tc.want) {
+				t.Errorf("ForwardedProtos(%q) = %q; want %q", tc.lines, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestForwardedParams(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name string
+		v    string
+		key  string
+		want []string
+	}{
+		{name: "empty value", v: "", key: "for", want: nil},
+		{name: "one value per element, in order", v: "for=a;proto=http, for=b", key: "for", want: []string{"a", "b"}},
+		{name: "elements without the key skipped", v: "by=x, proto=https", key: "proto", want: []string{"https"}},
+		{name: "key matched case-insensitively", v: " Proto = https ", key: "proto", want: []string{"https"}},
+		{name: "first match of an element only", v: "proto=http;proto=https", key: "proto", want: []string{"http"}},
+		{name: "one surrounding quote pair removed", v: `for="[::1]:80"`, key: "for", want: []string{"[::1]:80"}},
+		{name: "an unbalanced quote kept", v: `proto="https`, key: "proto", want: []string{`"https`}},
+		{name: "a pair with no '=' ignored", v: "proto;proto=https", key: "proto", want: []string{"https"}},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			if got := forwardedParams(tc.v, tc.key); !slices.Equal(got, tc.want) {
+				t.Errorf("forwardedParams(%q, %q) = %q; want %q", tc.v, tc.key, got, tc.want)
 			}
 		})
 	}
@@ -285,6 +423,7 @@ func TestParseForwardedFor(t *testing.T) {
 		{name: "single unquoted", in: "for=192.0.2.60", wantHops: []string{"192.0.2.60"}, wantOK: true},
 		{name: "single with other params", in: "for=192.0.2.60;proto=http;by=203.0.113.43", wantHops: []string{"192.0.2.60"}, wantOK: true},
 		{name: "multi element", in: "for=192.0.2.60, for=198.51.100.17", wantHops: []string{"192.0.2.60", "198.51.100.17"}, wantOK: true},
+		{name: "first for= of an element only", in: "for=192.0.2.60;for=198.51.100.17", wantHops: []string{"192.0.2.60"}, wantOK: true},
 		{name: "quoted ipv6 with port", in: `for="[2001:db8:cafe::17]:4711"`, wantHops: []string{"2001:db8:cafe::17"}, wantOK: true},
 		{name: "no for param", in: "by=203.0.113.43;proto=http", wantHops: nil, wantOK: false},
 		{name: "empty", in: "", wantHops: nil, wantOK: false},
@@ -390,10 +529,10 @@ func TestParseHostIP_BareBracketedIPv6(t *testing.T) {
 	}
 }
 
-func TestForwardedHeaders_Hops(t *testing.T) {
+func TestForwardedHeadersHops(t *testing.T) {
 	t.Parallel()
 
-	fh := ForwardedHeaders{
+	fh := forwardedHeaders{
 		XForwardedFor: "192.168.1.1, 192.168.1.2",
 		Forwarded:     "for=10.0.0.1, for=10.0.0.2",
 		XRealIP:       "172.16.0.1",
@@ -418,7 +557,7 @@ func TestForwardedHeaders_Hops(t *testing.T) {
 	}
 
 	// Test empty header fallback
-	fhEmpty := ForwardedHeaders{}
+	fhEmpty := forwardedHeaders{}
 	_, okEmpty := fhEmpty.hops(ForwardHeaderXFF)
 	if okEmpty {
 		t.Errorf("hops on empty headers returned ok=true, want ok=false")

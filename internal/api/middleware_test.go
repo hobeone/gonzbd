@@ -621,7 +621,7 @@ func TestCallerLevel_CookieTrustGate(t *testing.T) {
 		// is off to prevent authorization bypasses.
 		{name: "loopback peer + xff present + verify off fails closed (issue #94)", remoteAddr: "127.0.0.1:5000", xff: "8.8.8.8", want: 0},
 		// Forwarded: (RFC 7239) and X-Real-IP through the full middleware
-		// boundary, not just config.IsTrustedRemote's unit tests — proves
+		// boundary, not just the config package's unit tests — proves
 		// AuthConfig.ForwardHeader is actually wired through callerLevel.
 		{name: "verifyXFF forwarded selector: trusted hop", remoteAddr: "192.168.1.5:5000", forwarded: "for=192.168.1.9", ranges: priv, verifyXFF: true, forwardHeader: config.ForwardHeaderForwarded, want: LevelAdmin},
 		{name: "verifyXFF forwarded selector: untrusted hop", remoteAddr: "192.168.1.5:5000", forwarded: "for=8.8.8.8", ranges: priv, verifyXFF: true, forwardHeader: config.ForwardHeaderForwarded, want: 0},
@@ -650,6 +650,38 @@ func TestCallerLevel_CookieTrustGate(t *testing.T) {
 			r.AddCookie(&http.Cookie{Name: "gonzbd_apikey", Value: sess})
 			if got := callerLevel(r, cfg); got != tc.want {
 				t.Errorf("callerLevel = %d; want %d", got, tc.want)
+			}
+		})
+	}
+}
+
+// TestCallerLevel_RepeatedForwardedForLine pins that the cookie gate judges
+// every line of a repeated X-Forwarded-For (#1052): a client's own
+// "127.0.0.1" line ahead of the proxy's must not stand for the chain.
+func TestCallerLevel_RepeatedForwardedForLine(t *testing.T) {
+	t.Parallel()
+	const sess = "session000session000"
+	tests := []struct {
+		name  string
+		lines []string
+		want  AccessLevel
+	}{
+		{name: "client line then proxy line", lines: []string{"127.0.0.1", "203.0.113.9"}, want: 0},
+		{name: "client line alone", lines: []string{"127.0.0.1"}, want: LevelAdmin},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			cfg := AuthConfig{APIKey: testAPIKey, SessionKey: sess, VerifyXFF: true}
+			r := httptest.NewRequest("GET", "/api", nil)
+			r.Host = "localhost:4289"
+			r.RemoteAddr = "127.0.0.1:5000"
+			for _, l := range tc.lines {
+				r.Header.Add("X-Forwarded-For", l)
+			}
+			r.AddCookie(&http.Cookie{Name: "gonzbd_apikey", Value: sess})
+			if got := callerLevel(r, cfg); got != tc.want {
+				t.Errorf("callerLevel(X-Forwarded-For %q) = %d; want %d", tc.lines, got, tc.want)
 			}
 		})
 	}
@@ -749,5 +781,55 @@ func TestRequestScheme(t *testing.T) {
 	reqUntrusted.Header.Set("X-Forwarded-Proto", "https")
 	if got := requestScheme(reqUntrusted, cfg); got != "http" {
 		t.Errorf("requestScheme(Untrusted) = %q; want %q", got, "http")
+	}
+}
+
+// TestRequestScheme_RepeatedForwardingLines pins that requestScheme reads
+// every line of a repeated forwarding header, both for trust and for
+// Forwarded's proto= (#1052).
+func TestRequestScheme_RepeatedForwardingLines(t *testing.T) {
+	t.Parallel()
+	type line struct{ name, value string }
+	fwd := AuthConfig{VerifyXFF: true, ForwardHeader: config.ForwardHeaderForwarded}
+	tests := []struct {
+		name  string
+		cfg   AuthConfig
+		lines []line
+		want  string
+	}{
+		{
+			name:  "proto on the second Forwarded line",
+			cfg:   fwd,
+			lines: []line{{"Forwarded", "for=127.0.0.1"}, {"Forwarded", "for=127.0.0.1;proto=https"}},
+			want:  "https",
+		},
+		{
+			name:  "proto in a non-last Forwarded element",
+			cfg:   fwd,
+			lines: []line{{"Forwarded", "for=127.0.0.1;proto=https, for=127.0.0.1"}},
+			want:  "https",
+		},
+		{
+			name: "an untrusted second xff line ignores X-Forwarded-Proto",
+			cfg:  AuthConfig{VerifyXFF: true},
+			lines: []line{
+				{"X-Forwarded-For", "127.0.0.1"}, {"X-Forwarded-For", "203.0.113.9"},
+				{"X-Forwarded-Proto", "https"},
+			},
+			want: "http",
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			r := httptest.NewRequest(http.MethodGet, "http://127.0.0.1/", nil)
+			r.RemoteAddr = "127.0.0.1:12345"
+			for _, l := range tc.lines {
+				r.Header.Add(l.name, l.value)
+			}
+			if got := requestScheme(r, tc.cfg); got != tc.want {
+				t.Errorf("requestScheme(%v) = %q; want %q", r.Header, got, tc.want)
+			}
+		})
 	}
 }
