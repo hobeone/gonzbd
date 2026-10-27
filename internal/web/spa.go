@@ -25,7 +25,7 @@ import (
 //
 // The cookie is a full-admin credential, so it is only issued to trusted
 // clients: trustedFn reports whether the requesting client (by source IP,
-// per config.IsTrustedRemote) is loopback or within a configured
+// per config.IsTrustedRequest) is loopback or within a configured
 // local_range. Untrusted clients still receive the static SPA, but no
 // session cookie — they must authenticate with the real API key. This
 // closes SEC-1: an unauthenticated non-loopback caller can no longer
