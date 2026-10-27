@@ -91,8 +91,8 @@ func archiveMemberNames(path string, par2Opts par2.ParseOptions) (names []string
 //   - any article of the file failed. The volume then has holes and its headers
 //     cannot be trusted either way; par2 and the backstop deal with it, so one
 //     bad article costs only its own file (Standing Design Rule 3);
-//   - the headers cannot be read: an unlistable or corrupt volume, a missing
-//     unrar, an engine panic. That is logged and never fails the job.
+//   - the headers cannot be read: an unlistable or corrupt volume, or an
+//     engine panic. That is logged and never fails the job.
 //
 // Dispatcher.BlockUnwanted is the owner of the transition and decides under its
 // own lock, so concurrent completions that find hits produce one move and only
