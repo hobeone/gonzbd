@@ -573,6 +573,13 @@ func TestArchiveMemberNames(t *testing.T) {
 	}{
 		{"rar5 members by magic, not by name", write("noext", unpackFixture(t, "single_rar5.rar")), "rar",
 			[]string{"file1.txt", "file2.txt", "nested.txt"}, false},
+		{"rar 1.5-4.x members, compressed ones included", write("old.rar", unpackFixture(t, "rar4_stored_then_lz.rar")), "rar",
+			[]string{"a.bin", "b.txt"}, false},
+		{"rar 1.5-4.x later volume declares only the members it starts", write("old.r00", unpackFixture(t, "rar4_store_multi.r00")), "rar",
+			nil, false},
+		{"rar 1.5-4.x encrypted members with plain headers are listed", write("enc.rar", unpackFixture(t, "rar4_encrypted.rar")), "rar",
+			[]string{"hello.txt"}, false},
+		{"rar 1.5-4.x encrypted headers are an error", write("hp.rar", unpackFixture(t, "rar4_encrypted_header.rar")), "rar", nil, true},
 		{"par2 declared names", write("x.bin", par2Declaring("a.exe")), "par2", []string{"a.exe"}, false},
 		{"neither archive kind", write("plain", []byte("hello world, not an archive")), "", nil, false},
 		{"corrupt rar is an error", write("bad.rar", unpackFixture(t, "corrupt.rar")), "rar", nil, true},
@@ -580,15 +587,17 @@ func TestArchiveMemberNames(t *testing.T) {
 		{"missing file is an error", filepath.Join(dir, "missing"), "", nil, true},
 	}
 	for _, tc := range cases {
-		got, kind, err := archiveMemberNames(tc.path, opts)
-		if (err != nil) != tc.wantErr {
-			t.Errorf("%s: err = %v, want error: %v", tc.name, err, tc.wantErr)
-		}
-		if kind != tc.wantKind {
-			t.Errorf("%s: kind = %q, want %q", tc.name, kind, tc.wantKind)
-		}
-		if !slices.Equal(got, tc.want) {
-			t.Errorf("%s: names = %v, want %v", tc.name, got, tc.want)
-		}
+		t.Run(tc.name, func(t *testing.T) {
+			got, kind, err := archiveMemberNames(tc.path, opts)
+			if (err != nil) != tc.wantErr {
+				t.Errorf("err = %v, want error: %v", err, tc.wantErr)
+			}
+			if kind != tc.wantKind {
+				t.Errorf("kind = %q, want %q", kind, tc.wantKind)
+			}
+			if !slices.Equal(got, tc.want) {
+				t.Errorf("names = %v, want %v", got, tc.want)
+			}
+		})
 	}
 }

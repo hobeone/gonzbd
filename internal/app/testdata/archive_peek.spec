@@ -48,9 +48,9 @@ file internal/app/archive_peek.go
 [a RAR is never identified by its magic]
 file internal/app/archive_peek.go
 --- anchor
-	case err == nil && ver == 5:
+	if isRAR {
 --- replace
-	case err == nil && ver == 5 && false:
+	if isRAR && false {
 --- end
 
 [the pause action does not pause]
@@ -203,13 +203,23 @@ file internal/app/archive_peek.go
 		if unpack.Classify(f.FileName) != unpack.UnknownArchive || par2.IsPar2Name(f.FileName) && false {
 --- end
 
-[a RAR3 volume is listed through the unrar fallback]
+[a RAR 1.5-4.x volume is skipped by its version again]
 file internal/app/archive_peek.go
 --- anchor
-		return nil, "rar", errRAR3Skipped
+	isRAR, err := rarheader.IsRAR(path)
 --- replace
-		info, ierr := rarheader.Inspect(path)
-		return info.Filenames, "rar", ierr
+	isRAR, err := rarheader.IsRAR(path)
+	if ver, _ := rarheader.Version(path); isRAR && ver != 5 {
+		return nil, "rar", fmt.Errorf("rar 1.5-4.x volume skipped")
+	}
+--- end
+
+[a volume the engine cannot list goes to the unrar fallback]
+file internal/app/archive_peek.go
+--- anchor
+		info, err := rarheader.InspectNative(path)
+--- replace
+		info, err := rarheader.Inspect(path)
 --- end
 
 [the par2 exemption is the substring test again, so evil.par2.exe is skipped]
