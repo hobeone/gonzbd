@@ -61,9 +61,7 @@
 		<h1 class="text-xl font-bold tracking-tight text-foreground flex items-center gap-2 select-none">
 			<ArrowDownCircle class="size-6 text-primary" />
 			<a
-				href="https://www.github.com/hobeone/gonzbd"
-				target="_blank"
-				rel="noopener noreferrer"
+				href="/"
 				class="hover:opacity-85 transition-opacity"
 			>
 				GoNZBD

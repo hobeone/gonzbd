@@ -27,6 +27,11 @@ describe('Navbar', () => {
 		expect(screen.getByText('GoNZBD')).toBeInTheDocument();
 	});
 
+	it('links the GoNZBD title to the app root', () => {
+		render(Navbar);
+		expect(screen.getByRole('link', { name: 'GoNZBD' })).toHaveAttribute('href', '/');
+	});
+
 
 	it('shows Pause button when not paused', () => {
 		render(Navbar, { props: { paused: false } });
