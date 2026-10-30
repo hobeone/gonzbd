@@ -4,7 +4,8 @@
 # Updates Go and bun dependencies, then verifies the result.
 #
 # Usage: scripts/update-deps.sh [--latest] [--skip-verify] [--commit] [--yes]
-#   --latest       also cross major versions for bun (rewrites package.json)
+#   --latest       also cross major versions for bun (rewrites package.json);
+#                  packages in BUN_LATEST_EXCLUDES are skipped
 #   --skip-verify  skip the build/test checks after updating
 #   --commit       commit the dependency files with a summary of what changed;
 #                  shows the message and asks for confirmation first
@@ -17,6 +18,11 @@ set -euo pipefail
 DEP_FILES=(go.mod go.sum ui/package.json ui/bun.lock)
 DIFF_FILES=(go.mod ui/package.json ui/bun.lock)
 MAX_LINES=40
+
+# Packages that --latest must not bump, as bun negation patterns.
+# typescript: svelte-check only supports TypeScript 5 and 6 (7 is the native
+# port without the JS compiler API). Drop this once svelte-check supports 7.
+BUN_LATEST_EXCLUDES=('!typescript')
 
 # run <cmd...>: prints the command, then runs it.
 run() {
@@ -112,7 +118,7 @@ main() {
 
   echo "=== [2/4] Updating bun packages ==="
   if [[ "${latest}" -eq 1 ]]; then
-    run_in ui bun update --latest
+    run_in ui bun update --latest "${BUN_LATEST_EXCLUDES[@]}"
   else
     run_in ui bun update
   fi
