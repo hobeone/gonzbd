@@ -35,11 +35,6 @@ if [ ! -d "ui" ]; then
     MISSING=1
 fi
 
-if [ ! -d "ui/node_modules" ]; then
-    echo -e "${RED}ERROR: 'ui/node_modules/' is missing. Run 'bun install' in ui/.${NC}" >&2
-    MISSING=1
-fi
-
 if [ "$MISSING" -ne 0 ]; then
     echo -e "${RED}Prerequisites check failed. Aborting test suite.${NC}" >&2
     exit 1
@@ -50,6 +45,11 @@ echo -e "${GREEN}✓ All prerequisites met${NC}"
 echo -e "\n[0/7] Checking and Building UI..."
 (
     cd ui
+    # Install exactly what bun.lock records so the check, build and tests run
+    # against the locked versions. Fails if bun.lock is out of date.
+    echo "Installing locked UI dependencies..."
+    bun install --frozen-lockfile
+    bun prune
     echo "Running UI Type-Check..."
     bun run check
     echo "Building UI..."
@@ -561,9 +561,20 @@ UI_E2E_SKIPPED=0
 if [ "${SKIP_PLAYWRIGHT:-}" = "1" ] || [ "${SKIP_UITEST:-}" = "1" ]; then
     UI_E2E_SKIPPED=1
     echo -e "\n[6/7] Skipping UI E2E Tests (SKIP_PLAYWRIGHT=1)..."
+    echo "  To run them, install the Playwright browser first:"
+    echo "    go run github.com/mxschmitt/playwright-go/cmd/playwright install --with-deps chromium"
 else
     echo -e "\n[6/7] Running UI E2E Tests..."
-    go test -tags=uitest -v ./test/uitest/...
+    go test -tags=uitest -v ./test/uitest/... || {
+        rc=$?
+        echo -e "\n${YELLOW}TIP: errors from 'playwright.Run' or 'chromium.Launch' usually mean the"
+        echo "     Playwright browser or its system libraries are not installed. Install"
+        echo "     them, at the version pinned in go.mod, with:"
+        echo "       go run github.com/mxschmitt/playwright-go/cmd/playwright install --with-deps chromium"
+        echo "     (--with-deps installs system packages and asks for sudo.)"
+        echo -e "     Or skip this step with SKIP_PLAYWRIGHT=1 (the run is then reported as partial).${NC}"
+        exit "$rc"
+    }
     echo -e "${GREEN}✓ UI E2E Tests Passed${NC}"
 fi
 

@@ -337,8 +337,11 @@ real Chromium browser against it.
 1. **Build the UI first:** `cd ui && bun run build`
 2. **Install Playwright browsers** (cached in `~/.cache/ms-playwright-go/`):
    ```bash
-   go run github.com/mxschmitt/playwright-go/cmd/playwright@v0.xxxx.x install --with-deps
+   go run github.com/mxschmitt/playwright-go/cmd/playwright install --with-deps chromium
    ```
+   Run from the repo root so `go run` uses the `playwright-go` version pinned in
+   `go.mod`; `--with-deps` installs system packages and asks for sudo. A missing
+   browser shows up as a `playwright.Run` or `chromium.Launch` failure.
 
 ### Test Files
 
