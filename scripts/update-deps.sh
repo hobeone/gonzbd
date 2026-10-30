@@ -122,6 +122,7 @@ main() {
   else
     run_in ui bun update
   fi
+  run_in ui bun prune
 
   if [[ "${verify}" -eq 1 ]]; then
     echo "=== [3/4] Verifying Go ==="
@@ -129,6 +130,10 @@ main() {
     run go test ./...
 
     echo "=== [4/4] Verifying ui ==="
+    # Install exactly what bun.lock records, so the checks below run against
+    # the locked versions; it also fails if bun.lock and package.json disagree.
+    run_in ui bun install --frozen-lockfile
+    run_in ui bun prune
     run_in ui bun run check
     run_in ui bun run build
     run_in ui bun run test
