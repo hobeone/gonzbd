@@ -17,7 +17,7 @@ require (
 	golang.org/x/text v0.43.0
 	golang.org/x/time v0.16.0
 	gopkg.in/yaml.v3 v3.0.1
-	modernc.org/sqlite v1.61.0
+	modernc.org/sqlite v1.61.1
 )
 
 require (
@@ -43,7 +43,7 @@ require (
 	github.com/ulikunitz/xz v0.5.17 // indirect
 	go.uber.org/multierr v1.11.0 // indirect
 	go4.org v0.0.0-20261028031214-ed6929a230fe // indirect
-	modernc.org/libc v1.79.1 // indirect
+	modernc.org/libc v1.80.0 // indirect
 	modernc.org/mathutil v1.7.1 // indirect
 	modernc.org/memory v1.12.1 // indirect
 )

@@ -16,26 +16,26 @@
 		"test:watch": "vitest"
 	},
 	"devDependencies": {
-		"@lucide/svelte": "^1.65.0",
+		"@lucide/svelte": "^1.66.0",
 		"@sveltejs/adapter-static": "^4.0.1",
 		"@sveltejs/kit": "^3.1.1",
 		"@sveltejs/vite-plugin-svelte": "^7.3.1",
 		"@tailwindcss/vite": "^4.3.3",
 		"@testing-library/jest-dom": "^7.0.1",
 		"@testing-library/svelte": "^5.4.2",
-		"@vitest/coverage-v8": "^5.0.5",
-		"@vitest/ui": "^5.0.5",
+		"@vitest/coverage-v8": "^5.1.0",
+		"@vitest/ui": "^5.1.0",
 		"clsx": "^2.1.1",
 		"happy-dom": "^21.0.4",
-		"knip": "^6.44.0",
+		"knip": "^6.44.1",
 		"svelte": "^5.57.3",
-		"svelte-check": "^4.7.7",
+		"svelte-check": "^4.7.8",
 		"tailwind-merge": "^3.7.0",
-		"tailwind-variants": "^4.0.0",
+		"tailwind-variants": "^4.0.1",
 		"tailwindcss": "^4.3.3",
 		"typescript": "~6.0.3",
 		"vite": "^8.3.5",
-		"vitest": "^5.0.5"
+		"vitest": "^5.1.0"
 	},
 	"imports": {
 		"#lib/*": "./src/lib/*"
