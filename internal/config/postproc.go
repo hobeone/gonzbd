@@ -116,8 +116,11 @@ type PostProcConfig struct {
 	// Default true.
 	EnableRarVolumeRecovery bool `yaml:"enable_rar_volume_recovery" json:"enable_rar_volume_recovery"`
 	// GoRarFallback controls whether a failed pure-Go RAR extraction
-	// automatically retries with the external unrar binary. Only relevant
-	// when UseGoRAR is true. When false, a go_unrar failure is final.
+	// automatically retries with the external unrar binary, except one that
+	// failed because the set does not start at its first volume: unrar is
+	// missing the same volumes and extracts at most the members that start
+	// later. Only relevant when UseGoRAR is true. When false, a go_unrar
+	// failure is final.
 	// Default true.
 	GoRarFallback bool `yaml:"go_rar_fallback" json:"go_rar_fallback"`
 	// Go7zFallback controls whether a failed pure-Go 7-Zip extraction

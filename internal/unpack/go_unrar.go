@@ -48,7 +48,8 @@ func goUnRAR(ctx context.Context, log *slog.Logger, archive Archive, outDir, pas
 	// A RAR 1.5-4.x archive (ver 3) goes to rarengine too: it extracts stored
 	// members and refuses a compressed or encrypted one as
 	// ErrUnsupportedFormat. The caller retries a failed go_unrar with the
-	// external unrar when GoRarFallback is set and a binary is found.
+	// external unrar when GoRarFallback is set and a binary is found, unless
+	// IsNotFirstVolume(err).
 	log.Info("go_unrar: detected RAR archive version, using rarengine", "rar_version", ver)
 	res, err := extractInStage(ctx, log, archive, outDir, password, opts, func(stageDir string) (Result, error) {
 		return goUnRAREngine(ctx, log, archive, stageDir, password, opts)
@@ -57,9 +58,16 @@ func goUnRAR(ctx context.Context, log *slog.Logger, archive Archive, outDir, pas
 	return res, err
 }
 
+// IsNotFirstVolume reports whether err is rarengine refusing a volume stream
+// that does not start at the first volume of its set. Given the same volumes,
+// unrar extracts at most the members that start in them.
+func IsNotFirstVolume(err error) bool { return errors.Is(err, rarengine.ErrNotFirstVolume) }
+
 // ClassifyRarEngineError maps a rarengine error to the appropriate FailReason constant.
 func ClassifyRarEngineError(err error) FailReason {
 	switch {
+	case IsNotFirstVolume(err):
+		return FailMissingVolume
 	case errors.Is(err, rarengine.ErrWrongPassword), errors.Is(err, rarengine.ErrPasswordRequired):
 		return FailWrongPassword
 	case errors.Is(err, rarengine.ErrRarBombDetected),
@@ -201,7 +209,11 @@ func goUnRAREngineInternal(ctx context.Context, log *slog.Logger, archive Archiv
 			}
 			res.Reason = ClassifyRarEngineError(err)
 			if opts.OnLine != nil {
-				opts.OnLine(fmt.Sprintf("ERROR: corrupt archive header: %v", err))
+				what := "corrupt archive header"
+				if IsNotFirstVolume(err) {
+					what = "not the first volume of its set"
+				}
+				opts.OnLine(fmt.Sprintf("ERROR: %s: %v", what, err))
 			}
 			return res, fmt.Errorf("go_unrar: read header: %w", err)
 		}

@@ -27,6 +27,7 @@ Re-run that script to regenerate. **Do not edit these files by hand.**
 | `rar4_lz.rar` | RAR 1.5-4.x (`-m3`) | `text.txt`, compressed, which rarengine refuses (copied from rarengine testdata) |
 | `rar4_encrypted.rar` | RAR 1.5-4.x, stored, encrypted | `hello.txt`, password `test`, which rarengine refuses (copied from rarengine testdata) |
 | `rar4_encrypted_header.rar` | RAR 1.5-4.x, stored, header-encrypted | `hello.txt`, password `test`; rarengine cannot list it |
+| `rar4_refused_member.rar` | RAR 1.5-4.x, hand-built | `bad.bin` declaring unknown method byte `0x99`, which rarengine refuses by name as a corrupt file header, then `good.bin` stored (`-m0`) |
 | `rar4_stored_then_lz.rar` | RAR 1.5-4.x, mixed | `a.bin` (3000 random bytes, `-m0`) then `b.txt` (80 text lines, `-m3`), so a stored member is extracted before the refusal |
 
 ## Limitations

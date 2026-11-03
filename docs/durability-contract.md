@@ -1423,9 +1423,15 @@ articles or sparse regions.
    unpack stage, unless `Abort` has set `killed`, which makes it "aborted".
    `ErrUnsupportedFormat` from a RAR5 set (a RAR 7.0 member, a later volume
    with a bad signature) stays a failure
-   (`TestDirectUnpack_RAR5RefusalIsAFailure`). The unpack stage retries what
+   (`TestDirectUnpack_RAR5RefusalIsAFailure`). So does `ErrNotFirstVolume`, a
+   set whose volume 1 by name is a later volume by content
+   (`TestDirectUnpack_MiddleVolumeNamedAsFirstFails`); the unpack stage fails
+   it too, and does not queue its volumes for deletion
+   (`TestUnpackStage_MiddleVolumeNamedAsFirstIsNotCleanedUp`).
+   The unpack stage retries what
    `rarengine` refuses with the external `unrar` when `go_rar_fallback` is on
-   and a binary is found, and otherwise fails the set (`extractWithDriver`,
+   and a binary is found, except `ErrNotFirstVolume`, and otherwise fails the
+   set (`extractWithDriver`,
    `TestUnpackStage_RAR4_GoFirstThenUnrar`).
 7. **Format support**: `rarengine` (pure Go): RAR5, and the stored members of
    RAR 1.5-4.x, including legacy `.rar`/`.r00`/`.r01` sets

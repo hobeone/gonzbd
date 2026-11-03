@@ -469,11 +469,14 @@ func (u *UnpackStage) applyPermissions(ctx context.Context, log *slog.Logger, jo
 }
 
 type archiveEngineDriver struct {
-	toolName    string
-	goToolName  string
-	formatName  string
-	useGo       bool
-	fallback    bool
+	toolName   string
+	goToolName string
+	formatName string
+	useGo      bool
+	fallback   bool
+	// noRetry, when set, names Go-engine errors the external tool cannot do
+	// better on, so fallback does not run for them.
+	noRetry     func(err error) bool
 	findBin     func(opts unpack.Options) (string, error)
 	runExternal func(ctx context.Context, log *slog.Logger, a unpack.Archive, outDir string, opts unpack.Options) (unpack.Result, error)
 	runGo       func(ctx context.Context, log *slog.Logger, a unpack.Archive, outDir string, opts unpack.Options) (unpack.Result, error)
@@ -544,7 +547,7 @@ func extractWithDriver(ctx context.Context, log *slog.Logger, job *Job, a unpack
 	goErr := err
 	// A cancelled or expired context is not an engine failure: the external
 	// retry would fail at once on the same context.
-	if goErr != nil && ctx.Err() == nil && d.fallback {
+	if goErr != nil && ctx.Err() == nil && d.fallback && (d.noRetry == nil || !d.noRetry(goErr)) {
 		extBin, binErr := d.findBin(opts)
 		if binErr == nil {
 			logf(ctx, log, job, slog.LevelWarn,
@@ -588,16 +591,25 @@ func extractWithDriver(ctx context.Context, log *slog.Logger, job *Job, a unpack
 //  2. unrar available → unrar subprocess
 //  3. unrar not in PATH → GoUnRAR
 func extractRARArchive(ctx context.Context, log *slog.Logger, job *Job, a unpack.Archive, opts unpack.Options) (unpack.Result, error) {
-	return extractWithDriver(ctx, log, job, a, opts, archiveEngineDriver{
+	return extractWithDriver(ctx, log, job, a, opts, rarEngineDriver(opts))
+}
+
+// rarEngineDriver is the driver extractRARArchive runs. A set that does not
+// start at its first volume is not retried: unrar is missing the same
+// volumes, extracts at most the members that start later, and reports that
+// under its own failure label instead of go_unrar's missing-volume one.
+func rarEngineDriver(opts unpack.Options) archiveEngineDriver {
+	return archiveEngineDriver{
 		toolName:    "unrar",
 		goToolName:  "go_unrar",
 		formatName:  "RAR",
 		useGo:       opts.UseGoRAR,
 		fallback:    opts.GoRarFallback,
+		noRetry:     unpack.IsNotFirstVolume,
 		findBin:     unpack.UnrarBin,
 		runExternal: unpack.UnRARWithPasswords,
 		runGo:       unpack.GoUnRARWithPasswords,
-	})
+	}
 }
 
 // extractSevenZipArchive dispatches a single 7-Zip archive to either

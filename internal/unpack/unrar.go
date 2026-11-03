@@ -73,7 +73,8 @@ type Options struct {
 	// No external binary required. Default true.
 	UseGoRAR bool
 	// GoRarFallback allows a failed pure-Go RAR extraction to retry with
-	// the external unrar binary. Only relevant when UseGoRAR is true.
+	// the external unrar binary, unless the set does not start at its first
+	// volume (IsNotFirstVolume). Only relevant when UseGoRAR is true.
 	// Default true.
 	GoRarFallback bool
 	// UseGo7z uses the pure-Go bodgit/sevenzip library for 7z extraction
