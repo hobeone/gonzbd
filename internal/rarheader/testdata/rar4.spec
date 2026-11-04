@@ -24,7 +24,7 @@ file internal/rarheader/rarheader.go
 [directory members listed as files]
 file internal/rarheader/rarheader.go
 --- anchor
-			if !entry.Header.IsDir {
+			if !fh.IsDir {
 --- replace
 			if true {
 --- end
@@ -32,7 +32,7 @@ file internal/rarheader/rarheader.go
 [a member's encryption not reported]
 file internal/rarheader/rarheader.go
 --- anchor
-			if entry.Header.Encrypted {
+			if fh.Encrypted {
 --- replace
 			if false {
 --- end

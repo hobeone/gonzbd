@@ -727,7 +727,7 @@ Key design: Configuration parameters are typed Go structs with validators. Confi
 | `overwrite_files` | bool | false | Overwrite existing extracted files |
 | `flat_unpack` | bool | false | Extract all to single folder |
 | `use_go_rar` | bool | true | Use pure-Go rarengine for RAR5 extraction and stored RAR 1.5-4.x members (falls back to external unrar for compressed or encrypted RAR 1.5-4.x members and other unsupported formats) |
-| `go_rar_fallback` | bool | true | When pure-Go RAR extraction fails, retry with the external unrar binary; only relevant when `use_go_rar` is true, and when false a go_unrar failure is final |
+| `go_rar_fallback` | bool | true | When pure-Go RAR extraction fails, retry with the external unrar binary, except for a set that does not start at its first volume; only relevant when `use_go_rar` is true, and when false a go_unrar failure is final |
 | `rar_decode_workers` | int | 0 | Goroutines the pure-Go RAR5 extractor uses to decode one compressed member; 0 = auto (min(CPU count, 4)), 1 = serial, above 8 clamped, negative treated as 0 |
 | `extra_unrar_params` | string | `` | Extra unrar flags (allowlist: -mlp, -om*, -ri*) |
 | `extra_par2_params` | string | `` | Extra par2 flags |

@@ -1,9 +1,7 @@
 package unpack
 
 import (
-	"errors"
 	"fmt"
-	"io"
 	"os"
 	"path"
 	"strings"
@@ -17,10 +15,10 @@ import (
 //
 // It reads headers, and bounds what else it reads:
 //   - 7z: the header block sevenzip.OpenReader parses; no member is decoded.
-//   - RAR: only a.MainFile, the first volume. A member whose header starts in
-//     a later volume is not seen. Moving from one member to the next skips
-//     the packed bytes of a non-solid archive and decodes them in a solid one
-//     (rarengine's Reader.finishActive), so the cost is at most one volume.
+//   - RAR: only a.MainFile, the volume named first. A member whose header
+//     starts in a later volume is not seen. rarengine.ListVolume reads each
+//     member's packed bytes to skip them and decodes nothing, solid or not, so
+//     the cost is at most one volume.
 //
 // An archive of any other type is an error, as is a header that cannot be
 // read — including an encrypted one, since no password is supplied.
@@ -36,27 +34,28 @@ func MemberBaseNames(a Archive, want map[string]bool) (map[string]bool, error) {
 }
 
 func rarMemberBaseNames(first string, want map[string]bool) (map[string]bool, error) {
+	found := make(map[string]bool)
+	if len(want) == 0 {
+		return found, nil
+	}
 	f, err := os.Open(first) //nolint:gosec // read-only open of a scanned archive volume
 	if err != nil {
 		return nil, fmt.Errorf("member listing: %w", err)
 	}
-	vols := make(chan io.ReadCloser, 1)
-	vols <- f
-	close(vols)
-	r := rarengine.NewReader(vols)
-	defer r.Close() //nolint:errcheck // read-only; closes the volume
+	defer f.Close() //nolint:errcheck // read-only
 
-	found := make(map[string]bool)
-	for len(found) < len(want) {
-		e, err := r.NextEntry()
-		if errors.Is(err, io.EOF) || errors.Is(err, rarengine.ErrNoNextVolume) {
-			break
-		}
-		if err != nil {
+	// A listing, not an extraction: a volume named first may still be a later
+	// one, and what is asked is which members start in it. A member refused
+	// by name comes with a non-nil header and its refusal, and is still one.
+	for fh, err := range rarengine.ListVolume(f) {
+		if fh == nil {
 			return nil, fmt.Errorf("member listing %s: %w", first, err)
 		}
-		if base := MemberBaseName(e.Header.Name); want[base] {
+		if base := MemberBaseName(fh.Name); want[base] {
 			found[base] = true
+			if len(found) == len(want) {
+				break
+			}
 		}
 	}
 	return found, nil

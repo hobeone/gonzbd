@@ -375,7 +375,8 @@ postproc:
   # shelling out to the unrar binary. No external binary required.
   # Extracts RAR5, and RAR 1.5-4.x archives whose members are stored
   # (-m0); falls back to subprocess unrar on extraction error, which
-  # includes a compressed or encrypted RAR 1.5-4.x member.
+  # includes a compressed or encrypted RAR 1.5-4.x member, but not for a
+  # set that does not start at its first volume.
   # Default true.
   use_go_rar: true
 

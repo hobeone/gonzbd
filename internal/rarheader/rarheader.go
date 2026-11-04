@@ -143,25 +143,18 @@ func inspectNative(p string, ver int) (info Info, err error) {
 		}
 		defer func() { _ = f.Close() }() //nolint:errcheck // read-only file
 
-		volumesChan := make(chan io.ReadCloser, 1)
-		volumesChan <- f
-		close(volumesChan)
-
-		r := rarengine.NewReader(volumesChan)
-		defer func() { _ = r.Close() }() //nolint:errcheck // read-side archive reader
-
-		for {
-			entry, nextErr := r.NextEntry()
-			if nextErr != nil {
-				if errors.Is(nextErr, io.EOF) || errors.Is(nextErr, rarengine.ErrNoNextVolume) {
-					break
-				}
-				return nextErr
+		// A listing, not an extraction: p may be any volume of its set, and
+		// what is asked is which members start in it.
+		// A member refused by name comes with a non-nil header and its
+		// refusal; its name is still one the volume declares.
+		for fh, listErr := range rarengine.ListVolume(f) {
+			if fh == nil {
+				return listErr
 			}
-			if !entry.Header.IsDir {
-				info.Filenames = append(info.Filenames, sanitizeName(entry.Header.Name))
+			if !fh.IsDir {
+				info.Filenames = append(info.Filenames, sanitizeName(fh.Name))
 			}
-			if entry.Header.Encrypted {
+			if fh.Encrypted {
 				info.Encrypted = true
 			}
 		}

@@ -12,7 +12,7 @@ file internal/postproc/stage_repair.go
 [unpack fallback ignores cancellation]
 file internal/postproc/stage_unpack.go
 --- anchor
-	if goErr != nil && ctx.Err() == nil && d.fallback {
+	if goErr != nil && ctx.Err() == nil && d.fallback && (d.noRetry == nil || !d.noRetry(goErr)) {
 --- replace
-	if goErr != nil && d.fallback {
+	if goErr != nil && d.fallback && (d.noRetry == nil || !d.noRetry(goErr)) {
 --- end

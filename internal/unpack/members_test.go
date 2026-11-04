@@ -67,6 +67,39 @@ func TestRarMemberBaseNames_RAR4CompressedMember(t *testing.T) {
 	}
 }
 
+// A volume named first may be a later one. late_member.part3.rar opens with
+// the tail of first.bin and then starts second.bin. Listing it must report
+// second.bin with no error: an error makes quickcheck's heldArchiveMembers
+// defer nothing for the whole job.
+func TestRarMemberBaseNames_LaterVolume(t *testing.T) {
+	t.Parallel()
+
+	found, err := rarMemberBaseNames(filepath.Join("testdata", "late_member.part3.rar"),
+		map[string]bool{"first.bin": true, "second.bin": true})
+	if err != nil {
+		t.Fatalf("rarMemberBaseNames: %v", err)
+	}
+	if !found["second.bin"] || found["first.bin"] {
+		t.Errorf("found = %v, want only second.bin (first.bin only continues here)", found)
+	}
+}
+
+// rar4_refused_member.rar declares bad.bin with an unknown method byte, which
+// rarengine refuses by name, and then a stored good.bin. The refusal is that
+// member's verdict: both names are members, and the listing is not an error.
+func TestRarMemberBaseNames_MemberRefusedByName(t *testing.T) {
+	t.Parallel()
+
+	found, err := rarMemberBaseNames(filepath.Join("testdata", "rar4_refused_member.rar"),
+		map[string]bool{"bad.bin": true, "good.bin": true})
+	if err != nil {
+		t.Fatalf("rarMemberBaseNames: %v", err)
+	}
+	if !found["bad.bin"] || !found["good.bin"] {
+		t.Errorf("found = %v, want bad.bin and good.bin", found)
+	}
+}
+
 func TestMemberBaseNames_Errors(t *testing.T) {
 	t.Parallel()
 
