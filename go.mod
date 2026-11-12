@@ -10,7 +10,7 @@ require (
 	github.com/hobeone/rarengine v1.6.0
 	github.com/lmittmann/tint v1.2.1
 	github.com/mxschmitt/playwright-go v0.6401.0
-	github.com/pressly/goose/v3 v3.30.0
+	github.com/pressly/goose/v3 v3.30.1
 	go.uber.org/goleak v1.3.0
 	golang.org/x/sync v0.25.0
 	golang.org/x/sys v0.50.0
@@ -34,7 +34,7 @@ require (
 	github.com/klauspost/cpuid/v2 v2.4.2 // indirect
 	github.com/kr/text v0.2.0 // indirect
 	github.com/mattn/go-isatty v0.0.24 // indirect
-	github.com/mfridman/interpolate v0.0.2 // indirect
+	github.com/mfridman/interpolate v0.2.0 // indirect
 	github.com/ncruces/go-strftime v1.1.0 // indirect
 	github.com/pierrec/lz4/v4 v4.1.33 // indirect
 	github.com/remyoudompheng/bigfft v0.0.0-20230129092748-24d4a6f8daec // indirect
