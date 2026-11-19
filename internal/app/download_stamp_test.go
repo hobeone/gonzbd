@@ -37,7 +37,7 @@ func TestEnqueuePostProc_FromFetching_StampsTheFinishWhenNoneIsSet(t *testing.T)
 	}
 
 	close(stage.finish)
-	awaitFinalized(t, application, id)
+	awaitPostProcComplete(t, application, id)
 
 	entry := historyEntry(t, application, id)
 	if entry.DownloadTime < 29 || entry.DownloadTime > 40 {
@@ -67,7 +67,7 @@ func TestEnqueuePostProc_KeepsTheFinishAJobLeftFetchingWith(t *testing.T) {
 		t.Errorf("the hand-over moved the finish from %v to %v", finish, got)
 	}
 	close(stage.finish)
-	awaitFinalized(t, application, j.ID())
+	awaitPostProcComplete(t, application, j.ID())
 }
 
 // TestAdvanceToFetching_WithADeferredFailureReason_KeepsTheFinish: a job whose

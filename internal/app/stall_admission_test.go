@@ -96,7 +96,7 @@ func TestStall_Admission(t *testing.T) {
 				return nil
 			}
 			application.maybeFinalizeJob(j, "")
-			awaitFinalized(t, application, id)
+			awaitPostProcComplete(t, application, id)
 			if n := len(stage.entered); n != 0 {
 				t.Errorf("the stages ran %d times for a run the fault failed, want 0", n)
 			}

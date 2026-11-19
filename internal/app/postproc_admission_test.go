@@ -33,16 +33,6 @@ func admittedApp(t *testing.T, stage gatedStage) (*Application, *job.Job) {
 	return application, j
 }
 
-// awaitFinalized waits until the job has left the dispatcher and the
-// post-processor has nothing queued or running.
-func awaitFinalized(t *testing.T, application *Application, id string) {
-	t.Helper()
-	waitFor(t, func() bool {
-		_, registered := application.dispatcher.Job(id)
-		return !registered && application.postProcessor.Empty()
-	})
-}
-
 // awaitPostProcComplete blocks until finalize reports id finished on
 // PostProcComplete, then checks what that report promises on the path a healthy
 // run takes: the job has left the dispatcher and the post-processor no longer
@@ -129,7 +119,7 @@ func TestFail_WhilePostProcessing_IsNotedAndLeavesTheStatusToTheStages(t *testin
 	fault := storagefault.Classify("write", "/mnt/ro/held.bin", syscall.EROFS)
 	application.Fail(j, fault)
 	close(stage.finish)
-	awaitFinalized(t, application, id)
+	awaitPostProcComplete(t, application, id)
 
 	if n := len(application.postProcessor.History()); n != 1 {
 		t.Errorf("the post-processor finished %d copies of the job, want 1", n)
@@ -142,7 +132,14 @@ func TestFail_WhilePostProcessing_IsNotedAndLeavesTheStatusToTheStages(t *testin
 	if len(warnings) != 1 || !strings.Contains(warnings[0], "Failed: "+fault.Error()) {
 		t.Errorf("warnings stage lines = %q, want one naming the fault", warnings)
 	}
-	waitFor(t, func() bool { return admissionsHeld(&application.postProcAdmissions) == 0 })
+	// finalize defers the admission's release, and the worker runs finalize
+	// from OnJobDone, so Stop returning means the release has run. The job
+	// reported finished above, so the worker is past choosing between finishing
+	// and being interrupted, and Stop does not change which one this job got.
+	_ = application.postProcessor.Stop()
+	if n := admissionsHeld(&application.postProcAdmissions); n != 0 {
+		t.Errorf("admissions held after the job finished = %d, want 0", n)
+	}
 }
 
 // TestRemoveJob_EndsThePostProcessingAdmission: a job removed while its
@@ -206,7 +203,7 @@ func TestRunPostProc_DuringTheFinalizerTail_EnqueuesNoSecondCopy(t *testing.T) {
 	application.runner.runPostProc(t.Context(), id, job.Repairing)
 	queuedAgain := application.postProcessor.HasJob(j)
 	close(leaveTail)
-	awaitFinalized(t, application, id)
+	awaitPostProcComplete(t, application, id)
 
 	if queuedAgain {
 		t.Error("a launch during the finalizer's tail handed the job to the post-processor again")
@@ -251,7 +248,7 @@ func TestEnqueue_DuringTheDirectUnpackWait_EnqueuesNoSecondCopy(t *testing.T) {
 	handedOver := application.postProcessor.HasJob(j)
 
 	du.Abort()
-	awaitFinalized(t, application, id)
+	awaitPostProcComplete(t, application, id)
 
 	if handedOver {
 		t.Error("the job was handed to the post-processor during its DirectUnpack wait")
