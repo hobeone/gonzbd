@@ -43,6 +43,32 @@ func awaitFinalized(t *testing.T, application *Application, id string) {
 	})
 }
 
+// awaitPostProcComplete blocks until finalize reports id finished on
+// PostProcComplete, then checks what that report promises: the job has left
+// the dispatcher and the post-processor holds nothing. finalize sends after
+// persistAndCommit returns, and the dispatcher removal runs inside
+// persistAndCommit, so both are settled by the time the report arrives and the
+// checks are assertions, not a race.
+//
+// It has no deadline of its own: a finalize that never reports (a persist
+// failure) hangs until the test binary's timeout, whose goroutine dump names
+// the stuck wait.
+func awaitPostProcComplete(t *testing.T, application *Application, id string) {
+	t.Helper()
+	for c := range application.PostProcComplete() {
+		if c.JobID != id {
+			continue
+		}
+		if _, registered := application.dispatcher.Job(id); registered {
+			t.Fatalf("job %s is still registered with the dispatcher after PostProcComplete", id)
+		}
+		if !application.postProcessor.Empty() {
+			t.Fatalf("post-processor is not empty after PostProcComplete for job %s", id)
+		}
+		return
+	}
+}
+
 // admissionsHeld counts the admissions a has not ended.
 func admissionsHeld(a *postProcAdmissions) int {
 	a.mu.Lock()

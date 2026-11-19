@@ -93,7 +93,7 @@ func TestEnqueuePostProc_DeliveredCrashRecovery(t *testing.T) {
 		}
 
 		application.enqueuePostProc(j, hdr, "", false)
-		awaitFinalized(t, application, j.ID())
+		awaitPostProcComplete(t, application, j.ID())
 
 		entry := historyEntry(t, application, j.ID())
 		gotStatus, _ := os.ReadFile(statusFile)
