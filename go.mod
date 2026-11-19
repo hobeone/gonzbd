@@ -6,8 +6,8 @@ require (
 	github.com/bodgit/sevenzip v1.6.5
 	github.com/coder/websocket v1.8.15
 	github.com/h2non/filetype v1.1.3
-	github.com/hobeone/par2engine v1.1.4
-	github.com/hobeone/rarengine v1.6.0
+	github.com/hobeone/par2engine v1.2.0
+	github.com/hobeone/rarengine v1.7.0
 	github.com/lmittmann/tint v1.2.1
 	github.com/mxschmitt/playwright-go v0.6401.0
 	github.com/pressly/goose/v3 v3.30.1
