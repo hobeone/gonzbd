@@ -23,7 +23,7 @@ func closeFaultRun(t *testing.T, closeErr error) (status, failMsg string, stageR
 	application.closeJobHandlesHook = func(context.Context, string) error { return closeErr }
 
 	application.maybeFinalizeJob(j, "")
-	awaitFinalized(t, application, id)
+	awaitPostProcComplete(t, application, id)
 
 	entry := historyEntry(t, application, id)
 	return entry.Status, entry.FailMessage, len(stage.entered)
@@ -77,7 +77,7 @@ func TestEnqueuePostProc_ACloseFaultIsNotedBehindAnEarlierReason(t *testing.T) {
 	application.closeJobHandlesHook = func(context.Context, string) error { return fault }
 
 	application.maybeFinalizeJob(j, "Failed: earlier")
-	awaitFinalized(t, application, id)
+	awaitPostProcComplete(t, application, id)
 
 	entry := historyEntry(t, application, id)
 	if want := "Failed: earlier"; entry.Status != "Failed" || entry.FailMessage != want {
