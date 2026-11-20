@@ -105,8 +105,13 @@ func (j *Job) AttachFiles(ft *FileTable, seed []FileSeed) error {
 // nothing. Each verification is then installed whatever became of the one
 // before it; its outcome is the FileInstall at the same index.
 func (j *Job) AttachArticles(m *Manifest, vs []FileVerification) ([]FileInstall, error) {
+	attached := false
 	// Registered before the lock's deferred unlock, so it runs after it.
-	defer j.notifyAttached()
+	defer func() {
+		if attached {
+			j.notifyAttached()
+		}
+	}()
 	if m == nil {
 		return nil, fmt.Errorf("job %s: AttachArticles: nil manifest", j.id)
 	}
@@ -127,14 +132,22 @@ func (j *Job) AttachArticles(m *Manifest, vs []FileVerification) ([]FileInstall,
 	for k, v := range vs {
 		out[k].Dropped, out[k].Err = j.installFileVerificationLocked(v)
 	}
+	attached = true
 	return out, nil
 }
 
 // SetAttachObserver makes AttachArticles call fn on the calling goroutine each
-// time it returns, after contentMu is released, so a test can read the job as
-// a reader would at the first instant it is resident. It exists for
+// time it attaches a manifest, after contentMu is released, so a test can read
+// the job as a reader would at the first instant it is resident. An attach the
+// job refuses does not call it. A nil fn uninstalls the observer. It exists for
 // TestVerifyAndAttach_NoReaderSeesAVerifiedArticleUnfinished.
-func (j *Job) SetAttachObserver(fn func()) { j.attachObserver.Store(&fn) }
+func (j *Job) SetAttachObserver(fn func()) {
+	if fn == nil {
+		j.attachObserver.Store(nil)
+		return
+	}
+	j.attachObserver.Store(&fn)
+}
 
 func (j *Job) notifyAttached() {
 	if obs := j.attachObserver.Load(); obs != nil {

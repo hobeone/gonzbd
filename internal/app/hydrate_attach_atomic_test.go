@@ -36,17 +36,26 @@ func TestVerifyAndAttach_NoReaderSeesAVerifiedArticleUnfinished(t *testing.T) {
 	fresh.SetAttachObserver(func() {
 		observed++
 		var unfinished []int32
-		_ = fresh.ForEachUnfinishedArticle(func(_ int, artIdx int32, _ string, _, _ int, _ string) bool { //nolint:errcheck // an unattached job is listed as nothing
+		// The observer runs only after an attach, so the job is resident and the
+		// listing cannot be refused; an error would leave this round empty and
+		// the assertions below passing without having read anything.
+		err := fresh.ForEachUnfinishedArticle(func(_ int, artIdx int32, _ string, _, _ int, _ string) bool {
 			unfinished = append(unfinished, artIdx)
 			return true
 		})
+		if err != nil {
+			t.Errorf("a reader at attach %d could not list the job's articles: %v", observed-1, err)
+		}
 		listed = append(listed, unfinished)
 	})
 	if err := a.verifyFromRecord(t, fresh, m); err != nil {
 		t.Fatalf("verifyAndAttach: %v", err)
 	}
+	if !fresh.Resident() {
+		t.Fatal("verifyAndAttach returned nil but the job is not resident")
+	}
 	if observed == 0 {
-		t.Fatal("hydration never called AttachArticles, so no reader instant was observed")
+		t.Fatal("hydration never attached a manifest, so no reader instant was observed")
 	}
 	for i, unfinished := range listed {
 		for _, art := range unfinished {
