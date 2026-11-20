@@ -5,6 +5,7 @@ import (
 	"syscall"
 	"testing"
 
+	"github.com/hobeone/gonzbd/internal/dispatch"
 	"github.com/hobeone/gonzbd/internal/job"
 	"github.com/hobeone/gonzbd/internal/storagefault"
 )
@@ -151,9 +152,8 @@ func TestFinalizeRegistered_AnEmptyReasonAtAssessing_IsNoFailure(t *testing.T) {
 	}
 
 	f.d.Tick(t.Context())
-	waitFor(t, func() bool {
-		row, ok := f.d.Row(f.j.ID())
-		return ok && (row.View.Outcome.IsSettled() || row.View.State != job.Fetching && row.View.Next != job.StateUnset)
+	f.awaitRow(t, "the Assessing worker's report", func(row dispatch.Row) bool {
+		return row.View.Outcome.IsSettled() || row.View.State != job.Fetching && row.View.Next != job.StateUnset
 	})
 	row, _ := f.d.Row(f.j.ID())
 	if row.View.Outcome == job.OutcomeFailed {

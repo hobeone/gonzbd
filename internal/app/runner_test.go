@@ -22,12 +22,46 @@ type reportRecorder struct {
 	// yieldedJobs is each instance reported through YieldedJob, which
 	// yields counts too.
 	yieldedJobs []*job.Job
+	// changed is closed, and cleared, by the next report, so awaitCalls
+	// blocks on it rather than polling total.
+	changed chan struct{}
+}
+
+// reportedLocked counts one report and wakes the awaitCalls waiting for it.
+// The caller holds r.mu.
+func (r *reportRecorder) reportedLocked() {
+	r.total++
+	if r.changed != nil {
+		close(r.changed)
+		r.changed = nil
+	}
+}
+
+// awaitCalls blocks until the recorder has counted at least n reports. The
+// runner reports from a goroutine Run starts, so the report is not made when
+// Run returns; the wait ends on the report itself, and its budget is lrAwait's
+// hang guard, not a bound on how long the report may take.
+func (r *reportRecorder) awaitCalls(t *testing.T, n int) {
+	t.Helper()
+	for {
+		r.mu.Lock()
+		if r.total >= n {
+			r.mu.Unlock()
+			return
+		}
+		if r.changed == nil {
+			r.changed = make(chan struct{})
+		}
+		ch := r.changed
+		r.mu.Unlock()
+		lrAwait(t, fmt.Sprintf("the runner's report %d", n), ch)
+	}
 }
 
 func (r *reportRecorder) FinishedJob(j *job.Job, o job.Outcome) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	r.total++
+	r.reportedLocked()
 	if r.outcomes == nil {
 		r.outcomes = make(map[string]job.Outcome)
 	}
@@ -44,7 +78,7 @@ func (r *reportRecorder) outcome(id string) job.Outcome {
 func (r *reportRecorder) Yielded(id string) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	r.total++
+	r.reportedLocked()
 	if r.yields == nil {
 		r.yields = make(map[string]int)
 	}
@@ -76,7 +110,7 @@ func (r *reportRecorder) yielded(id string) int {
 func (r *reportRecorder) AdvanceFrom(j *job.Job, from, next job.State) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	r.total++
+	r.reportedLocked()
 	if r.advances == nil {
 		r.advances = make(map[string][2]job.State)
 	}
@@ -151,7 +185,7 @@ func TestAppRunner_EveryStateReportsExactlyOnce(t *testing.T) {
 			r.report = rec
 
 			r.Run(context.Background(), "abc123", st)
-			waitFor(t, func() bool { return rec.calls() == 1 })
+			rec.awaitCalls(t, 1)
 
 			if got := rec.calls(); got != 1 {
 				t.Fatalf("state %s reported %d times, want exactly 1", st, got)
@@ -182,7 +216,7 @@ func TestAppRunner_EveryStateDischargesCompletionContract(t *testing.T) {
 			r.report = rec
 
 			r.Run(context.Background(), j.ID(), st)
-			waitFor(t, func() bool { return rec.calls() == 1 })
+			rec.awaitCalls(t, 1)
 			if got := rec.calls(); got != 1 {
 				t.Fatalf("state %s when stopping reported %d times, want exactly 1", st, got)
 			}
@@ -199,7 +233,7 @@ func TestAppRunner_EveryStateDischargesCompletionContract(t *testing.T) {
 			switch st {
 			case job.Assessing:
 				r.Run(context.Background(), j.ID(), st)
-				waitFor(t, func() bool { return rec.calls() == 1 })
+				rec.awaitCalls(t, 1)
 				if got := rec.calls(); got != 1 {
 					t.Fatalf("Assessing state reported %d times, want exactly 1", got)
 				}
@@ -219,7 +253,7 @@ func TestAppRunner_EveryStateDischargesCompletionContract(t *testing.T) {
 				}
 			default:
 				r.Run(context.Background(), j.ID(), st)
-				waitFor(t, func() bool { return rec.calls() == 1 })
+				rec.awaitCalls(t, 1)
 				if got := rec.calls(); got != 1 {
 					t.Fatalf("default state %s reported %d times, want exactly 1", st, got)
 				}

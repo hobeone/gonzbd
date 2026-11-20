@@ -49,6 +49,72 @@ func (r interceptReporter) AdvanceFrom(j *job.Job, from, next job.State) error {
 	return r.reporter.AdvanceFrom(j, from, next)
 }
 
+// signalReporter forwards every report to the dispatcher and, once the
+// dispatcher has returned, notes it on reported, dropping the note when the
+// channel is full. The dispatcher's row has changed by then, so a test waiting
+// for a worker's report can look at the row when it is told one was made.
+type signalReporter struct {
+	reporter
+	reported chan struct{}
+}
+
+func (r signalReporter) note() {
+	select {
+	case r.reported <- struct{}{}:
+	default:
+	}
+}
+
+func (r signalReporter) FinishedJob(j *job.Job, o job.Outcome) error {
+	defer r.note()
+	return r.reporter.FinishedJob(j, o)
+}
+
+func (r signalReporter) Yielded(id string) error {
+	defer r.note()
+	return r.reporter.Yielded(id)
+}
+
+func (r signalReporter) YieldedJob(j *job.Job) error {
+	defer r.note()
+	return r.reporter.YieldedJob(j)
+}
+
+func (r signalReporter) AdvanceFrom(j *job.Job, from, next job.State) error {
+	defer r.note()
+	return r.reporter.AdvanceFrom(j, from, next)
+}
+
+// TestSignalReporter_NotesEachReportAfterForwardingIt: the note is what wakes
+// awaitRow, and the row it re-reads has changed only if the dispatcher has
+// already seen the report. No integration test forces that wake-up, because the
+// row is usually settled by awaitRow's first read.
+func TestSignalReporter_NotesEachReportAfterForwardingIt(t *testing.T) {
+	t.Parallel()
+	rec := &reportRecorder{}
+	reported := make(chan struct{}, 1)
+	r := signalReporter{reporter: rec, reported: reported}
+	j := job.New("sig", "sig", job.Policy{})
+	for i, report := range []func() error{
+		func() error { return r.FinishedJob(j, job.OutcomeFailed) },
+		func() error { return r.Yielded(j.ID()) },
+		func() error { return r.YieldedJob(j) },
+		func() error { return r.AdvanceFrom(j, job.Assessing, job.Extracting) },
+	} {
+		if err := report(); err != nil {
+			t.Fatalf("report %d: %v", i, err)
+		}
+		select {
+		case <-reported:
+		default:
+			t.Fatalf("report %d was not noted", i)
+		}
+		if got := rec.calls(); got != i+1 {
+			t.Fatalf("after report %d the dispatcher side has seen %d reports, want %d", i, got, i+1)
+		}
+	}
+}
+
 // failAtAssessingFixture is one complete job launched at Fetching on a real
 // dispatcher the test ticks by hand. finalized receives each job the finalizer
 // starts, and the finalizer then waits for release.
@@ -59,6 +125,8 @@ type failAtAssessingFixture struct {
 	finalized chan *postproc.Job
 	release   func()
 	j         *job.Job
+	// reported receives a note for each report the application's runner makes.
+	reported chan struct{}
 }
 
 func newFailAtAssessingFixture(t *testing.T) *failAtAssessingFixture {
@@ -73,7 +141,8 @@ func newFailAtAssessingFixture(t *testing.T) *failAtAssessingFixture {
 	restoreDispatcher(t, d)
 	application.dispatcher = d
 	application.pipeline.dispatcher = d
-	application.runner.report = d
+	reported := make(chan struct{}, 16)
+	application.runner.report = signalReporter{reporter: d, reported: reported}
 
 	finalized := make(chan *postproc.Job, 4)
 	finRelease := make(chan struct{})
@@ -118,7 +187,7 @@ func newFailAtAssessingFixture(t *testing.T) *failAtAssessingFixture {
 	if got := runner.ran(j.ID()); !slices.Equal(got, []job.State{job.Fetching}) {
 		t.Fatalf("precondition: runs after launch = %v, want [Fetching]", got)
 	}
-	return &failAtAssessingFixture{app: application, d: d, runner: runner, finalized: finalized, release: release, j: j}
+	return &failAtAssessingFixture{app: application, d: d, runner: runner, finalized: finalized, release: release, j: j, reported: reported}
 }
 
 func assessFault() *storagefault.Fault {
@@ -134,6 +203,19 @@ func (f *failAtAssessingFixture) awaitHandOff(t *testing.T) *postproc.Job {
 	case <-time.After(10 * time.Second):
 		t.Fatal("the job was never handed to post-processing")
 		return nil
+	}
+}
+
+// awaitRow returns once the job's row satisfies cond. The row is read first and
+// again after each report the application's runner makes, which is the only
+// thing that moves it here, so the wait ends on the report and not on a clock.
+func (f *failAtAssessingFixture) awaitRow(t *testing.T, what string, cond func(dispatch.Row) bool) {
+	t.Helper()
+	for {
+		if row, ok := f.d.Row(f.j.ID()); ok && cond(row) {
+			return
+		}
+		lrAwait(t, what, f.reported)
 	}
 }
 
@@ -164,9 +246,8 @@ func (f *failAtAssessingFixture) requireHandedOffFromAssessing(t *testing.T, pj 
 	if want := faultReason(fault); pj.FailMsg != want {
 		t.Errorf("handed-over FailMsg = %q, want %q", pj.FailMsg, want)
 	}
-	waitFor(t, func() bool {
-		row, ok := f.d.Row(f.j.ID())
-		return ok && (row.View.Outcome.IsSettled() || row.View.Next != job.StateUnset)
+	f.awaitRow(t, "the Assessing worker's report", func(row dispatch.Row) bool {
+		return row.View.Outcome.IsSettled() || row.View.Next != job.StateUnset
 	})
 	row, _ := f.d.Row(f.j.ID())
 	if row.View.State != job.Assessing || row.View.Next != job.StateUnset || row.View.Outcome != job.OutcomeFailed {
