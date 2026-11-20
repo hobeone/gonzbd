@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"syscall"
 	"testing"
@@ -184,6 +185,11 @@ func TestRunPostProc_DuringTheFinalizerTail_EnqueuesNoSecondCopy(t *testing.T) {
 	// below rather than hanging the test.
 	inTail := make(chan struct{})
 	leaveTail := make(chan struct{})
+	var leaveOnce sync.Once
+	releaseTail := func() { leaveOnce.Do(func() { close(leaveTail) }) }
+	// Registered after admittedApp, so it runs before the post-processor's
+	// Stop and a t.Fatal below cannot leave Stop waiting on the hook.
+	t.Cleanup(releaseTail)
 	var finalizes atomic.Int32
 	application.finalizeHook = func(*postproc.Job) {
 		if finalizes.Add(1) == 1 {
@@ -202,7 +208,7 @@ func TestRunPostProc_DuringTheFinalizerTail_EnqueuesNoSecondCopy(t *testing.T) {
 
 	application.runner.runPostProc(t.Context(), id, job.Repairing)
 	queuedAgain := application.postProcessor.HasJob(j)
-	close(leaveTail)
+	releaseTail()
 	awaitPostProcComplete(t, application, id)
 
 	if queuedAgain {
@@ -235,6 +241,9 @@ func TestEnqueue_DuringTheDirectUnpackWait_EnqueuesNoSecondCopy(t *testing.T) {
 	if err := os.WriteFile(rarPath, rarData, 0o600); err != nil {
 		t.Fatal(err)
 	}
+	// Joins the goroutine enqueuePostProc starts for the DirectUnpack wait.
+	// Registered before du.Abort's cleanup, so Abort runs first and releases it.
+	t.Cleanup(application.wg.Wait)
 	du := directunpack.New(slog.New(slog.DiscardHandler), id, duDir, t.TempDir(), directunpack.Options{})
 	du.SetAllFilenames([]string{"multi_new.part01.rar", "multi_new.part02.rar"})
 	du.Add(t.Context(), "multi_new.part01.rar", rarPath)
