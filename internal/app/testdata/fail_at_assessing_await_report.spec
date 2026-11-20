@@ -27,3 +27,17 @@ file internal/app/fail_at_assessing_test.go
 --- replace
 	_ = r.reported
 --- end
+
+[the reporter tee notes a report before forwarding it]
+file internal/app/fail_at_assessing_test.go
+--- anchor
+func (r signalReporter) FinishedJob(j *job.Job, o job.Outcome) error {
+	defer r.note()
+	return r.reporter.FinishedJob(j, o)
+}
+--- replace
+func (r signalReporter) FinishedJob(j *job.Job, o job.Outcome) error {
+	r.note()
+	return r.reporter.FinishedJob(j, o)
+}
+--- end

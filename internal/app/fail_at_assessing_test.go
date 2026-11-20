@@ -85,33 +85,75 @@ func (r signalReporter) AdvanceFrom(j *job.Job, from, next job.State) error {
 	return r.reporter.AdvanceFrom(j, from, next)
 }
 
+// noteOrderProbe is the reporter a signalReporter wraps in
+// TestSignalReporter_NotesEachReportAfterForwardingIt. It counts each report
+// and records whether a note was already waiting while the report ran.
+type noteOrderProbe struct {
+	rec        reportRecorder
+	reported   chan struct{}
+	notedEarly atomic.Bool
+}
+
+func (p *noteOrderProbe) check() {
+	if len(p.reported) != 0 {
+		p.notedEarly.Store(true)
+	}
+}
+
+func (p *noteOrderProbe) FinishedJob(j *job.Job, o job.Outcome) error {
+	p.check()
+	return p.rec.FinishedJob(j, o)
+}
+
+func (p *noteOrderProbe) Yielded(id string) error {
+	p.check()
+	return p.rec.Yielded(id)
+}
+
+func (p *noteOrderProbe) YieldedJob(j *job.Job) error {
+	p.check()
+	return p.rec.YieldedJob(j)
+}
+
+func (p *noteOrderProbe) AdvanceFrom(j *job.Job, from, next job.State) error {
+	p.check()
+	return p.rec.AdvanceFrom(j, from, next)
+}
+
 // TestSignalReporter_NotesEachReportAfterForwardingIt: the note is what wakes
 // awaitRow, and the row it re-reads has changed only if the dispatcher has
-// already seen the report. No integration test forces that wake-up, because the
-// row is usually settled by awaitRow's first read.
+// already seen the report. A note made before the report is forwarded would
+// let awaitRow read the old row and then wait for a note that never comes. No
+// integration test forces that wake-up, because the row is usually settled by
+// awaitRow's first read.
 func TestSignalReporter_NotesEachReportAfterForwardingIt(t *testing.T) {
 	t.Parallel()
-	rec := &reportRecorder{}
-	reported := make(chan struct{}, 1)
-	r := signalReporter{reporter: rec, reported: reported}
 	j := job.New("sig", "sig", job.Policy{})
-	for i, report := range []func() error{
-		func() error { return r.FinishedJob(j, job.OutcomeFailed) },
-		func() error { return r.Yielded(j.ID()) },
-		func() error { return r.YieldedJob(j) },
-		func() error { return r.AdvanceFrom(j, job.Assessing, job.Extracting) },
+	for name, report := range map[string]func(signalReporter) error{
+		"FinishedJob": func(r signalReporter) error { return r.FinishedJob(j, job.OutcomeFailed) },
+		"Yielded":     func(r signalReporter) error { return r.Yielded(j.ID()) },
+		"YieldedJob":  func(r signalReporter) error { return r.YieldedJob(j) },
+		"AdvanceFrom": func(r signalReporter) error { return r.AdvanceFrom(j, job.Assessing, job.Extracting) },
 	} {
-		if err := report(); err != nil {
-			t.Fatalf("report %d: %v", i, err)
-		}
-		select {
-		case <-reported:
-		default:
-			t.Fatalf("report %d was not noted", i)
-		}
-		if got := rec.calls(); got != i+1 {
-			t.Fatalf("after report %d the dispatcher side has seen %d reports, want %d", i, got, i+1)
-		}
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			reported := make(chan struct{}, 1)
+			probe := &noteOrderProbe{reported: reported}
+			if err := report(signalReporter{reporter: probe, reported: reported}); err != nil {
+				t.Fatalf("report: %v", err)
+			}
+			if probe.notedEarly.Load() {
+				t.Error("the report was noted before it was forwarded")
+			}
+			if got := probe.rec.calls(); got != 1 {
+				t.Errorf("the wrapped reporter saw %d reports, want 1", got)
+			}
+			select {
+			case <-reported:
+			default:
+				t.Error("the report was not noted")
+			}
+		})
 	}
 }
 

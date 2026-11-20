@@ -151,6 +151,43 @@ func waitFor(t *testing.T, pred func() bool) {
 	t.Fatal("condition not met within 1s")
 }
 
+// TestReportRecorder_WakesAwaitCallsOnEachReport: every report method closes
+// and clears the channel a waiting awaitCalls holds. The runner tests do not
+// force this: a report that lands before awaitCalls first looks needs no
+// wake-up, so they pass without it.
+func TestReportRecorder_WakesAwaitCallsOnEachReport(t *testing.T) {
+	t.Parallel()
+	j := job.New("rec", "rec", job.Policy{})
+	for name, report := range map[string]func(*reportRecorder) error{
+		"FinishedJob": func(r *reportRecorder) error { return r.FinishedJob(j, job.OutcomeFailed) },
+		"Yielded":     func(r *reportRecorder) error { return r.Yielded(j.ID()) },
+		"AdvanceFrom": func(r *reportRecorder) error { return r.AdvanceFrom(j, job.Assessing, job.Extracting) },
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			r := &reportRecorder{}
+			r.mu.Lock()
+			r.changed = make(chan struct{})
+			waiter := r.changed
+			r.mu.Unlock()
+			if err := report(r); err != nil {
+				t.Fatalf("report: %v", err)
+			}
+			select {
+			case <-waiter:
+			default:
+				t.Error("the report did not wake the waiter")
+			}
+			r.mu.Lock()
+			cleared := r.changed == nil
+			r.mu.Unlock()
+			if !cleared {
+				t.Error("the report left the waiter's channel installed")
+			}
+		})
+	}
+}
+
 // TestAppRunner_ReturnsPromptly pins ports.go's hardest requirement: Run is
 // called from the dispatcher's tick goroutine, so blocking there stalls every
 // other job's advance -- not just this one's.

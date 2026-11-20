@@ -1,5 +1,5 @@
 pkg ./internal/app/
-run TestAppRunner_EveryStateReportsExactlyOnce
+run Test(AppRunner_EveryStateReportsExactlyOnce|ReportRecorder_WakesAwaitCallsOnEachReport)$
 
 [a report does not wake the waiter]
 file internal/app/runner_test.go
