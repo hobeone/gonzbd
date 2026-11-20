@@ -386,12 +386,7 @@ func TestTryAutoResumeLowDisk_DirectBranches(t *testing.T) {
 		application.lowDiskWg.Wait()
 		close(waitDone)
 	}()
-	select {
-	case <-waitDone:
-	case <-time.After(100 * time.Millisecond):
-		appCancel()
-		t.Fatalf("PauseDownloads did not cancel active low-disk watch (or duplicate watcher leaked)")
-	}
+	lrAwait(t, "PauseDownloads to cancel the active low-disk watch (a duplicate watcher that leaked never does)", waitDone)
 
 	// 2. While pauseReason is pauseReasonUser, tryAutoResumeLowDisk with
 	// recovered disk space returns true (nothing left to watch) without resuming.
@@ -419,12 +414,7 @@ func TestTryAutoResumeLowDisk_DirectBranches(t *testing.T) {
 		application.lowDiskWg.Wait()
 		close(waitDone2)
 	}()
-	select {
-	case <-waitDone2:
-	case <-time.After(100 * time.Millisecond):
-		appCancel()
-		t.Fatalf("ResumeDownloads did not cancel active low-disk watch")
-	}
+	lrAwait(t, "ResumeDownloads to cancel the active low-disk watch", waitDone2)
 
 	// 4. Direct watchLowDisk cancellation via stopLowDiskWatchLocked.
 	watchCtx, cancel := context.WithCancel(t.Context())
@@ -569,11 +559,7 @@ func TestTryAutoResumeLowDisk_DirectBranches(t *testing.T) {
 	}
 	fd.mu.Unlock()
 	application.handleLowDisk(dlDir, 500)
-	select {
-	case <-resumeDone:
-	case <-time.After(100 * time.Millisecond):
-		t.Fatalf("handleLowDisk did not invoke downloader.Pause()")
-	}
+	lrAwait(t, "handleLowDisk to invoke downloader.Pause()", resumeDone)
 	fd.mu.Lock()
 	pausedAfterRace1 := fd.paused
 	fd.mu.Unlock()
@@ -605,11 +591,7 @@ func TestTryAutoResumeLowDisk_DirectBranches(t *testing.T) {
 	if !application.tryAutoResumeLowDisk(t.Context(), dlDir) {
 		t.Fatalf("tryAutoResumeLowDisk = false, want true")
 	}
-	select {
-	case <-pauseDone:
-	case <-time.After(100 * time.Millisecond):
-		t.Fatalf("tryAutoResumeLowDisk did not invoke downloader.Resume()")
-	}
+	lrAwait(t, "tryAutoResumeLowDisk to invoke downloader.Resume()", pauseDone)
 	fd.mu.Lock()
 	pausedAfterRace2 := fd.paused
 	fd.mu.Unlock()

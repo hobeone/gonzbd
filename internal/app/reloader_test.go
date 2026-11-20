@@ -248,11 +248,7 @@ func TestApplication_ReloadPostProcOptions_NoDeadlockUnderReadLock(t *testing.T)
 		close(done)
 	}()
 
-	select {
-	case <-done:
-	case <-time.After(2 * time.Second):
-		t.Fatal("deadlock: ReloadPostProcOptions never returned")
-	}
+	lrAwait(t, "ReloadPostProcOptions to return (a deadlock under the read lock never does)", done)
 }
 
 func TestApplication_RunMetricsPush(t *testing.T) {

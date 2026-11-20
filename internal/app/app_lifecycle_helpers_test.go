@@ -163,11 +163,7 @@ func TestRunStallRecheck_ExitsOnContextCancel(t *testing.T) {
 	}()
 
 	cancel()
-	select {
-	case <-done:
-	case <-time.After(2 * time.Second):
-		t.Fatal("runStallRecheck did not return after context cancellation")
-	}
+	lrAwait(t, "runStallRecheck to return after context cancellation", done)
 }
 
 // ---------- watchCompletions ----------
@@ -285,11 +281,7 @@ func TestWatchCompletions_DrainsPendingOnContextCancel(t *testing.T) {
 		close(done)
 	}()
 
-	select {
-	case <-done:
-	case <-time.After(2 * time.Second):
-		t.Fatal("watchCompletions did not return after context cancellation")
-	}
+	lrAwait(t, "watchCompletions to return after context cancellation", done)
 
 	p := j.Progress()
 	for i := range nEvents {
