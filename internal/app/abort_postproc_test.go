@@ -152,9 +152,14 @@ func awaitStage(t *testing.T, entered <-chan string) {
 	}
 }
 
+// removeWithinBudget calls RemoveJob, which returns once the job's launch claim
+// is released, and fails the test if it does not return by lrWaitDeadline. That
+// is a hang guard: a RemoveJob that waits on a claim nothing releases would
+// otherwise wait out dispatcher.Remove's own 30s, and a correct one is not
+// bounded by how fast it returns.
 func removeWithinBudget(t *testing.T, application *Application, id string) {
 	t.Helper()
-	ctx, cancel := context.WithTimeout(t.Context(), 1*time.Second)
+	ctx, cancel := context.WithDeadline(t.Context(), lrWaitDeadline(t))
 	defer cancel()
 	if err := application.RemoveJob(ctx, id, false); err != nil {
 		t.Fatalf("RemoveJob: %v", err)
