@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"sync"
 	"testing"
 	"time"
 
@@ -196,9 +197,18 @@ func TestRemoveJob_ReleasesAJobPostProcessingFinishesAfterTheAbort(t *testing.T)
 	// Past the dispatcher cancel, whose abort found the job in
 	// post-processing. Finishing the stage and waiting for the worker to let
 	// go leaves the post-processing cancel nothing to take.
+	// finalize runs from the worker's OnJobDone, which follows the worker's
+	// clearing of its busy marker, so the hook firing means the worker has let
+	// go of the job. It only notes that, and never blocks the worker.
+	released := make(chan struct{})
+	var releasedOnce sync.Once
+	application.finalizeHook = func(*postproc.Job) { releasedOnce.Do(func() { close(released) }) }
 	application.removeCancelGapHook = func(string) {
 		close(stage.finish)
-		waitFor(t, func() bool { return !application.postProcessor.HasJob(j) })
+		lrAwait(t, "the post-processor to let go of the job", released)
+		if application.postProcessor.HasJob(j) {
+			t.Error("the post-processor still holds the job after finalize began")
+		}
 	}
 	removeWithinBudget(t, application, j.ID())
 }

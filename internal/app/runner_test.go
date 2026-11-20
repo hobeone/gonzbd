@@ -131,26 +131,6 @@ func (r *reportRecorder) calls() int {
 	return r.total
 }
 
-// waitFor polls pred until it holds, and fails the test if it never does.
-//
-// The budget is a failure deadline, not a measurement: nothing here asserts
-// that the condition arrives quickly, so a longer one costs a passing run
-// nothing and only lengthens the wait before a genuine failure is reported. It
-// is generous because this package's tests run in parallel under -race, where a
-// condition gated on the dispatcher's one-second tick can take several seconds
-// of wall clock to show up.
-func waitFor(t *testing.T, pred func() bool) {
-	t.Helper()
-	deadline := time.Now().Add(1 * time.Second)
-	for time.Now().Before(deadline) {
-		if pred() {
-			return
-		}
-		time.Sleep(5 * time.Millisecond)
-	}
-	t.Fatal("condition not met within 1s")
-}
-
 // TestReportRecorder_WakesAwaitCallsOnEachReport: every report method closes
 // and clears the channel a waiting awaitCalls holds. The runner tests do not
 // force this: a report that lands before awaitCalls first looks needs no
