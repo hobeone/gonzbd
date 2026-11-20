@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"slices"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -218,6 +219,11 @@ type Job struct {
 	fileTable *FileTable
 	manifest  *Manifest
 	progress  *JobProgress
+
+	// attachObserver, when set, runs on the goroutine that called
+	// AttachArticles, after it has released contentMu: the first instant a
+	// reader can see the job resident. It is a test seam (SetAttachObserver).
+	attachObserver atomic.Pointer[func()]
 
 	// Progress-tier state recovered from the store before this job has a
 	// JobProgress. dispatch.restore calls reconstruct (New, below, which

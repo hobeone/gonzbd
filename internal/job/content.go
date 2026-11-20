@@ -105,6 +105,8 @@ func (j *Job) AttachFiles(ft *FileTable, seed []FileSeed) error {
 // nothing. Each verification is then installed whatever became of the one
 // before it; its outcome is the FileInstall at the same index.
 func (j *Job) AttachArticles(m *Manifest, vs []FileVerification) ([]FileInstall, error) {
+	// Registered before the lock's deferred unlock, so it runs after it.
+	defer j.notifyAttached()
 	if m == nil {
 		return nil, fmt.Errorf("job %s: AttachArticles: nil manifest", j.id)
 	}
@@ -126,6 +128,18 @@ func (j *Job) AttachArticles(m *Manifest, vs []FileVerification) ([]FileInstall,
 		out[k].Dropped, out[k].Err = j.installFileVerificationLocked(v)
 	}
 	return out, nil
+}
+
+// SetAttachObserver makes AttachArticles call fn on the calling goroutine each
+// time it returns, after contentMu is released, so a test can read the job as
+// a reader would at the first instant it is resident. It exists for
+// TestVerifyAndAttach_NoReaderSeesAVerifiedArticleUnfinished.
+func (j *Job) SetAttachObserver(fn func()) { j.attachObserver.Store(&fn) }
+
+func (j *Job) notifyAttached() {
+	if obs := j.attachObserver.Load(); obs != nil {
+		(*obs)()
+	}
 }
 
 // AttachContent attaches a job's files and articles together: AttachFiles on

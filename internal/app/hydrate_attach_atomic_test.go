@@ -13,10 +13,11 @@ import (
 // its copy, refused against the bytes on disk, would count toward the file's
 // parts and finish the file short.
 //
-// The reader here does what the downloader does, from the first instant the
-// job reads as resident. Each round hydrates a fresh job whose first two
-// articles are recorded and on disk, so a round in which the attach and the
-// install were separate steps gives the reader a window to list article 0 or 1.
+// The observer reads the job the way the downloader does, at the first instant
+// AttachArticles has released the content lock: the first moment any reader can
+// see it. Its first two articles are recorded and on disk, so an attach that
+// installed nothing, or left the install for a second step, lists article 0 or
+// 1 at that instant.
 func TestVerifyAndAttach_NoReaderSeesAVerifiedArticleUnfinished(t *testing.T) {
 	t.Parallel()
 	env := newLREnv(t)
@@ -29,47 +30,30 @@ func TestVerifyAndAttach_NoReaderSeesAVerifiedArticleUnfinished(t *testing.T) {
 		t.Fatalf("Manifest: %v", err)
 	}
 
-	const rounds = 300
-	for round := range rounds {
-		hydrateWithReader(t, a, m, j0.ID(), j0.Name(), round)
-	}
-}
-
-// hydrateWithReader runs one round of
-// TestVerifyAndAttach_NoReaderSeesAVerifiedArticleUnfinished. The reader stops
-// when the round ends, whatever ended it, so a failed round leaves no
-// goroutine spinning.
-func hydrateWithReader(t *testing.T, a *lrApp, m *job.Manifest, id, name string, round int) {
-	t.Helper()
-	fresh := job.New(id, name, job.Policy{})
-	stop := make(chan struct{})
-	defer close(stop)
-	seen := make(chan []int32, 1)
-	go func() {
-		for !fresh.Resident() { // a spin is the point: the reader must arrive at the first resident instant
-			select {
-			case <-stop:
-				return
-			default:
-			}
-		}
-		var listed []int32
-		_ = fresh.ForEachUnfinishedArticle(func(_ int, artIdx int32, _ string, _, _ int, _ string) bool { //nolint:errcheck // resident above, and nothing evicts it
-			listed = append(listed, artIdx)
+	fresh := job.New(j0.ID(), j0.Name(), job.Policy{})
+	var observed int
+	var listed [][]int32
+	fresh.SetAttachObserver(func() {
+		observed++
+		var unfinished []int32
+		_ = fresh.ForEachUnfinishedArticle(func(_ int, artIdx int32, _ string, _, _ int, _ string) bool { //nolint:errcheck // an unattached job is listed as nothing
+			unfinished = append(unfinished, artIdx)
 			return true
 		})
-		seen <- listed
-	}()
+		listed = append(listed, unfinished)
+	})
 	if err := a.verifyFromRecord(t, fresh, m); err != nil {
-		t.Fatalf("round %d: verifyAndAttach: %v", round, err)
+		t.Fatalf("verifyAndAttach: %v", err)
 	}
-	if !fresh.Resident() {
-		t.Fatalf("round %d: verifyAndAttach returned nil but the job is not resident", round)
+	if observed == 0 {
+		t.Fatal("hydration never called AttachArticles, so no reader instant was observed")
 	}
-	for _, art := range <-seen {
-		if art == 0 || art == 1 {
-			t.Fatalf("round %d: a reader that found the job resident listed article %d as unfinished; "+
-				"its bytes were verified on disk, so the downloader would fetch it again", round, art)
+	for i, unfinished := range listed {
+		for _, art := range unfinished {
+			if art == 0 || art == 1 {
+				t.Fatalf("a reader at attach %d listed article %d as unfinished; "+
+					"its bytes were verified on disk, so the downloader would fetch it again", i, art)
+			}
 		}
 	}
 }
