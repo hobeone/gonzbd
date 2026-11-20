@@ -93,11 +93,17 @@ func TestEnqueuePostProc_DeliveredCrashRecovery(t *testing.T) {
 		}
 
 		application.enqueuePostProc(j, hdr, "", false)
-		awaitFinalized(t, application, j.ID())
+		awaitPostProcComplete(t, application, j.ID())
 
 		entry := historyEntry(t, application, j.ID())
-		gotStatus, _ := os.ReadFile(statusFile)
-		gotDir, _ := os.ReadFile(dirFile)
+		gotStatus, err := os.ReadFile(statusFile)
+		if err != nil {
+			t.Errorf("read script status file: %v", err)
+		}
+		gotDir, err := os.ReadFile(dirFile)
+		if err != nil {
+			t.Errorf("read script dir file: %v", err)
+		}
 		return entry.Status, entry.Path, entry.Storage, entry.StageLog,
 			strings.TrimSpace(string(gotStatus)),
 			strings.TrimSpace(string(gotDir)),

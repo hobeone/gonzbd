@@ -43,6 +43,38 @@ func awaitFinalized(t *testing.T, application *Application, id string) {
 	})
 }
 
+// awaitPostProcComplete blocks until finalize reports id finished on
+// PostProcComplete, then checks what that report promises on the path a healthy
+// run takes: the job has left the dispatcher and the post-processor no longer
+// holds it. finalize sends after persistAndCommit returns, and the dispatcher
+// removal runs inside persistAndCommit, so both are settled by the time the
+// report arrives and the checks are assertions, not a race. (When both
+// RemoveJob attempts fail, runCommit leaves the job registered and finalize
+// still reports; the first assertion then fails, which is the intent.)
+//
+// finalize does not report when persistAndCommit returns an error (including
+// errFinalizedJobRemoved and errFinalizedJobSuperseded), when a held-volumes
+// retry takes over, or when the PostProcComplete buffer is full. The wait has
+// no deadline of its own, so each of those hangs until the test binary's
+// timeout, whose goroutine dump names the stuck wait.
+//
+// It is for an Application running one job: PostProcComplete is one shared
+// channel, so a report for another job is consumed here and cannot be waited
+// for afterwards. It fails the test instead of discarding the report.
+func awaitPostProcComplete(t *testing.T, application *Application, id string) {
+	t.Helper()
+	c := <-application.PostProcComplete()
+	if c.JobID != id {
+		t.Fatalf("PostProcComplete reported job %q while waiting for %q", c.JobID, id)
+	}
+	if _, registered := application.dispatcher.Job(id); registered {
+		t.Fatalf("job %s is still registered with the dispatcher after PostProcComplete", id)
+	}
+	if application.postProcessor.HasJobID(id) {
+		t.Fatalf("post-processor still holds job %s after PostProcComplete", id)
+	}
+}
+
 // admissionsHeld counts the admissions a has not ended.
 func admissionsHeld(a *postProcAdmissions) int {
 	a.mu.Lock()
