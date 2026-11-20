@@ -168,16 +168,42 @@ func waitingDirectUnpack(t *testing.T, application *Application, id string) *dir
 	return du
 }
 
-// awaitAdmissionsEnded waits up to five hundred milliseconds for every post-processing
-// admission to end.
+// awaitAdmissionsEnded returns once every post-processing admission has ended,
+// for a job removed before the post-processor was given it. The admission then
+// ends in jobFinalizer.cancelled, which enqueuePostProc calls from the
+// DirectUnpack-wait goroutine it starts on application.wg, or from its caller
+// when it starts none. Waiting for the group therefore leaves nothing to end,
+// and the check after it is an assertion.
+//
+// The group also holds Start's workers, handleWriteFault's goroutines and the
+// file-complete overflow's (`git grep -n 'app\.wg\.Go' -- 'internal/app/*.go'
+// ':!*_test.go'` lists every use). A test where one of them runs waits here
+// until lrAwait's guard fails it, so it cannot pass by accident.
 func awaitAdmissionsEnded(t *testing.T, application *Application) {
 	t.Helper()
-	deadline := time.Now().Add(500 * time.Millisecond)
-	for admissionsHeld(&application.postProcAdmissions) != 0 {
-		if time.Now().After(deadline) {
-			t.Fatal("the job's post-processing admission never ended")
-		}
-		time.Sleep(5 * time.Millisecond)
+	joined := make(chan struct{})
+	go func() {
+		application.wg.Wait()
+		close(joined)
+	}()
+	lrAwait(t, "the enqueue goroutines to return", joined)
+	if n := admissionsHeld(&application.postProcAdmissions); n != 0 {
+		t.Fatalf("admissions held after the enqueue returned = %d, want 0", n)
+	}
+}
+
+// requireAdmissionsEndedAfterRun checks that the post-processor's worker has
+// ended the admission of a job it ran or cancelled. finalize and cancelled
+// defer the release and the worker calls them from its own goroutine, so Stop
+// returning means the release has run. The caller has already seen the job
+// finish or its RemoveJob return, so the worker is past choosing between
+// finishing and being interrupted, and Stop does not change which one the job
+// got.
+func requireAdmissionsEndedAfterRun(t *testing.T, application *Application) {
+	t.Helper()
+	_ = application.postProcessor.Stop()
+	if n := admissionsHeld(&application.postProcAdmissions); n != 0 {
+		t.Fatalf("admissions held after the post-processor stopped = %d, want 0", n)
 	}
 }
 
@@ -308,13 +334,20 @@ func TestEnqueuePostProc_RemovedBeforeItsHandOver_ReleasesTheJob(t *testing.T) {
 				t.Fatal("the job is not registered")
 			}
 
+			// RemoveJob marks the job removed before it runs this hook, and the
+			// hook only notes that, so the enqueue below races the rest of RemoveJob.
+			marked := make(chan struct{})
+			application.removeAbortGapHook = func(string) { close(marked) }
 			removed := make(chan error, 1)
 			go func() {
 				ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
 				defer cancel()
 				removed <- application.RemoveJob(ctx, id, false)
 			}()
-			waitFor(t, func() bool { return application.transitions.wasRemoved(j) })
+			lrAwait(t, "RemoveJob to mark the job removed", marked)
+			if !application.transitions.wasRemoved(j) {
+				t.Fatal("RemoveJob ran its abort hook without marking the job removed")
+			}
 			application.enqueuePostProc(j, row.Header, "", false)
 
 			if err := <-removed; err != nil {

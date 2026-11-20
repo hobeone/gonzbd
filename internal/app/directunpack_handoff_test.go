@@ -32,7 +32,8 @@ func TestFail_FromFetching_AbortsTheDirectUnpack(t *testing.T) {
 
 	fault := storagefault.Classify("write", "/mnt/ro/held.bin", syscall.EROFS)
 	application.Fail(j, fault)
-	awaitAdmissionsEnded(t, application)
+	awaitPostProcComplete(t, application, id)
+	requireAdmissionsEndedAfterRun(t, application)
 
 	select {
 	case <-du.Done():
@@ -125,7 +126,8 @@ func TestHandOver_AfterTheDownloadFinished_KeepsTheDirectUnpackResults(t *testin
 	case <-time.After(10 * time.Second):
 		t.Fatal("the DirectUnpacker never finished extracting the set")
 	}
-	awaitAdmissionsEnded(t, application)
+	awaitPostProcComplete(t, application, id)
+	requireAdmissionsEndedAfterRun(t, application)
 
 	hist := application.postProcessor.History()
 	if len(hist) != 1 {

@@ -153,7 +153,7 @@ func TestRemoveJob_EndsThePostProcessingAdmission(t *testing.T) {
 	application.maybeFinalizeJob(j, "")
 	awaitStage(t, stage.entered)
 	removeWithinBudget(t, application, j.ID())
-	waitFor(t, func() bool { return admissionsHeld(&application.postProcAdmissions) == 0 })
+	requireAdmissionsEndedAfterRun(t, application)
 }
 
 // TestJobFinalizerCancelled_EndsTheAdmissionOfAnUnregisteredJob: the

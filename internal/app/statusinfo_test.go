@@ -83,11 +83,26 @@ func TestApplication_BinaryVersionsInfo_StableAcrossCalls(t *testing.T) {
 	}
 }
 
+// wakeNotingDownloader is downloaderOnly with a Wake that notes each call on
+// woken, dropping the note when the channel is full.
+type wakeNotingDownloader struct {
+	downloaderOnly
+	woken chan struct{}
+}
+
+func (d wakeNotingDownloader) Wake() {
+	select {
+	case d.woken <- struct{}{}:
+	default:
+	}
+}
+
 func TestApplication_IsPipelineHealthy(t *testing.T) {
 	t.Parallel()
 	dlDir := t.TempDir()
 	cfg := testConfig(dlDir, t.TempDir(), t.TempDir())
-	app, err := New(cfg, nil, WithDownloader(downloaderOnly{}))
+	woken := make(chan struct{}, 1)
+	app, err := New(cfg, nil, WithDownloader(wakeNotingDownloader{woken: woken}))
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
@@ -135,10 +150,12 @@ func TestApplication_IsPipelineHealthy(t *testing.T) {
 	// means anything while some job is Fetching, because with none
 	// IsPipelineHealthy takes its idle branch, refreshes the heartbeat and
 	// returns true.
-	waitFor(t, func() bool {
-		row, ok := app.Dispatcher().Row(j.ID())
-		return ok && row.View.State == job.Fetching
-	})
+	// The Fetching worker's hand-off to the downloader is a Wake, made after the
+	// dispatcher has launched the job at Fetching.
+	lrAwait(t, "the dispatcher to launch the job at Fetching", woken)
+	if row, ok := app.Dispatcher().Row(j.ID()); !ok || row.View.State != job.Fetching {
+		t.Fatalf("after the Fetching worker woke the downloader, row = %+v (registered %v), want State Fetching", row.View, ok)
+	}
 
 	// Set heartbeat to 3 minutes ago
 	app.lastHeartbeat.Store(time.Now().Add(-3 * time.Minute).Unix())
