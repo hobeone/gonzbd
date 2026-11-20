@@ -161,6 +161,7 @@ func TestReportRecorder_WakesAwaitCallsOnEachReport(t *testing.T) {
 	for name, report := range map[string]func(*reportRecorder) error{
 		"FinishedJob": func(r *reportRecorder) error { return r.FinishedJob(j, job.OutcomeFailed) },
 		"Yielded":     func(r *reportRecorder) error { return r.Yielded(j.ID()) },
+		"YieldedJob":  func(r *reportRecorder) error { return r.YieldedJob(j) },
 		"AdvanceFrom": func(r *reportRecorder) error { return r.AdvanceFrom(j, job.Assessing, job.Extracting) },
 	} {
 		t.Run(name, func(t *testing.T) {

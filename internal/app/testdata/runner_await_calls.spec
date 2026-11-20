@@ -12,3 +12,14 @@ file internal/app/runner_test.go
 --- replace
 	r.total++
 --- end
+
+[YieldedJob counts its report without waking the waiter]
+file internal/app/runner_test.go
+--- anchor
+	r.mu.Unlock()
+	return r.Yielded(j.ID())
+--- replace
+	r.total++
+	r.mu.Unlock()
+	return nil
+--- end
