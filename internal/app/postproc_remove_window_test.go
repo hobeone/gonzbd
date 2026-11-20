@@ -457,11 +457,7 @@ func TestPostProcAdmissions_WithdrawWaitsOutAStep(t *testing.T) {
 					a.withdraw(j)
 					endedFirst.Store(ended.Load())
 				})
-				select {
-				case <-removal:
-				case <-time.After(500 * time.Millisecond):
-					t.Fatal("withdraw did not close the removal channel")
-				}
+				lrAwait(t, "withdraw to close the removal channel", removal)
 				// withdraw has taken the step's token under the lock by the
 				// time the channel is closed; a withdraw that does not wait
 				// returns within microseconds of it.
@@ -476,11 +472,7 @@ func TestPostProcAdmissions_WithdrawWaitsOutAStep(t *testing.T) {
 				} else {
 					a.release(j)
 				}
-				select {
-				case <-done:
-				case <-time.After(500 * time.Millisecond):
-					t.Fatalf("withdraw did not return after %s", end)
-				}
+				lrAwait(t, "withdraw to return after "+end, done)
 				if !endedFirst.Load() {
 					t.Errorf("withdraw returned before the %s ended", step)
 				}
