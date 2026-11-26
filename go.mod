@@ -10,7 +10,7 @@ require (
 	github.com/hobeone/rarengine v1.6.1
 	github.com/lmittmann/tint v1.2.1
 	github.com/mxschmitt/playwright-go v0.6401.0
-	github.com/pressly/goose/v3 v3.30.1
+	github.com/pressly/goose/v3 v3.30.2
 	go.uber.org/goleak v1.3.0
 	golang.org/x/sync v0.25.0
 	golang.org/x/sys v0.50.0
@@ -39,7 +39,6 @@ require (
 	github.com/pierrec/lz4/v4 v4.1.33 // indirect
 	github.com/remyoudompheng/bigfft v0.0.0-20230129092748-24d4a6f8daec // indirect
 	github.com/rogpeppe/go-internal v1.16.0 // indirect
-	github.com/sethvargo/go-retry v0.5.0 // indirect
 	github.com/spf13/afero v1.15.0 // indirect
 	github.com/stangelandcl/ppmd v0.1.1 // indirect
 	github.com/stretchr/objx v0.8.0 // indirect
