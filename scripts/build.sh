@@ -15,6 +15,11 @@ set -e
 
 . "$(dirname "$0")/lib/buildmeta.sh"
 
+if [ ! -d ui/dist ]; then
+  echo "ui/dist missing — building UI first..."
+  (cd ui && bun install --frozen-lockfile && bun run build)
+fi
+
 echo "Building gonzbd"
 echo "  VERSION:     ${VERSION}"
 echo "  COMMIT:      ${COMMIT}"

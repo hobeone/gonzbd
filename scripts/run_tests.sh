@@ -2,7 +2,7 @@
 # run_tests.sh - Comprehensive test suite for gonzbd
 # Includes Go static analysis, linters, unit tests (-race), Go integration tests,
 # the crash-consistency suite, Svelte UI checks/tests, parallel mutation tests,
-# and Playwright E2E tests (skippable via SKIP_PLAYWRIGHT=1 / SKIP_UITEST=1).
+# and Playwright E2E tests (skippable via SKIP_E2E=1 / SKIP_PLAYWRIGHT=1 / SKIP_UITEST=1).
 
 set -e # Exit on first error
 
@@ -558,9 +558,9 @@ echo -e "${GREEN}✓ UI Component Tests Passed${NC}"
 
 # 6. UI E2E Tests (requires built UI + Playwright browsers)
 UI_E2E_SKIPPED=0
-if [ "${SKIP_PLAYWRIGHT:-}" = "1" ] || [ "${SKIP_UITEST:-}" = "1" ]; then
+if [ "${SKIP_E2E:-}" = "1" ] || [ "${SKIP_PLAYWRIGHT:-}" = "1" ] || [ "${SKIP_UITEST:-}" = "1" ]; then
     UI_E2E_SKIPPED=1
-    echo -e "\n[6/7] Skipping UI E2E Tests (SKIP_PLAYWRIGHT=1)..."
+    echo -e "\n[6/7] Skipping UI E2E Tests (SKIP_E2E/SKIP_PLAYWRIGHT=1)..."
     echo "  To run them, install the Playwright browser first:"
     echo "    go run github.com/mxschmitt/playwright-go/cmd/playwright install --with-deps chromium"
 else
