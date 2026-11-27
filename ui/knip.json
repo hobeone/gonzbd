@@ -4,9 +4,6 @@
     "src/lib/components/ui/**",
     "static/theme.js"
   ],
-  "ignoreDependencies": [
-    "@lucide/svelte"
-  ],
   "rules": {
     "exports": "off",
     "types": "off"
